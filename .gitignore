@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Environment / secrets
+.env
+data/secrets/*
+!data/secrets/.gitkeep
+
+# Database
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Generated sample data (regenerate with scripts/generate_sample_data.py)
+data/sample/*.xlsx
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+frontend/tsconfig.tsbuildinfo
+
+# Locally "sent" mail (EMAIL_SOURCE=local)
+data/sent/

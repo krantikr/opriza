@@ -1,0 +1,160 @@
+# ===========================================================================
+# Business rules - stock matching, suggested pricing, commercial terms.
+#
+# Nothing in this file is hard-coded anywhere in the application, and nothing
+# in this file is ever shown to a language model as an instruction to compute
+# with. The stock-availability service reads these values and does the
+# arithmetic in Python; the LLM only receives the finished numbers.
+#
+# `version` is stamped onto every stock_availability row, so a reply raised
+# today can still be explained after these rules change.
+# ===========================================================================
+
+version: "1.0"
+currency: INR
+base_unit: MT
+
+# ---------------------------------------------------------------------------
+# Deterministic product matching (spec section 13)
+# ---------------------------------------------------------------------------
+matching:
+  # Weighted score out of 100. A candidate must clear `accept_score` to be a
+  # MATCH_FOUND; if the runner-up is within `ambiguity_delta` of the winner the
+  # result is MULTIPLE_MATCHES and a human decides. The system never guesses
+  # between two plausible products.
+  accept_score: 80.0
+  ambiguity_delta: 5.0
+
+  # Only the fields the enquiry actually states are scored, and the total is
+  # renormalised over those. An enquiry that omits length is not penalised for
+  # omitting it - it is simply matched on less evidence, which shows up as a
+  # smaller gap to the runner-up and therefore as ambiguity.
+  weights:
+    product_type: 30.0
+    grade: 28.0
+    standard: 4.0
+    thickness: 16.0
+    width: 7.0
+    length: 5.0
+    diameter: 10.0
+
+  # Dimensional tolerance as a percentage of the requested value.
+  # Thickness is the defining dimension of a steel plate and is held exact.
+  # Width and length are frequently "cut to size", so they are given room.
+  tolerance:
+    thickness_pct: 0.0
+    width_pct: 5.0
+    length_pct: 10.0
+    diameter_pct: 2.0
+
+  # Words that may be ignored when they merely qualify a product type.
+  # "MS Plate", "HR Plate" and "Steel Plate" are all plates. "Chequered Plate"
+  # is a different product, so it stays unresolved and reaches a human rather
+  # than being quietly priced as plain plate.
+  ignorable_qualifiers:
+    [ms, mild, steel, hr, cr, hot, rolled, cold, prime, new, is]
+
+  # Prefixes that identify a standards body. Used to recognise when a customer
+  # has typed a standard into the grade field ("IS 1239"). Grade tokens such as
+  # "E250" or "Fe500" have the same letters-then-digits shape, so a shape test
+  # alone would misfile them as standards.
+  standard_prefixes: [IS, ASTM, ASME, EN, DIN, BS, JIS, SAE, AISI]
+
+  # Vocabulary normalisation applied before matching. Deterministic and
+  # auditable; the LLM normaliser only runs when these rules do not resolve.
+  synonyms:
+    product_type:
+      plate: Plate
+      plates: Plate
+      ms plate: Plate
+      sheet: Sheet
+      sheets: Sheet
+      coil: Coil
+      hr coil: Coil
+      angle: Angle
+      angles: Angle
+      channel: Channel
+      channels: Channel
+      beam: Beam
+      ismb: Beam
+      joist: Beam
+      round bar: Round Bar
+      round: Round Bar
+      rod: Round Bar
+      tmt: TMT Bar
+      tmt bar: TMT Bar
+      pipe: Pipe
+      tube: Pipe
+      flat: Flat Bar
+      flat bar: Flat Bar
+    grade:
+      is2062: E250
+      "is 2062": E250
+      e-250: E250
+      e 250: E250
+      e250: E250
+      e350: E350
+      e410: E410
+      fe500: Fe500
+      fe 500: Fe500
+      fe550: Fe550
+      a36: A36
+      mild steel: E250
+      ms: E250
+
+# ---------------------------------------------------------------------------
+# Suggested pricing (stock-availability pivot)
+#
+# There is no published price list - only what the stock cost to bring in.
+# `suggested_rate` is weighted-average landed cost across the matched lots,
+# marked up by `markup_pct`, then rounded. It is always presented to the
+# owner as indicative and subject to confirmation, never as a firm price.
+# ---------------------------------------------------------------------------
+stock_pricing:
+  enabled: true
+  markup_pct: 8.0
+  rounding:
+    enabled: true
+    nearest: 50
+    mode: nearest # nearest | up | down
+
+# ---------------------------------------------------------------------------
+# Confidence scoring (spec section 21) - deterministic checklist, not a guess.
+# ---------------------------------------------------------------------------
+confidence:
+  high:
+    require_exact_match: true
+    require_stock_match: true
+    min_lots: 1
+    require_customer_known: true
+  medium:
+    min_lots: 1
+  # Anything failing MEDIUM is LOW and is routed to manual review.
+
+# ---------------------------------------------------------------------------
+# When a reply must not proceed automatically to a draft.
+# ---------------------------------------------------------------------------
+review:
+  force_manual_when:
+    missing_information: true
+    no_stock_match: true
+    ambiguous_product_match: true
+    no_product_match: true
+    insufficient_balance: true
+    low_confidence: true
+
+# ---------------------------------------------------------------------------
+# Commercial terms injected into the draft. The model reproduces these
+# verbatim; it is not permitted to invent or reword commercial terms.
+# ---------------------------------------------------------------------------
+quotation:
+  validity_days: 3
+  gst_extra: true
+  freight_extra: true
+  price_basis: "Ex-Works"
+  terms:
+    - "Prices are valid for {validity_days} days from the date of this quotation."
+    - "GST extra as applicable."
+    - "Freight extra unless explicitly stated as delivered."
+    - "Subject to prior sale and stock availability."
+    - "Payment terms as mutually agreed."

@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-50: oklch(0.98 0.003 250);
+  --color-ink-100: oklch(0.96 0.004 250);
+  --color-ink-200: oklch(0.92 0.006 250);
+  --color-ink-300: oklch(0.85 0.008 250);
+  --color-ink-500: oklch(0.6 0.015 250);
+  --color-ink-700: oklch(0.42 0.02 250);
+  --color-ink-900: oklch(0.24 0.025 250);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink-50 text-ink-900 antialiased;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Figures in a pricing table must line up to be scannable. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

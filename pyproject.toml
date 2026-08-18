@@ -1,0 +1,58 @@
+[project]
+name = "ai-sales-copilot"
+version = "0.1.0"
+description = "AI Sales Quotation Copilot for steel trading - MVP"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy>=2.0.36",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "python-dotenv>=1.0.1",
+    "pyyaml>=6.0.2",
+    "openai>=1.55.0",
+    "langgraph>=0.2.45",
+    "google-api-python-client>=2.150.0",
+    "google-auth-oauthlib>=1.2.1",
+    "google-auth-httplib2>=0.2.0",
+    "openpyxl>=3.1.5",
+    "pandas>=2.2.3",
+    "pypdf>=5.1.0",
+    "apscheduler>=3.10.4",
+    "tenacity>=9.0.0",
+    "httpx>=0.27.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.3",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.7.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ai", "backend/app"]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+
+[tool.ruff]
+# 110 rather than 88/100: this codebase favours descriptive names and keeps
+# explanatory strings inline with the rule that produces them.
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]
+
+[tool.ruff.lint.isort]
+# Both are local packages in this repo, not third-party dependencies.
+known-first-party = ["ai", "app"]

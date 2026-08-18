@@ -1,0 +1,462 @@
+"""The end-to-end quotation workflow.
+
+The language model is replaced by a stub returning fixed structured values. The
+transport and the fallback ladder are covered elsewhere; what is under test here
+is the routing - which branch an email takes, what state it lands in, and what
+the system refuses to do on the way.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pytest
+
+from ai.llm.base import LLMClient, LLMError
+from ai.schemas import (
+    AIOutcome,
+    ClassificationResult,
+    DraftEmail,
+    EmailCategory,
+    ExtractedEnquiry,
+    LLMUsage,
+    QuantityUnit,
+    SteelLineItem,
+)
+from app.models import (
+    ConfidenceLevel,
+    Email,
+    EmailSourceType,
+    MatchStatus,
+    ProcessingStatus,
+    QuotationRequest,
+    QuotationStatus,
+)
+from app.workflows.quotation import QuotationWorkflow, process_pending_emails
+
+
+class FakeLLM(LLMClient):
+    """Returns scripted structured values, keyed by task.
+
+    An exhausted queue repeats its last value. Several tests here exercise
+    pricing paths whose figures differ from the fixed draft body, which makes
+    the drafting guardrail correctly ask for a regeneration; repeating keeps
+    those tests about what they are testing. Draft content itself is covered in
+    `test_drafting.py`.
+    """
+
+    def __init__(self, **by_task: list[object]) -> None:
+        self.by_task = {task: list(values) for task, values in by_task.items()}
+        self.last: dict[str, object] = {}
+        self.calls: list[str] = []
+
+    def structured(self, *, task, messages, schema, model=None, max_tokens=None):
+        self.calls.append(task)
+        queue = self.by_task.get(task) or []
+        if queue:
+            value = queue.pop(0)
+            self.last[task] = value
+        elif task in self.last:
+            value = self.last[task]
+        else:
+            raise AssertionError(f"no scripted response for task {task!r}")
+        if isinstance(value, Exception):
+            raise value
+        return AIOutcome(
+            value=value,
+            usage=LLMUsage(model="fake/model", task=task, total_tokens=100, latency_ms=5),
+        )
+
+    def complete(self, *, task, messages, model=None, max_tokens=None):  # pragma: no cover
+        raise NotImplementedError
+
+
+def line(**overrides) -> SteelLineItem:
+    base = {
+        "raw_text": "IS 2062 E250 plate, 10mm x 1500 x 6000, quantity 20 MT",
+        "product_type": "Plate",
+        "grade": "E250",
+        "standard": "IS 2062",
+        "thickness_mm": 10.0,
+        "width_mm": 1500.0,
+        "length_mm": 6000.0,
+        "diameter_mm": None,
+        "quantity": 20.0,
+        "quantity_unit": QuantityUnit.MT,
+        "remarks": None,
+    }
+    return SteelLineItem(**{**base, **overrides})
+
+
+def enquiry(**overrides) -> ExtractedEnquiry:
+    base = {
+        "customer_name": "Rajesh Kumar",
+        "customer_company": "ABC Industries Pvt Ltd",
+        "delivery_location": "Patna",
+        "required_delivery_date": None,
+        "payment_terms": None,
+        "additional_requirements": [],
+        "line_items": [line()],
+        "missing_information": [],
+    }
+    return ExtractedEnquiry(**{**base, **overrides})
+
+
+def classified(category=EmailCategory.QUOTATION_REQUEST, confidence=0.96) -> ClassificationResult:
+    return ClassificationResult(category=category, confidence=confidence, reason="Asks for a rate.")
+
+
+DRAFT = DraftEmail(
+    subject="Re: Enquiry - IS 2062 E250 Plate 10mm",
+    body=(
+        "Dear Rajesh Kumar,\n\nThank you for your enquiry.\n\n"
+        "1. IS 2062 E250 Plate 10 x 1500 x 6000 mm\n"
+        "   Quantity: 20 MT\n"
+        "   Rate: Rs 59,200.00 per MT\n"
+        "   Line total: Rs 11,84,000.00\n\n"
+        "- Prices are valid for 3 days from the date of this quotation.\n\n"
+        "Regards,\nSales Team\n"
+    ),
+)
+
+
+@pytest.fixture()
+def inbound(db, customer):
+    def _make(subject="Enquiry - plate", body="Please quote 20 MT of 10mm plate.", sender=None):
+        email = Email(
+            message_id=f"local:{subject[:20]}-{id(subject)}",
+            thread_id="local-thread:1",
+            source=EmailSourceType.LOCAL,
+            sender_email=sender if sender is not None else customer.email,
+            sender_name="Rajesh Kumar",
+            subject=subject,
+            body_text=body,
+            received_at=datetime.now(UTC),
+            processing_status=ProcessingStatus.PENDING,
+        )
+        db.add(email)
+        db.commit()
+        return email
+
+    return _make
+
+
+# --- The happy path --------------------------------------------------------
+
+
+def test_quotation_email_runs_the_full_pipeline(db, plate, customer, comparable_sales, inbound):
+    email = inbound()
+    llm = FakeLLM(classify=[classified()], extract=[enquiry()], draft=[DRAFT])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+
+    assert result.outcome == "READY_FOR_REVIEW"
+    assert llm.calls == ["classify", "extract", "draft"]
+
+    quotation = db.get(QuotationRequest, result.quotation_id)
+    assert quotation.quotation_number == "Q-000001"
+    assert quotation.status is QuotationStatus.READY_FOR_REVIEW
+    assert quotation.confidence is ConfidenceLevel.HIGH
+    assert quotation.customer_id == customer.id
+
+    item = quotation.line_items[0]
+    assert item.match_status is MatchStatus.MATCH_FOUND
+    assert item.matched_product_id == plate.id
+    assert item.pricing.recommended_price == pytest.approx(59200.00)
+    assert item.pricing.explanation
+
+    assert quotation.current_draft is not None
+    assert "59,200.00" in quotation.current_draft.body
+
+    db.refresh(email)
+    assert email.processing_status is ProcessingStatus.PROCESSED
+    assert email.category is EmailCategory.QUOTATION_REQUEST
+    assert email.processing_ms >= 0
+
+
+def test_pricing_evidence_is_persisted_for_later_explanation(
+    db, plate, customer, comparable_sales, inbound
+):
+    """Section 22: the recommendation must survive as evidence, not as a number."""
+    email = inbound()
+    llm = FakeLLM(classify=[classified()], extract=[enquiry()], draft=[DRAFT])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+    pricing = db.get(QuotationRequest, result.quotation_id).line_items[0].pricing
+
+    assert pricing.comparable_count == 5
+    assert pricing.recent_average_price == pytest.approx(58000.00)
+    assert pricing.base_price == pytest.approx(56500.00)
+    assert pricing.pricing_rule_version == "1.0"
+    assert [step["id"] for step in pricing.breakdown][0] == "base_price"
+    assert "Freight to Patna" in pricing.explanation
+
+
+# --- Branches that must not produce a quotation ----------------------------
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        EmailCategory.PRICE_NEGOTIATION,
+        EmailCategory.ORDER,
+        EmailCategory.DELIVERY_QUERY,
+        EmailCategory.PAYMENT_QUERY,
+        EmailCategory.SPAM,
+    ],
+)
+def test_non_quotation_email_is_recorded_but_not_answered(db, inbound, category):
+    email = inbound(subject=f"{category.value} message")
+    llm = FakeLLM(classify=[classified(category, 0.93)])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+
+    assert result.outcome == "SKIPPED"
+    assert result.quotation_id is None
+    assert llm.calls == ["classify"]  # no extraction, no drafting, no spend
+
+    db.refresh(email)
+    assert email.processing_status is ProcessingStatus.SKIPPED
+    assert email.category is category
+
+
+def test_extraction_failure_leaves_the_email_visible(db, inbound):
+    email = inbound()
+    llm = FakeLLM(classify=[classified()], extract=[LLMError("model refused")])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+
+    assert result.outcome == "FAILED"
+    assert result.quotation_id is None
+
+    db.refresh(email)
+    assert email.processing_status is ProcessingStatus.FAILED
+    assert "model refused" in email.error_message
+
+
+def test_classification_failure_is_recorded_as_failed(db, inbound):
+    email = inbound()
+    llm = FakeLLM(classify=[LLMError("gateway timeout")])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+
+    assert result.outcome == "FAILED"
+    db.refresh(email)
+    assert email.processing_status is ProcessingStatus.FAILED
+
+
+# --- Incomplete and ambiguous enquiries ------------------------------------
+
+
+def test_missing_quantity_is_flagged_rather_than_invented(
+    db, plate, customer, comparable_sales, inbound
+):
+    email = inbound()
+    incomplete = enquiry(
+        line_items=[line(quantity=None, quantity_unit=QuantityUnit.UNKNOWN)],
+        missing_information=["quantity not stated"],
+    )
+    llm = FakeLLM(classify=[classified()], extract=[incomplete], draft=[DRAFT])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+    quotation = db.get(QuotationRequest, result.quotation_id)
+
+    assert quotation.status is QuotationStatus.NEEDS_INFORMATION
+    assert quotation.missing_information == ["quantity not stated"]
+
+    item = quotation.line_items[0]
+    assert item.quantity is None
+    assert item.quantity_mt is None
+    assert item.pricing.line_total is None
+    # A rate is still offered - that is what the reviewer needs to finish by hand.
+    assert item.pricing.recommended_price is not None
+
+
+def test_ambiguous_product_produces_no_price_and_no_draft(
+    db, plate, wide_plate, customer, inbound
+):
+    """Two plates fit '10mm plate'. The system must not choose one and price it."""
+    email = inbound()
+    ambiguous = enquiry(line_items=[line(width_mm=None, length_mm=None)])
+    llm = FakeLLM(classify=[classified()], extract=[ambiguous])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+    quotation = db.get(QuotationRequest, result.quotation_id)
+    item = quotation.line_items[0]
+
+    assert item.match_status is MatchStatus.MULTIPLE_MATCHES
+    assert item.matched_product_id is None
+    assert item.pricing.recommended_price is None
+    assert quotation.current_draft is None
+    assert "draft" not in llm.calls
+    assert len(item.match_candidates) >= 2
+    assert "More than one product" in quotation.review_notes
+
+
+def test_unstocked_material_is_never_priced(db, plate, customer, inbound):
+    email = inbound()
+    unknown = enquiry(
+        line_items=[
+            line(
+                product_type="Sheet",
+                grade="SS 304",
+                thickness_mm=3.0,
+                width_mm=None,
+                length_mm=None,
+            )
+        ]
+    )
+    llm = FakeLLM(classify=[classified()], extract=[unknown])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+    item = db.get(QuotationRequest, result.quotation_id).line_items[0]
+
+    assert item.match_status is MatchStatus.NO_MATCH
+    assert item.pricing.recommended_price is None
+    assert "draft" not in llm.calls
+
+
+def test_unknown_sender_is_added_as_an_unverified_customer(db, plate, comparable_sales, inbound):
+    """A new sender gets a record, but not the standing of a known account."""
+    from app.models import Customer
+
+    before = db.query(Customer).count()
+    email = inbound(sender="imran@newhorizonfab.co.in")
+    first_contact = enquiry(
+        customer_name="Imran Sheikh", customer_company="New Horizon Fabrication"
+    )
+    llm = FakeLLM(classify=[classified()], extract=[first_contact], draft=[DRAFT])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+    quotation = db.get(QuotationRequest, result.quotation_id)
+
+    assert db.query(Customer).count() == before + 1
+    created = db.get(Customer, quotation.customer_id)
+    assert created.email == "imran@newhorizonfab.co.in"
+    assert created.name == "Imran Sheikh"
+    assert created.company == "New Horizon Fabrication"
+    assert created.is_verified is False
+    # Nothing was invented: tier and terms stay at their defaults.
+    assert created.payment_terms is None
+    assert quotation.customer_name_raw == "Imran Sheikh"
+    # An unconfirmed record must not buy the confidence of an established one.
+    assert quotation.confidence is not ConfidenceLevel.HIGH
+
+
+def test_a_repeat_enquiry_reuses_the_auto_created_customer(db, plate, comparable_sales, inbound):
+    """The second email from a new sender must not create a duplicate."""
+    from app.models import Customer
+
+    before = db.query(Customer).count()
+    for _ in range(2):
+        email = inbound(sender="imran@newhorizonfab.co.in")
+        llm = FakeLLM(
+            classify=[classified()],
+            extract=[enquiry(customer_name="Imran Sheikh")],
+            draft=[DRAFT],
+        )
+        QuotationWorkflow(db, client=llm).run(email.id)
+
+    assert db.query(Customer).count() == before + 1
+
+
+def test_a_known_company_resolves_even_from_a_new_address(db, plate, customer, comparable_sales, inbound):
+    """A colleague writing from a different mailbox is still the same account."""
+    email = inbound(sender="purchase2@abcindustries.co.in")
+    llm = FakeLLM(classify=[classified()], extract=[enquiry()], draft=[DRAFT])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+
+    assert db.get(QuotationRequest, result.quotation_id).customer_id == customer.id
+
+
+# --- Multi-item enquiries --------------------------------------------------
+
+
+def test_multi_item_enquiry_prices_each_line(db, plate, wide_plate, customer, comparable_sales, inbound):
+    email = inbound()
+    multi = enquiry(
+        line_items=[
+            line(),
+            line(
+                raw_text="IS 2062 E250 Plate 10mm x 2000 x 6300 - 30 MT",
+                width_mm=2000.0,
+                length_mm=6300.0,
+                quantity=30.0,
+            ),
+        ]
+    )
+    llm = FakeLLM(classify=[classified()], extract=[multi], draft=[DRAFT])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+    quotation = db.get(QuotationRequest, result.quotation_id)
+
+    assert len(quotation.line_items) == 2
+    assert [i.line_no for i in quotation.line_items] == [1, 2]
+    assert quotation.line_items[0].matched_product_id == plate.id
+    assert quotation.line_items[1].matched_product_id == wide_plate.id
+    assert all(i.pricing.recommended_price is not None for i in quotation.line_items)
+
+
+def test_quotation_confidence_is_the_weakest_line(db, plate, customer, comparable_sales, inbound):
+    """One shaky line drags the whole quotation down; it is one document."""
+    email = inbound()
+    mixed = enquiry(
+        line_items=[
+            line(),
+            line(raw_text="SS 304 sheet 3mm - 5 MT", product_type="Sheet", grade="SS 304"),
+        ]
+    )
+    llm = FakeLLM(classify=[classified()], extract=[mixed], draft=[DRAFT])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+    quotation = db.get(QuotationRequest, result.quotation_id)
+
+    assert quotation.confidence is ConfidenceLevel.LOW
+
+
+# --- Unit conversion through the pipeline ----------------------------------
+
+
+def test_a_piece_quantity_is_converted_before_pricing(db, plate, customer, comparable_sales, inbound):
+    """40 plates at 706.5 kg each = 28.26 MT, which lands in a different slab."""
+    email = inbound()
+    in_pieces = enquiry(
+        line_items=[line(quantity=40.0, quantity_unit=QuantityUnit.PCS, raw_text="40 plates")]
+    )
+    llm = FakeLLM(classify=[classified()], extract=[in_pieces], draft=[DRAFT])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+    item = db.get(QuotationRequest, result.quotation_id).line_items[0]
+
+    assert float(item.quantity_mt) == pytest.approx(28.26, abs=0.01)
+    assert "706.500 kg/pc" in item.conversion_basis
+    assert item.pricing.recommended_price is not None
+
+
+# --- Batch processing ------------------------------------------------------
+
+
+def test_batch_processing_handles_a_mixed_inbox(db, plate, customer, comparable_sales, inbound):
+    inbound(subject="Enquiry one")
+    inbound(subject="Order confirmation")
+
+    llm = FakeLLM(
+        classify=[classified(), classified(EmailCategory.ORDER)],
+        extract=[enquiry()],
+        draft=[DRAFT],
+    )
+
+    results = process_pending_emails(db, client=llm)
+
+    assert len(results) == 2
+    assert {r.outcome for r in results} == {"READY_FOR_REVIEW", "SKIPPED"}
+    assert db.query(QuotationRequest).count() == 1
+
+
+def test_already_processed_emails_are_not_reprocessed(db, plate, customer, comparable_sales, inbound):
+    inbound(subject="Enquiry one")
+    llm = FakeLLM(classify=[classified()], extract=[enquiry()], draft=[DRAFT])
+
+    assert len(process_pending_emails(db, client=llm)) == 1
+    assert process_pending_emails(db, client=llm) == []
