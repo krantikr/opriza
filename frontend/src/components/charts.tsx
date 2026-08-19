@@ -242,6 +242,9 @@ export function ColumnChart({
 }) {
   const max = Math.max(1, ...points.flatMap((p) => [p.current, p.previous ?? 0]));
   const empty = points.every((p) => p.current === 0 && !p.previous);
+  // Past a handful of columns the labels stop fitting; showing every other one
+  // keeps the axis readable instead of printing truncated stubs.
+  const labelEvery = points.length > 8 ? Math.ceil(points.length / 6) : 1;
 
   if (empty) {
     return (
@@ -256,7 +259,7 @@ export function ColumnChart({
 
   return (
     <div className="flex items-end gap-1.5" style={{ height }}>
-      {points.map((p) => (
+      {points.map((p, i) => (
         <div key={p.label} className="group flex min-w-0 flex-1 flex-col items-center gap-1">
           <div className="flex h-full w-full items-end justify-center gap-0.5">
             {p.previous !== undefined && (
@@ -276,7 +279,9 @@ export function ColumnChart({
               style={{ height: `${Math.max((p.current / max) * 100, 1.5)}%` }}
             />
           </div>
-          <span className="w-full truncate text-center text-[10px] text-ink-faint">{p.label}</span>
+          <span className="w-full truncate text-center text-[10px] text-ink-faint">
+            {i % labelEvery === 0 ? p.label : ""}
+          </span>
         </div>
       ))}
     </div>

@@ -164,7 +164,7 @@ function Detail({ id, onChanged }: { id: number; onChanged: () => void }) {
           <div className="flex shrink-0 items-center gap-2">
             <Badge value={`TIER ${data.tier}`} dot={false} />
             {!data.is_verified && (
-              <Button size="sm" variant="primary" disabled={busy} onClick={verify}>
+              <Button variant="primary" disabled={busy} onClick={verify}>
                 Verify
               </Button>
             )}
@@ -231,7 +231,7 @@ export default function Customers() {
   const unverified = (data?.items ?? []).filter((c) => !c.is_verified).length;
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] flex-col">
+    <div className="flex h-[calc(100vh-7rem)] flex-col md:h-[calc(100vh-3.25rem)]">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-rule px-5 py-3">
         <div>
           <h1 className="text-lg font-semibold text-ink">Customers</h1>
@@ -251,7 +251,11 @@ export default function Customers() {
       {error && <div className="p-4"><ErrorNote message={error} /></div>}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[20rem_1fr]">
-        <Scroller className="min-h-0 overflow-y-auto border-r border-rule">
+        <Scroller
+          className={`min-h-0 overflow-y-auto border-r border-rule ${
+            selected ? "hidden lg:block" : "block"
+          }`}
+        >
           {loading && !data ? (
             <Loading />
           ) : data?.items.length ? (
@@ -284,7 +288,11 @@ export default function Customers() {
           )}
         </Scroller>
 
-        <div className="min-h-0 overflow-hidden bg-surface">
+        <div
+          className={`min-h-0 overflow-hidden bg-surface ${
+            selected ? "block" : "hidden lg:block"
+          }`}
+        >
           {selected ? (
             <Detail id={selected} onChanged={reload} />
           ) : (

@@ -13,6 +13,7 @@ from app.models import (
     Customer,
     Email,
     FollowUp,
+    FollowUpStatus,
     QuotationDraft,
     QuotationLineItem,
     QuotationRequest,
@@ -32,6 +33,7 @@ from app.schemas.quotations import (
     QuotationOut,
     StockAvailabilityOut,
 )
+from app.services.pipeline_state import follow_up_is_due, resolve_state
 
 
 def email_out(email: Email) -> EmailOut:
@@ -55,10 +57,33 @@ def email_out(email: Email) -> EmailOut:
         has_attachments=email.has_attachments,
         quotation_id=quotation.id if quotation else None,
         quotation_number=quotation.quotation_number if quotation else None,
+        quotation_status=quotation.status.value if quotation else None,
+        # A rule decided this, so the mailbox agrees with the follow-up queue
+        # rather than applying a second, subtly different definition.
+        state=resolve_state(email).value,
+        # Being in the Follow up tab and being overdue are different things:
+        # everything there is waiting, only some of it is owed a nudge today.
+        follow_up_due=bool(quotation and follow_up_is_due(quotation)),
+        follow_up_at=next(
+            (
+                s.due_at
+                for s in sorted(
+                    quotation.follow_up_schedules, key=lambda s: s.due_at
+                )
+                if s.status in (FollowUpStatus.SCHEDULED, FollowUpStatus.DUE)
+            ),
+            None,
+        )
+        if quotation
+        else None,
         replied_to_quotation_id=email.replied_to_quotation_id,
         reply_intent=email.reply_intent.value if email.reply_intent else None,
         reply_intent_confidence=email.reply_intent_confidence,
         reply_intent_reason=email.reply_intent_reason,
+        promised_date_raw=email.promised_date_raw,
+        promised_date=email.promised_date,
+        awaiting_us=email.awaiting_us,
+        answered_at=email.answered_at,
     )
 
 
@@ -86,6 +111,8 @@ def stock_availability_out(item: QuotationLineItem) -> StockAvailabilityOut | No
         return None
     return StockAvailabilityOut(
         available_qty_mt=availability.available_qty_mt,
+        on_hand_qty_mt=availability.on_hand_qty_mt,
+        reserved_qty_mt=availability.reserved_qty_mt,
         available_nop=availability.available_nop,
         sufficient=availability.sufficient,
         locations=availability.locations or [],

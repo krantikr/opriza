@@ -58,6 +58,24 @@ export function ago(value: string | null | undefined): string {
   return new Date(value).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
 }
 
+/** How long until a moment still ahead of us: "in 22h", "in 3d".
+ *
+ * `ago` counts backwards and would render a future date as "-22h ago", which
+ * reads as a bug. Anything already past says "now", because a trader who is
+ * overdue does not need the arithmetic - they need to act.
+ */
+export function until(value: string | null | undefined): string {
+  if (!value) return "—";
+  const mins = Math.round((new Date(value).getTime() - Date.now()) / 60000);
+  if (mins <= 0) return "now";
+  if (mins < 60) return `in ${mins}m`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `in ${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `in ${days}d`;
+  return new Date(value).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+}
+
 /* ---------------------------------------------------------------------------
    Status
    State is encoded in form as well as colour - a dot plus a word - so it stays
@@ -76,6 +94,11 @@ const STATUS_TONE: Record<string, Tone> = {
   MULTIPLE_MATCHES: "attention",
   MEDIUM: "attention",
   DUE: "attention",
+  ENQUIRY: "info",
+  FOLLOW_UP: "attention",
+  NEEDS_REPLY: "danger",
+  DELIVERY: "info",
+  COMPLAINT: "danger",
   EDITED: "info",
   SCHEDULED: "info",
   APPROVED: "settled",
@@ -236,11 +259,20 @@ export function Sparkline({ points, width = 56, height = 20 }: { points: number[
    Controls
    --------------------------------------------------------------------------- */
 
+/**
+ * One control height throughout.
+ *
+ * Buttons match `Input` and `Select` (`py-2 text-sm`), so a button beside a
+ * field sits on the same baseline and a toolbar reads as one row rather than
+ * as a set of differently-sized objects. `compact` exists only for controls
+ * living *inside* a dense row - a table cell, a card header - where a
+ * full-height button would set the row's height and loosen the whole table.
+ */
 export function Button({
   children,
   onClick,
   variant = "secondary",
-  size = "md",
+  compact = false,
   disabled,
   type = "button",
   title,
@@ -249,7 +281,7 @@ export function Button({
   children: ReactNode;
   onClick?: () => void;
   variant?: "primary" | "secondary" | "danger" | "ghost";
-  size?: "sm" | "md";
+  compact?: boolean;
   disabled?: boolean;
   type?: "button" | "submit";
   title?: string;
@@ -261,14 +293,16 @@ export function Button({
     danger: "bg-surface text-danger-ink ring-1 ring-inset ring-danger/40 hover:bg-danger-wash",
     ghost: "text-ink-soft hover:bg-sunk hover:text-ink",
   };
-  const sizes = { sm: "px-2.5 py-1.5 text-xs gap-1", md: "px-3.5 py-2 text-sm gap-1.5" };
+  // Both keep the same type size; only the padding tightens, so a compact
+  // button never looks like a different component.
+  const sizing = compact ? "px-2.5 py-1 text-sm gap-1.5" : "px-3.5 py-2 text-sm gap-1.5";
   return (
     <button
       type={type}
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`inline-flex items-center justify-center rounded-lg font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`inline-flex items-center justify-center rounded-lg font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${sizing} ${className}`}
     >
       {children}
     </button>
@@ -440,9 +474,9 @@ export function Banner({
   };
   return (
     <div
-      className={`flex items-center justify-between gap-3 rounded border px-3 py-2 text-sm ${tones[tone]}`}
+      className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm ${tones[tone]}`}
     >
-      <div className="min-w-0">{children}</div>
+      <div className="min-w-0 flex-1">{children}</div>
       {action && <div className="shrink-0">{action}</div>}
     </div>
   );

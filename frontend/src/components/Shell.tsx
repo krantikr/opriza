@@ -4,12 +4,15 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { api, useApi } from "../api/client";
 import type { Page, SystemStatus } from "../api/types";
 import {
-  announce,
-  isEnabled as desktopEnabled,
+  hasAsked,
+  isWanted,
+  needsHomeScreenInstall,
   permissionState,
   primeSeen,
   requestPermission,
-  setEnabled,
+  setWanted,
+  systemNotify,
+  takeUnseen,
 } from "../lib/notifications";
 import { useToast } from "./Toasts";
 import { ago, Badge, Button } from "./ui";
@@ -191,7 +194,7 @@ function NotificationBell() {
   const toast = useToast();
 
   const [permission, setPermission] = useState(permissionState());
-  const [desktopOn, setDesktopOn] = useState(desktopEnabled());
+  const [wanted, setWantedState] = useState(isWanted());
   const primed = useRef(false);
 
   const { data: count, reload: reloadCount } = useApi<{ unread: number }>(
@@ -228,8 +231,10 @@ function NotificationBell() {
       return;
     }
 
-    const fired = announce(announceable, (link) => navigate(link));
-    for (const item of fired.slice(0, 2)) {
+    // In-app toasts fire regardless of browser permission - they are the
+    // floor that works everywhere, including iOS Safari.
+    const fresh = takeUnseen(announceable);
+    for (const item of fresh.slice(0, 2)) {
       toast.push({
         title: item.title,
         body: item.body ?? undefined,
@@ -237,6 +242,7 @@ function NotificationBell() {
         link: item.link ?? undefined,
       });
     }
+    systemNotify(fresh, (link) => navigate(link));
   }, [recent, navigate, toast]);
 
   useEffect(() => {
@@ -248,35 +254,57 @@ function NotificationBell() {
     return () => document.removeEventListener("mousedown", close);
   }, [open]);
 
+  // Alerts are on by default, so the browser prompt is raised at the first
+  // real interaction - the earliest moment a gesture exists to attach it to.
+  useEffect(() => {
+    if (hasAsked() || !isWanted() || permissionState() !== "default") return;
+
+    const ask = async () => {
+      setPermission(await requestPermission());
+    };
+    window.addEventListener("pointerdown", ask, { once: true });
+    window.addEventListener("keydown", ask, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", ask);
+      window.removeEventListener("keydown", ask);
+    };
+  }, []);
+
   const unread = count?.unread ?? 0;
 
-  async function toggleDesktop() {
-    if (desktopOn) {
-      setEnabled(false);
-      setDesktopOn(false);
+  async function toggleAlerts() {
+    if (wanted) {
+      setWanted(false);
+      setWantedState(false);
       return;
     }
+    setWanted(true);
+    setWantedState(true);
 
-    // Must happen inside this click: browsers ignore a permission request
-    // made outside a user gesture.
+    // Must run inside this click: browsers ignore a permission request made
+    // outside a user gesture.
     const result = await requestPermission();
     setPermission(result);
 
-    if (result === "granted") {
-      setEnabled(true);
-      setDesktopOn(true);
-      toast.push({
-        title: "Desktop alerts on",
-        body: "New enquiries will reach you even when this tab is in the background.",
-        tone: "settled",
-      });
-    } else if (result === "denied") {
-      toast.push({
-        title: "Desktop alerts blocked",
-        body: "Your browser is blocking notifications for this site. Allow them in site settings to turn this on.",
-        tone: "attention",
-      });
-    }
+    toast.push(
+      result === "granted"
+        ? {
+            title: "Alerts on",
+            body: "New enquiries will reach you even with this tab in the background.",
+            tone: "settled",
+          }
+        : result === "denied"
+          ? {
+              title: "System alerts blocked",
+              body: "Your browser is blocking them. In-app alerts still work.",
+              tone: "attention",
+            }
+          : {
+              title: "In-app alerts on",
+              body: "This browser cannot show system notifications.",
+              tone: "info",
+            },
+    );
   }
 
   async function openItem(row: NotificationRow) {
@@ -309,7 +337,6 @@ function NotificationBell() {
             <span className="text-sm font-semibold text-ink">Notifications</span>
             {unread > 0 && (
               <Button
-                size="sm"
                 variant="ghost"
                 onClick={async () => {
                   await api.post("/notifications/read-all");
@@ -322,36 +349,38 @@ function NotificationBell() {
             )}
           </header>
 
-          {/* Desktop alerts: the switch lives where the notifications are. */}
+          {/* Alerts: the switch lives where the notifications are. */}
           <div className="flex items-start justify-between gap-3 border-b border-rule bg-sunk px-3 py-2.5">
             <div className="min-w-0">
-              <p className="text-xs font-medium text-ink">Desktop alerts</p>
+              <p className="text-xs font-medium text-ink">Alerts</p>
               <p className="mt-0.5 text-[11px] leading-snug text-ink-faint">
-                {permission === "unsupported"
-                  ? "This browser does not support them."
-                  : permission === "denied"
-                    ? "Blocked by the browser — allow them in site settings."
-                    : desktopOn
-                      ? "On. You will be told even with this tab in the background."
-                      : "Off. You will only see the bell."}
+                {!wanted
+                  ? "Off. Only the bell will show new work."
+                  : needsHomeScreenInstall()
+                    ? "In-app alerts on. Add this to your home screen for alerts on your lock screen."
+                    : permission === "granted"
+                      ? "On. You will be told even with this app in the background."
+                      : permission === "denied"
+                        ? "In-app only — your browser is blocking system alerts."
+                        : "In-app alerts on. Tap to also allow system alerts."}
               </p>
             </div>
             <button
               type="button"
               role="switch"
-              aria-checked={desktopOn}
-              disabled={permission === "unsupported" || permission === "denied"}
-              onClick={toggleDesktop}
-              className="mt-0.5 shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
+              aria-checked={wanted}
+              aria-label="Alerts"
+              onClick={toggleAlerts}
+              className="mt-0.5 shrink-0"
             >
               <span
                 className={`relative block h-5 w-9 rounded-full transition-colors ${
-                  desktopOn ? "bg-brand" : "bg-rule-firm"
+                  wanted ? "bg-brand" : "bg-rule-firm"
                 }`}
               >
                 <span
                   className={`absolute top-0.5 size-4 rounded-full bg-white transition-transform ${
-                    desktopOn ? "translate-x-4.5" : "translate-x-0.5"
+                    wanted ? "translate-x-4.5" : "translate-x-0.5"
                   }`}
                 />
               </span>
@@ -401,15 +430,22 @@ function StatusDot({ ok, label }: { ok: boolean; label: string }) {
   );
 }
 
+/** The five destinations a phone gets in its bottom bar. */
+const MOBILE_NAV = NAV.filter((n) =>
+  ["/", "/inbox", "/quotations", "/stock", "/customers"].includes(n.to),
+);
+
 export default function Shell({ children }: { children: React.ReactNode }) {
   const { data: status } = useApi<SystemStatus>("/system/status", 60_000);
   const { data: queue } = useApi<{ id: number }[]>("/follow-ups/queue", 60_000);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const dueCount = queue?.length ?? 0;
 
   return (
-    <div className="flex min-h-full">
-      <aside className="sticky top-0 flex h-screen w-20 shrink-0 flex-col items-center bg-rail py-3">
+    <div className="flex min-h-full w-full overflow-x-hidden">
+      {/* --- Rail: desktop only ------------------------------------------- */}
+      <aside className="sticky top-0 hidden h-screen w-20 shrink-0 flex-col items-center bg-rail py-3 md:flex">
         <span className="mb-4 grid size-10 shrink-0 place-items-center rounded-xl bg-brand text-base font-bold text-white shadow-raised">
           S
         </span>
@@ -422,7 +458,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
               end={item.end}
               title={item.label}
               className={({ isActive }) =>
-                `group relative flex w-14 flex-col items-center gap-1 rounded-xl px-1 py-2 transition-colors ${
+                `group relative flex w-16 flex-col items-center gap-1 rounded-xl px-1 py-2 transition-colors ${
                   isActive
                     ? "bg-brand-soft/15 text-brand-soft"
                     : "text-rail-ink hover:bg-rail-hover hover:text-rail-ink-strong"
@@ -455,20 +491,81 @@ export default function Shell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-rule bg-surface px-5 py-2.5">
-          <div className="flex items-baseline gap-2">
-            <span className="text-sm font-semibold text-ink">Steel Desk</span>
-            <span className="text-[11px] text-ink-faint">
-              pricing rules v{status?.rules_version ?? "—"}
+        <header className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-rule bg-surface px-4 py-2.5 md:px-5">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-brand text-xs font-bold text-white md:hidden">
+              S
             </span>
+            <div className="flex min-w-0 items-baseline gap-2">
+              <span className="truncate text-sm font-semibold text-ink">Steel Desk</span>
+              <span className="hidden text-[11px] text-ink-faint sm:inline">
+                pricing rules v{status?.rules_version ?? "—"}
+              </span>
+            </div>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1">
             <NotificationBell />
             <ThemeToggle />
+            {/* Everything not in the bottom bar lives behind this. */}
+            <button
+              type="button"
+              onClick={() => setMenuOpen((v) => !v)}
+              aria-label="More"
+              className="rounded-lg p-1.5 text-ink-faint hover:bg-sunk hover:text-ink md:hidden"
+            >
+              <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M4 7h16M4 12h16M4 17h16" strokeLinecap="round" />
+              </svg>
+            </button>
           </div>
         </header>
-        <main className="min-w-0 flex-1 overflow-x-hidden">{children}</main>
+
+        {menuOpen && (
+          <nav className="grid grid-cols-3 gap-1 border-b border-rule bg-surface p-3 md:hidden">
+            {NAV.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                onClick={() => setMenuOpen(false)}
+                className={({ isActive }) =>
+                  `flex items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] font-medium ${
+                    isActive ? "bg-brand-wash text-brand-soft-ink" : "text-ink-soft hover:bg-sunk"
+                  }`
+                }
+              >
+                <item.icon className="size-4 shrink-0" />
+                <span className="truncate">{item.label}</span>
+              </NavLink>
+            ))}
+          </nav>
+        )}
+
+        {/* Padded for the bottom bar so the last row is never covered. */}
+        <main className="min-w-0 flex-1 overflow-x-hidden pb-16 md:pb-0">{children}</main>
       </div>
+
+      {/* --- Bottom bar: phones only --------------------------------------- */}
+      <nav className="fixed inset-x-0 bottom-0 z-20 flex border-t border-rule bg-surface md:hidden">
+        {MOBILE_NAV.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.end}
+            className={({ isActive }) =>
+              `relative flex flex-1 flex-col items-center gap-0.5 py-2 text-[10px] font-medium transition-colors ${
+                isActive ? "text-brand-soft-ink" : "text-ink-faint"
+              }`
+            }
+          >
+            <item.icon className="size-5" />
+            <span className="truncate">{item.label}</span>
+            {item.to === "/quotations" && dueCount > 0 && (
+              <span className="absolute right-1/4 top-1 size-1.5 rounded-full bg-attention" />
+            )}
+          </NavLink>
+        ))}
+      </nav>
     </div>
   );
 }

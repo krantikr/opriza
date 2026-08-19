@@ -60,6 +60,11 @@ class QuotationRequest(Base, TimestampMixin):
 
     # --- Send outcome -----------------------------------------------------
     sent_at: Mapped[datetime | None] = mapped_column()
+    #: The most recent date the customer named for coming back to us.
+    promised_date: Mapped[date | None] = mapped_column()
+    #: Set when the goods go out. Until then an accepted quotation sits in the
+    #: Delivery queue, because the customer is still owed something.
+    despatched_at: Mapped[datetime | None] = mapped_column()
     sent_message_id: Mapped[str | None] = mapped_column(String(255))
     send_error: Mapped[str | None] = mapped_column(Text)
 
@@ -179,6 +184,10 @@ class StockAvailability(Base, CreatedAtMixin):
 
     available_qty_mt: Mapped[Decimal | None] = mapped_column(Quantity)
     available_nop: Mapped[float | None] = mapped_column()
+    # What is physically present, and what is held back - free-to-sell is the
+    # difference, and a reviewer needs all three to judge a promise.
+    on_hand_qty_mt: Mapped[Decimal | None] = mapped_column(Quantity)
+    reserved_qty_mt: Mapped[Decimal | None] = mapped_column(Quantity)
     # None when the requested quantity is unknown - there is nothing to judge
     # sufficiency against, so this is left unanswered rather than guessed.
     sufficient: Mapped[bool | None] = mapped_column()

@@ -280,10 +280,11 @@ can be traced back to the file it came from.
 ## Testing
 
 ```bash
-uv run pytest                      # 238 tests
+uv run pytest                      # 248 backend tests
 uv run pytest backend/tests/test_matcher.py -v
 uv run ruff check .
 cd frontend && npm run typecheck
+cd frontend && npm test            # 56 frontend tests
 ```
 
 The suite covers what actually carries risk:
@@ -303,8 +304,22 @@ The suite covers what actually carries risk:
 - **`test_pricing_rules.py`** — the build-up against hand-worked figures, the
   floor, outlier rejection, override round-trips, and every refusal path.
 - **`test_ops.py`** — that a follow-up becomes *due* but is never sent on its
-  own, that a reply stops the chasing, and that stock movements survive the
-  wholesale re-import that replaces every lot.
+  own, that a reply stops the chasing, that a soft block withholds tonnage from
+  quoting without moving it, and that stock movements survive the wholesale
+  re-import that replaces every lot.
+
+The frontend suite (`npm test`, Vitest) covers what is equally easy to get
+silently wrong in a browser:
+
+- **`format.test.ts`** — Indian digit grouping (12,20,000 not 1,220,000), and a
+  missing price rendering as a dash rather than as zero.
+- **`notifications.test.ts`** — that nothing is announced twice, and that a
+  backlog is recorded rather than fired as a burst on load.
+- **`PricingCalculator.test.tsx`** — that an override posts the component's own
+  code, that the total-cost row offers no pencil, and that a server refusal is
+  shown rather than swallowed.
+- **`ui.test.tsx`** — that a button is one height everywhere, matching the
+  inputs beside it.
 
 ---
 

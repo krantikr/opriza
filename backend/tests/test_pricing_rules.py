@@ -612,3 +612,86 @@ def test_changing_a_figure_marks_the_draft_stale(db, quoted_quotation, rule_set)
 
     changed = service.set_override(item, component_code="handling", amount=Decimal("5000"))
     assert changed.record.draft_stale is True
+
+
+def test_a_part_load_does_not_pay_for_a_whole_lorry(db):
+    """A 0.5 MT order must not carry an entire trailer's hire.
+
+    Regression: spreading the full hire over the ordered tonnage priced a small
+    enquiry at several lakh per MT - arithmetically true, commercially absurd.
+    """
+    db.add(
+        VehicleRate(
+            name="Trailer",
+            capacity_mt=Decimal("25"),
+            rate_per_day=Decimal("50000"),
+            avg_km_per_day=350,
+            min_days=1,
+        )
+    )
+    db.add(LocationDistance(origin="Nagpur", destination="Patna", distance_km=1050, typical_days=3))
+    rs = PricingRuleSet(version=40, is_active=False)
+    rs.rules = [
+        rule("base_price", PricingComponentKind.BASE_PRICE, 10),
+        rule("transportation", PricingComponentKind.TRANSPORTATION, 20,
+             {"round_trip": False, "min_load_pct": 40}),
+    ]
+    db.add(rs)
+    db.commit()
+
+    def freight_for(qty: str) -> Decimal:
+        outcome = PricingEngine(db, rs).price(
+            PricingContext(
+                db=db,
+                stock_cost_per_mt=Decimal("52000"),
+                quantity_mt=Decimal(qty),
+                delivery_location="Patna",
+                origin_location="Nagpur",
+            )
+        )
+        return next(c for c in outcome.components if c.code == "transportation").amount
+
+    # 50,000/day x 3 days = 150,000, spread over the 10 MT minimum, not 0.5 MT.
+    assert freight_for("0.5") == Decimal("15000.00")
+    # A full load pays over what it actually occupies.
+    assert freight_for("25") == Decimal("6000.00")
+    # And the small order is told why.
+    outcome = PricingEngine(db, rs).price(
+        PricingContext(
+            db=db,
+            stock_cost_per_mt=Decimal("52000"),
+            quantity_mt=Decimal("0.5"),
+            delivery_location="Patna",
+            origin_location="Nagpur",
+        )
+    )
+    assert "Part load" in outcome.components[1].note
+
+
+def test_stated_payment_terms_beat_the_configured_default(db):
+    """Recording "45 days" must change the financing, not be ignored."""
+    rs = PricingRuleSet(version=41, is_active=False)
+    rs.rules = [
+        rule("base_price", PricingComponentKind.BASE_PRICE, 10),
+        rule("financing", PricingComponentKind.FINANCING, 20,
+             {"annual_rate_pct": 12.0, "days": 60}),
+    ]
+    db.add(rs)
+    db.commit()
+
+    def financing_for(payment_days):
+        outcome = PricingEngine(db, rs).price(
+            PricingContext(
+                db=db, stock_cost_per_mt=Decimal("100000"), payment_days=payment_days
+            )
+        )
+        return next(c for c in outcome.components if c.code == "financing")
+
+    default = financing_for(None)
+    stated = financing_for(30)
+
+    # 100,000 x 12% x 60/365 vs x 30/365 - the stated term halves it.
+    assert default.amount == Decimal("1972.60")
+    assert stated.amount == Decimal("986.30")
+    assert "as agreed with this customer" in stated.note
+    assert "as agreed" not in default.note

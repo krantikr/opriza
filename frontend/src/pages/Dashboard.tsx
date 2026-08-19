@@ -140,7 +140,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="flex flex-col gap-5 p-5">
+    <div className="flex flex-col gap-4 p-4 sm:gap-5 sm:p-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-ink">Dashboard</h1>
@@ -176,7 +176,7 @@ export default function Dashboard() {
       )}
 
       {/* --- Headline movement ------------------------------------------- */}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
         {(["quotations", "value", "win_rate", "response_hours"] as const).map((key) => {
           const d = deltaFor(key);
           if (!d) return null;

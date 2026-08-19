@@ -6,9 +6,9 @@ The uniqueness constraint on `message_id` is the duplicate-quotation guard
 overlapping in time would both pass such a check.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -57,6 +57,14 @@ class Email(Base, TimestampMixin):
     reply_intent: Mapped[ReplyIntent | None] = mapped_column(enum_col(ReplyIntent))
     reply_intent_confidence: Mapped[float | None] = mapped_column()
     reply_intent_reason: Mapped[str | None] = mapped_column(Text)
+    #: A date the customer named for coming back, in their own words. Used to
+    #: follow up on the day they chose rather than on an arbitrary interval.
+    promised_date_raw: Mapped[str | None] = mapped_column(String(120))
+    promised_date: Mapped[date | None] = mapped_column()
+    #: True when the reply asks something that needs an answer from us.
+    awaiting_us: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Cleared once someone has replied or explicitly dismissed it.
+    answered_at: Mapped[datetime | None] = mapped_column()
 
     # --- Pipeline state ---------------------------------------------------
     processing_status: Mapped[ProcessingStatus] = mapped_column(

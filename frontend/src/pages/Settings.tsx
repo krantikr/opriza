@@ -89,7 +89,7 @@ function RuleRow({ rule, onChanged }: { rule: NotificationRule; onChanged: () =>
       />
       <div className="ml-auto flex items-center gap-1.5">
         <Button
-          size="sm"
+          compact
           variant="primary"
           disabled={!dirty || busy}
           onClick={async () => {
@@ -105,7 +105,7 @@ function RuleRow({ rule, onChanged }: { rule: NotificationRule; onChanged: () =>
           Save
         </Button>
         <Button
-          size="sm"
+          compact
           variant="ghost"
           onClick={async () => {
             await api.del(`/notification-rules/${rule.id}`);
@@ -182,7 +182,7 @@ export default function Settings() {
         padded={false}
         action={
           <Button
-            size="sm"
+            compact
             onClick={async () => {
               await api.post("/notification-rules", {
                 label: "New rule",

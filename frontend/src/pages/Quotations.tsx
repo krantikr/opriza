@@ -78,6 +78,9 @@ export default function Quotations() {
   const selectedId = id ? Number(id) : null;
   useEffect(() => {
     if (!rows.length) return;
+    // Only auto-open where both panes are visible. On a phone the detail
+    // replaces the list, so opening one uninvited hides everything else.
+    if (!window.matchMedia("(min-width: 1280px)").matches) return;
     if (selectedId === null || !filtered.some((q) => q.id === selectedId)) {
       navigate(`/quotations/${rows[0].id}`, { replace: true });
     }
@@ -93,22 +96,26 @@ export default function Quotations() {
   };
 
   return (
-    <div className="grid h-[calc(100vh-3.25rem)] grid-cols-1 xl:grid-cols-[minmax(0,32rem)_1fr]">
+    <div className="grid h-[calc(100vh-7rem)] grid-cols-1 md:h-[calc(100vh-3.25rem)] xl:grid-cols-[minmax(0,32rem)_1fr]">
       {/* --- List ---------------------------------------------------------- */}
-      <section className="flex min-h-0 flex-col border-r border-rule">
-        <header className="px-5 pb-3 pt-4">
+      <section
+        className={`flex min-h-0 flex-col border-r border-rule ${
+          selectedId ? "hidden xl:flex" : "flex"
+        }`}
+      >
+        <header className="px-4 pb-3 pt-4 sm:px-5">
           <h1 className="text-lg font-semibold text-ink">Quotations</h1>
           <p className="text-sm text-ink-faint">All generated replies and pricing</p>
         </header>
 
-        <div className="grid grid-cols-2 gap-2.5 px-5 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-4 sm:gap-2.5 sm:px-5">
           <StatCard label="Total" value={stats.total} />
           <StatCard label="Draft" value={stats.draft} tone="attention" />
           <StatCard label="Sent" value={stats.sent} tone="settled" />
           <StatCard label="Replied" value={stats.replied} tone="info" />
         </div>
 
-        <div className="flex items-center gap-2 px-5 py-3">
+        <div className="flex items-center gap-2 px-4 py-3 sm:px-5">
           <SearchInput
             value={search}
             onChange={setSearch}
@@ -118,7 +125,7 @@ export default function Quotations() {
           <FilterButton />
         </div>
 
-        <div className="px-5">
+        <div className="overflow-x-auto px-4 sm:px-5">
           <Tabs
             tabs={TABS.map((t) => ({ key: t.key, label: t.label, count: countFor(t.key) }))}
             value={tab}
@@ -142,7 +149,7 @@ export default function Quotations() {
                     <button
                       type="button"
                       onClick={() => navigate(`/quotations/${q.id}`)}
-                      className={`flex w-full items-start justify-between gap-3 border-b border-l-2 border-rule px-5 py-3 text-left transition-colors ${
+                      className={`flex w-full items-start justify-between gap-2 border-b border-l-2 border-rule px-4 py-3 text-left transition-colors sm:gap-3 sm:px-5 ${
                         open
                           ? "border-l-brand-soft bg-brand-wash"
                           : "border-l-transparent hover:bg-sunk"
@@ -175,7 +182,7 @@ export default function Quotations() {
                       </div>
 
                       <div className="flex shrink-0 flex-col items-end gap-1.5">
-                        <span className="tabular font-semibold text-ink">
+                        <span className="tabular whitespace-nowrap text-sm font-semibold text-ink">
                           {q.total_suggested_value && Number(q.total_suggested_value) > 0
                             ? inr(q.total_suggested_value)
                             : "—"}
@@ -201,9 +208,17 @@ export default function Quotations() {
       </section>
 
       {/* --- Detail --------------------------------------------------------- */}
-      <section className="min-h-0 overflow-y-auto bg-ground">
+      <section
+        className={`min-h-0 overflow-y-auto overflow-x-hidden bg-ground ${
+          selectedId ? "block" : "hidden xl:block"
+        }`}
+      >
         {selectedId ? (
-          <QuotationDetailPanel id={selectedId} onChanged={reload} />
+          <QuotationDetailPanel
+            id={selectedId}
+            onChanged={reload}
+            onBack={() => navigate("/quotations")}
+          />
         ) : (
           <Empty message="Select a quotation to open it." />
         )}

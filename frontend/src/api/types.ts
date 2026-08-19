@@ -60,6 +60,21 @@ export interface Email {
   has_attachments: boolean;
   quotation_id: number | null;
   quotation_number: string | null;
+  quotation_status: string | null;
+  follow_up_due: boolean;
+  follow_up_at: string | null;
+  /** The single pending stage this message is at, or DONE. */
+  state:
+    | "ENQUIRY"
+    | "FOLLOW_UP"
+    | "NEEDS_REPLY"
+    | "DELIVERY"
+    | "COMPLAINT"
+    | "DONE";
+  promised_date_raw: string | null;
+  promised_date: string | null;
+  awaiting_us: boolean;
+  answered_at: string | null;
   replied_to_quotation_id: number | null;
   reply_intent: ReplyIntent | null;
   reply_intent_confidence: number | null;
@@ -97,6 +112,8 @@ export interface StockAvailability {
   explanation: string | null;
   breakdown: AvailabilityStep[];
   stock_as_of: string | null;
+  on_hand_qty_mt: string | null;
+  reserved_qty_mt: string | null;
 }
 
 export interface MatchCandidate {
@@ -553,4 +570,92 @@ export interface CustomerNote {
   body: string;
   pinned: boolean;
   created_at: string;
+}
+
+export interface StockHold {
+  id: number;
+  kind: string;
+  quantity_kg: string;
+  product_type: string | null;
+  grade: string | null;
+  thickness_mm: number | null;
+  location: string | null;
+  reference: string | null;
+  note: string | null;
+  movement_date: string | null;
+  is_open: boolean;
+  created_at: string;
+}
+
+/* ---------------------------------------------------------------------------
+   Business insights
+   --------------------------------------------------------------------------- */
+
+export interface InsightMetric {
+  key: string;
+  label: string;
+  current: number;
+  previous: number;
+  change_pct: number | null;
+  direction: "up" | "down" | "flat";
+  good: boolean | null;
+  unit: string;
+  hint: string;
+}
+
+export interface InsightHighlight {
+  tone: "good" | "warn" | "bad" | "info";
+  title: string;
+  detail: string;
+  link: string | null;
+}
+
+export interface InsightSeriesPoint {
+  label: string;
+  start: string;
+  end: string;
+  quotations: number;
+  sent: number;
+  won: number;
+  value: number;
+}
+
+export interface InsightCustomer {
+  name: string;
+  quotations: number;
+  value: number;
+  won: number;
+  lost: number;
+  win_rate: number | null;
+}
+
+export interface InsightProduct {
+  name: string;
+  lines: number;
+  quantity_mt: number;
+  value: number;
+  won: number;
+}
+
+export interface AttentionRow {
+  id: number;
+  number: string;
+  customer: string;
+  status: string;
+  value: number;
+  age_days: number;
+  link: string;
+}
+
+export interface Insights {
+  period_label: string;
+  previous_label: string;
+  metrics: InsightMetric[];
+  highlights: InsightHighlight[];
+  series: InsightSeriesPoint[];
+  by_status: { label: string; value: number }[];
+  top_customers: InsightCustomer[];
+  top_products: InsightProduct[];
+  ageing_buckets: { label: string; lots: number; value: number }[];
+  attention: AttentionRow[];
 }

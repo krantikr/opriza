@@ -63,64 +63,95 @@ const CONFIG_FIELD: Record<string, { key: string; label: string; suffix: string 
   INVOICE_ANCHOR: null,
 };
 
+/** What each kind contributes, so a rule reads as a role not just a name. */
+const KIND_ROLE: Record<string, { group: "base" | "cost" | "margin"; blurb: string }> = {
+  BASE_PRICE: { group: "base", blurb: "Where the price starts" },
+  TRANSPORTATION: { group: "cost", blurb: "Freight from the distance and vehicle tables" },
+  HANDLING: { group: "cost", blurb: "Loading, unloading and yard handling" },
+  FINANCING: { group: "cost", blurb: "Cost of credit over the payment period" },
+  RISK_BUFFER: { group: "cost", blurb: "Market and delivery allowance" },
+  QUANTITY_SLAB: { group: "cost", blurb: "Volume adjustment by tonnage band" },
+  CUSTOMER_TIER: { group: "cost", blurb: "A/B/C commercial adjustment" },
+  INVOICE_ANCHOR: { group: "cost", blurb: "Blends recent comparable sales" },
+  ADJUSTMENT: { group: "cost", blurb: "Any other named adjustment" },
+  TARGET_MARGIN: { group: "margin", blurb: "Applied once, to total cost" },
+  MARGIN_FLOOR: { group: "margin", blurb: "Clamps up to a minimum, and flags it" },
+  ROUNDING: { group: "margin", blurb: "Rounds to a quotable figure" },
+};
+
+const GROUP_ACCENT = {
+  base: "border-l-brand",
+  cost: "border-l-rule-firm",
+  margin: "border-l-settled",
+};
+
 function RuleRow({
   rule,
+  index,
   onChange,
   onRemove,
   onMove,
 }: {
   rule: PricingRule;
+  index: number;
   onChange: (next: PricingRule) => void;
   onRemove: () => void;
   onMove: (direction: -1 | 1) => void;
 }) {
   const field = CONFIG_FIELD[rule.kind];
+  const role = KIND_ROLE[rule.kind] ?? { group: "cost" as const, blurb: "" };
 
   return (
     <div
-      className={`flex flex-col gap-2 border-b border-rule px-3 py-2.5 last:border-0 ${
-        rule.is_active ? "" : "opacity-55"
-      }`}
+      className={`border-b border-l-2 border-rule px-3 py-3 last:border-b-0 ${
+        GROUP_ACCENT[role.group]
+      } ${rule.is_active ? "" : "bg-sunk/40 opacity-60"}`}
     >
-      <div className="flex items-center gap-2">
-        <div className="flex flex-col">
+      <div className="flex flex-wrap items-center gap-2">
+        {/* Order handle: the build-up is read top to bottom, so position is
+            information, not decoration. */}
+        <div className="flex shrink-0 flex-col text-ink-faint">
           <button
             type="button"
             onClick={() => onMove(-1)}
-            className="text-ink-faint hover:text-ink"
             title="Move up"
+            className="rounded px-1 hover:bg-sunk hover:text-ink"
           >
-            <svg viewBox="0 0 24 24" className="size-3" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg viewBox="0 0 24 24" className="size-3" fill="none" stroke="currentColor" strokeWidth="2.5">
               <path d="M6 15l6-6 6 6" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
           <button
             type="button"
             onClick={() => onMove(1)}
-            className="text-ink-faint hover:text-ink"
             title="Move down"
+            className="rounded px-1 hover:bg-sunk hover:text-ink"
           >
-            <svg viewBox="0 0 24 24" className="size-3" fill="none" stroke="currentColor" strokeWidth="2">
+            <svg viewBox="0 0 24 24" className="size-3" fill="none" stroke="currentColor" strokeWidth="2.5">
               <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
         </div>
 
-        <Input
-          value={rule.label}
-          onChange={(label) => onChange({ ...rule, label })}
-          className="flex-1"
-        />
+        <span className="tabular w-5 shrink-0 text-xs font-medium text-ink-faint">{index}.</span>
+
+        <div className="min-w-[9rem] flex-1">
+          <Input
+            value={rule.label}
+            onChange={(label) => onChange({ ...rule, label })}
+            className="font-medium"
+          />
+        </div>
 
         <Select
           value={rule.kind}
           onChange={(kind) => onChange({ ...rule, kind: kind as PricingRule["kind"] })}
           options={KIND_OPTIONS}
-          className="w-44"
+          className="w-40 shrink-0"
         />
 
-        {field && (
-          <div className="flex items-center gap-1">
+        {field ? (
+          <div className="flex w-32 shrink-0 items-center gap-1.5">
             <Input
               type="number"
               step="0.01"
@@ -128,37 +159,52 @@ function RuleRow({
               onChange={(v) =>
                 onChange({ ...rule, config: { ...rule.config, [field.key]: Number(v) } })
               }
-              className="w-24 text-right"
+              className="text-right"
             />
-            <span className="w-12 text-xs text-ink-faint">{field.suffix}</span>
+            <span className="shrink-0 text-xs text-ink-faint">{field.suffix}</span>
           </div>
+        ) : (
+          <span className="w-32 shrink-0 text-center text-[11px] text-ink-faint">
+            auto
+          </span>
         )}
-        {!field && <span className="w-[9.25rem] text-xs text-ink-faint">configured below</span>}
 
-        <Toggle
-          checked={rule.is_active}
-          onChange={(is_active) => onChange({ ...rule, is_active })}
-        />
-
-        <button
-          type="button"
-          onClick={onRemove}
-          title="Remove this rule"
-          className="rounded p-1 text-ink-faint hover:bg-danger-wash hover:text-danger"
-        >
-          <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <Toggle
+            checked={rule.is_active}
+            onChange={(is_active) => onChange({ ...rule, is_active })}
+          />
+          <button
+            type="button"
+            onClick={onRemove}
+            title="Remove this rule"
+            className="rounded-lg p-1.5 text-ink-faint transition-colors hover:bg-danger-wash hover:text-danger"
+          >
+            <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        </div>
       </div>
 
-      {rule.kind === "TRANSPORTATION" && (
-        <p className="pl-8 text-xs text-ink-faint">
-          Uses the distance and vehicle tables below. Set{" "}
-          <code className="rounded bg-sunk px-1">amount_per_mt</code> in advanced config for a flat
-          rate instead.
-        </p>
-      )}
+      <p className="mt-1.5 pl-[3.4rem] text-[11px] text-ink-faint">
+        {rule.kind === "TRANSPORTATION"
+          ? "Uses the distance and vehicle tables below. Set amount_per_mt in config for a flat rate."
+          : role.blurb}
+        {!rule.is_active && " · inactive, so it does not affect any quote"}
+      </p>
+    </div>
+  );
+}
+
+/** A labelled break in the list, so the build-up reads in three parts. */
+function GroupHeading({ label, hint }: { label: string; hint: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 border-b border-rule bg-sunk px-3 py-1.5">
+      <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-soft">
+        {label}
+      </span>
+      <span className="text-[11px] text-ink-faint">{hint}</span>
     </div>
   );
 }
@@ -214,29 +260,37 @@ function PreviewPanel({ rules }: { rules: PricingRule[] }) {
         {preview && (
           <div className="overflow-hidden rounded-lg border border-rule">
             <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-rule bg-sunk text-xs font-medium text-ink-soft">
+                  <th className="px-3 py-1.5 text-left">Description</th>
+                  <th className="px-3 py-1.5 text-right">₹/MT</th>
+                </tr>
+              </thead>
               <tbody className="divide-y divide-rule">
                 {preview.components.map((c) => (
                   <tr key={c.code} className={c.applied ? "" : "opacity-55"}>
-                    <td className="px-2.5 py-1.5">
+                    <td className="px-3 py-2">
                       <div className="text-ink">{c.label}</div>
-                      <div className="text-[11px] leading-snug text-ink-faint">{c.note}</div>
+                      <div className="mt-0.5 text-[11px] leading-snug text-ink-faint">
+                        {c.note}
+                      </div>
                     </td>
-                    <td className="px-2.5 py-1.5 text-right tabular text-ink">
+                    <td className="tabular whitespace-nowrap px-3 py-2 text-right align-top font-medium text-ink">
                       {inr(c.amount, false)}
                     </td>
                   </tr>
                 ))}
-              </tbody>
-              <tfoot className="border-t-2 border-ink/70 bg-sunk">
-                <tr>
-                  <td className="px-2.5 py-2 font-semibold text-ink">Total cost</td>
-                  <td className="px-2.5 py-2 text-right font-semibold tabular text-ink">
+                <tr className="border-t border-rule bg-sunk">
+                  <td className="px-3 py-2 font-semibold text-ink">Total cost</td>
+                  <td className="tabular px-3 py-2 text-right font-bold text-ink">
                     {inr(preview.total_cost, false)}
                   </td>
                 </tr>
-                <tr>
-                  <td className="px-2.5 py-2 font-semibold text-brand">Quote price</td>
-                  <td className="px-2.5 py-2 text-right text-base font-bold tabular text-brand">
+              </tbody>
+              <tfoot>
+                <tr className="bg-brand-wash">
+                  <td className="px-3 py-2.5 font-semibold text-brand">Quote price</td>
+                  <td className="tabular px-3 py-2.5 text-right text-base font-bold text-brand">
                     {inr(preview.quote_rate, false)} / MT
                   </td>
                 </tr>
@@ -300,7 +354,7 @@ function DistancesPanel() {
               </td>
               <td className="px-3 py-1.5 text-right">
                 <Button
-                  size="sm"
+                  compact
                   variant="ghost"
                   onClick={async () => {
                     await api.del(`/pricing/distances/${row.id}`);
@@ -387,6 +441,15 @@ export default function Pricing() {
 
   const dirty = JSON.stringify(rules) !== JSON.stringify(active?.rules ?? []);
 
+  // The engine always runs margin, floor and rounding last whatever their
+  // priority. Showing them anywhere else would misrepresent the build-up.
+  const GROUP_ORDER = { base: 0, cost: 1, margin: 2 };
+  rules.sort(
+    (a, b) =>
+      GROUP_ORDER[KIND_ROLE[a.kind]?.group ?? "cost"] -
+      GROUP_ORDER[KIND_ROLE[b.kind]?.group ?? "cost"],
+  );
+
   function update(index: number, next: PricingRule) {
     setRules((current) => current!.map((r, i) => (i === index ? next : r)));
   }
@@ -452,7 +515,7 @@ export default function Pricing() {
           padded={false}
           action={
             <Button
-              size="sm"
+              compact
               onClick={() =>
                 setRules([
                   ...rules,
@@ -472,15 +535,31 @@ export default function Pricing() {
             </Button>
           }
         >
-          {rules.map((rule, index) => (
-            <RuleRow
-              key={rule.code}
-              rule={rule}
-              onChange={(next) => update(index, next)}
-              onRemove={() => setRules(rules.filter((_, i) => i !== index))}
-              onMove={(direction) => move(index, direction)}
-            />
-          ))}
+          {rules.map((rule, index) => {
+            const group = KIND_ROLE[rule.kind]?.group ?? "cost";
+            const previous = index > 0 ? KIND_ROLE[rules[index - 1].kind]?.group : undefined;
+            const heading =
+              group !== previous
+                ? group === "base"
+                  ? { label: "Where the price starts", hint: "stock, or a mill offer" }
+                  : group === "cost"
+                    ? { label: "Costs added", hint: "these make up total cost" }
+                    : { label: "Margin and rounding", hint: "always applied last" }
+                : null;
+
+            return (
+              <div key={rule.code}>
+                {heading && <GroupHeading label={heading.label} hint={heading.hint} />}
+                <RuleRow
+                  rule={rule}
+                  index={index + 1}
+                  onChange={(next) => update(index, next)}
+                  onRemove={() => setRules(rules.filter((_, i) => i !== index))}
+                  onMove={(direction) => move(index, direction)}
+                />
+              </div>
+            );
+          })}
         </Card>
 
         <div className="flex flex-col gap-4">
@@ -525,7 +604,7 @@ function VersionHistory({ onRestore }: { onRestore: () => void }) {
               <td className="px-3 py-1.5 text-right">
                 {!set.is_active && (
                   <Button
-                    size="sm"
+                    compact
                     onClick={async () => {
                       await api.post(`/pricing/rules/${set.version}/restore`);
                       reload();

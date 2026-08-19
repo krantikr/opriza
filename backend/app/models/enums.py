@@ -32,6 +32,7 @@ __all__ = [
     "NotificationKind",
     "NotificationStatus",
     "FollowUpStatus",
+    "FollowUpTrigger",
     "StockMovementKind",
 ]
 
@@ -240,9 +241,32 @@ class FollowUpStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class FollowUpTrigger(StrEnum):
+    """What starts the clock on a follow-up.
+
+    `ELAPSED` counts from the moment the quotation went out. `PROMISED_DATE`
+    counts from a date the customer themselves gave - "we will decide by the
+    14th" - which is a far better moment to call than an arbitrary interval,
+    and is the difference between chasing and following up.
+    """
+
+    ELAPSED = "ELAPSED"
+    PROMISED_DATE = "PROMISED_DATE"
+
+
 class StockMovementKind(StrEnum):
+    """How a quantity of stock moved, or stopped being available.
+
+    `BLOCK` is a *soft* hold: the material is physically present and still
+    counted as on hand, but it is withheld from quoting - a trader keeping
+    tonnage back for an expected order, or quarantining a lot pending
+    inspection. Unlike an ISSUE it can be lifted, and unlike a RESERVATION it
+    is not tied to a particular quotation.
+    """
+
     RECEIPT = "RECEIPT"
     ISSUE = "ISSUE"
     RESERVATION = "RESERVATION"
     RELEASE = "RELEASE"
     ADJUSTMENT = "ADJUSTMENT"
+    BLOCK = "BLOCK"

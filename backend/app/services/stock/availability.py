@@ -68,6 +68,10 @@ class StockOutcome:
     matched: bool = False
     available_qty_mt: Decimal | None = None
     available_nop: float | None = None
+    #: What is physically present, before reservations are deducted.
+    on_hand_qty_mt: Decimal | None = None
+    #: Spoken for by other quotations, so not free to promise.
+    reserved_qty_mt: Decimal | None = None
     # None when the requested quantity is unknown - sufficiency was never judged.
     sufficient: bool | None = None
     locations: list[LocationBalance] = field(default_factory=list)
@@ -135,19 +139,44 @@ class StockAvailabilityService:
             )
             return self._finalise(outcome, match_status, has_missing_information, quantity_mt, customer)
 
-        available_kg = sum((lot.balance_qty_kg or Decimal(0)) for lot in lots)
-        available_mt = _qty(available_kg / KG_PER_MT)
         available_nop = sum((lot.balance_nop or 0) for lot in lots)
+
+        # Movements recorded since the last import - receipts, issues and
+        # reservations - are replayed on top. Quoting the imported figure alone
+        # would promise material that has since been despatched or held.
+        from app.services.stock.movements import StockMovementService
+
+        balance = StockMovementService(self.db).balance_for_lots(lots)
+        on_hand_mt = _qty(balance.on_hand_kg / KG_PER_MT)
+        available_mt = _qty(balance.available_kg / KG_PER_MT)
+        reserved_mt = _qty(balance.reserved_kg / KG_PER_MT)
+
         outcome.available_qty_mt = available_mt
         outcome.available_nop = available_nop
+        outcome.reserved_qty_mt = reserved_mt
+        outcome.on_hand_qty_mt = on_hand_mt
+
+        movement_note = ""
+        if balance.movement_kg:
+            direction = "added" if balance.movement_kg > 0 else "removed"
+            movement_note = (
+                f" Movements since the last import {direction} "
+                f"{abs(balance.movement_kg) / KG_PER_MT:g} MT."
+            )
+        reserved_note = (
+            f" {reserved_mt:g} MT is reserved against other quotations and is not free to sell."
+            if reserved_mt > 0
+            else ""
+        )
 
         outcome.steps.append(
             AvailabilityStep(
                 id="stock_lookup",
                 label="Stock lookup",
                 reason=(
-                    f"{len(lots)} stock lot(s) matched. Balance on hand: "
-                    f"{available_mt:g} MT ({available_nop:g} pcs)."
+                    f"{len(lots)} stock lot(s) matched. Free to sell: "
+                    f"{available_mt:g} MT of {on_hand_mt:g} MT on hand "
+                    f"({available_nop:g} pcs).{movement_note}{reserved_note}"
                 ),
             )
         )

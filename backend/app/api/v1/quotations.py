@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.deps import current_user, get_quotation
 from app.api.serializers import quotation_detail_out, quotation_out
-from app.core.db import get_db
+from app.core.db import get_db, utcnow
 from app.core.logging import get_logger
 from app.models import QuotationPricing, QuotationRequest, QuotationStatus, User
 from app.schemas.common import ActionResult, Page
@@ -18,6 +18,7 @@ from app.schemas.quotations import (
     DraftUpdateIn,
     FollowUpIn,
     QuotationDetailOut,
+    QuotationDetailsIn,
     QuotationOut,
     RejectIn,
 )
@@ -322,3 +323,112 @@ def recalculate(
     ]
     db.commit()
     return records
+
+
+@router.put("/{quotation_id}/details", response_model=ActionResult)
+def update_details(
+    payload: QuotationDetailsIn,
+    quotation: QuotationRequest = Depends(get_quotation),
+    db: Session = Depends(get_db),
+    user: User | None = Depends(current_user),
+) -> ActionResult:
+    """Record terms the enquiry left unstated, and re-price against them.
+
+    Re-pricing is the point: a delivery location brings freight into the
+    build-up, and payment terms drive the financing line. Saving the fields
+    without recomputing would leave a quote that contradicts its own inputs.
+    """
+    changed: dict[str, str | None] = {}
+    for field_name in ("delivery_location", "required_delivery_date", "payment_terms"):
+        value = getattr(payload, field_name)
+        cleaned = value.strip() if isinstance(value, str) else value
+        cleaned = cleaned or None
+        if getattr(quotation, field_name) != cleaned:
+            changed[field_name] = cleaned
+            setattr(quotation, field_name, cleaned)
+
+    if not changed:
+        return ActionResult(detail="No changes.", quotation_id=quotation.id)
+
+    # Anything still outstanding stays outstanding; anything supplied is
+    # removed from the missing list so the banner reflects reality.
+    supplied = {
+        "delivery_location": "delivery location",
+        "required_delivery_date": "required delivery date",
+        "payment_terms": "payment terms",
+    }
+    remaining = [
+        note
+        for note in (quotation.missing_information or [])
+        if not any(
+            phrase in note.lower()
+            for key, phrase in supplied.items()
+            if changed.get(key)
+        )
+    ]
+    quotation.missing_information = remaining or None
+    db.flush()
+
+    service = PricingService(db)
+    for item in quotation.line_items:
+        service.price_line(item, quotation=quotation)
+
+    audit.record(
+        db,
+        entity_type="quotation_request",
+        entity_id=quotation.id,
+        action="DETAILS_UPDATED",
+        user_id=user.id if user else None,
+        details={k: str(v) for k, v in changed.items()},
+    )
+    db.commit()
+
+    return ActionResult(
+        detail=f"Updated {', '.join(changed)} and re-priced every line.",
+        quotation_id=quotation.id,
+        status=quotation.status.value,
+    )
+
+
+@router.post("/{quotation_id}/despatched", response_model=ActionResult)
+def mark_despatched(
+    quotation: QuotationRequest = Depends(get_quotation),
+    db: Session = Depends(get_db),
+    user: User | None = Depends(current_user),
+) -> ActionResult:
+    """Record that the goods have gone out.
+
+    An accepted quotation sits in the Delivery queue until this happens,
+    because until the material ships the customer is still owed something.
+    """
+    if quotation.status is not QuotationStatus.CUSTOMER_ACCEPTED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"{quotation.quotation_number} is {quotation.status.value}, not accepted. "
+                "Only an accepted quotation can be despatched."
+            ),
+        )
+    if quotation.despatched_at is not None:
+        return ActionResult(
+            detail="Already recorded as despatched.",
+            quotation_id=quotation.id,
+            status=quotation.status.value,
+        )
+
+    quotation.despatched_at = utcnow()
+    audit.record(
+        db,
+        entity_type="quotation_request",
+        entity_id=quotation.id,
+        action="DESPATCHED",
+        user_id=user.id if user else None,
+        details={"quotation_number": quotation.quotation_number},
+    )
+    db.commit()
+
+    return ActionResult(
+        detail=f"{quotation.quotation_number} marked despatched.",
+        quotation_id=quotation.id,
+        status=quotation.status.value,
+    )

@@ -1,7 +1,8 @@
 import { useState } from "react";
 
 import { useApi } from "../api/client";
-import type { StockItem, StockSummary } from "../api/types";
+import type { StockHold, StockItem, StockSummary } from "../api/types";
+import { HoldsPanel, StockAdjustDialog } from "../components/StockAdjust";
 import { DonutChart, HBarChart, type BarDatum } from "../components/charts";
 import {
   Button,
@@ -61,7 +62,7 @@ function day(value: string | null): string {
 
 /** Every per-lot column the rollup has to collapse, straight from the
  * stock list: location, mill, coil, pieces, weight, cost and purchase date. */
-function LotTable({ lots }: { lots: StockItem[] }) {
+function LotTable({ lots, onAdjust }: { lots: StockItem[]; onAdjust: (lot: StockItem) => void }) {
   return (
     <div className="overflow-x-auto border-y border-rule bg-sunk/60 px-4 py-3">
       <table className="w-full min-w-5xl text-xs">
@@ -77,7 +78,8 @@ function LotTable({ lots }: { lots: StockItem[] }) {
             <th className="py-1 pr-4 text-right font-medium">Purchase /kg</th>
             <th className="py-1 pr-4 text-right font-medium">Landed /kg</th>
             <th className="py-1 pr-4 text-right font-medium">Ageing</th>
-            <th className="py-1 text-right font-medium">Stock date</th>
+            <th className="py-1 pr-4 text-right font-medium">Stock date</th>
+            <th className="py-1 text-right font-medium" />
           </tr>
         </thead>
         <tbody className="divide-y divide-rule/70">
@@ -97,7 +99,18 @@ function LotTable({ lots }: { lots: StockItem[] }) {
               <td className="tabular py-1.5 pr-4 text-right">
                 {lot.ageing_days === null ? "—" : `${lot.ageing_days}d`}
               </td>
-              <td className="tabular py-1.5 text-right text-ink-faint">{day(lot.stock_date)}</td>
+              <td className="tabular py-1.5 pr-4 text-right text-ink-faint">
+                {day(lot.stock_date)}
+              </td>
+              <td className="py-1.5 text-right">
+                <button
+                  type="button"
+                  onClick={() => onAdjust(lot)}
+                  className="rounded-lg px-2 py-1 text-xs font-medium text-brand transition-colors hover:bg-brand-wash"
+                >
+                  Update
+                </button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -111,6 +124,14 @@ export default function Stock() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const { data, error, loading, reload } = useApi<StockSummary[]>(`/stock/summary`);
+  const holds = useApi<StockHold[]>("/stock/holds", 60_000);
+  const [adjusting, setAdjusting] = useState<StockItem | null>(null);
+  const [showHolds, setShowHolds] = useState(false);
+
+  function refreshAll() {
+    reload();
+    holds.reload();
+  }
 
   function toggle(key: string) {
     setExpanded((current) => {
@@ -147,9 +168,13 @@ export default function Stock() {
   const dead = (data ?? []).filter((r) => (r.ageing_max_days ?? 0) > 90);
   const deadMt = dead.reduce((sum, r) => sum + Number(r.balance_qty_mt), 0);
   const locations = new Set((data ?? []).flatMap((r) => r.locations)).size;
+  const heldMt = (holds.data ?? []).reduce(
+    (sum, h) => sum + Number(h.quantity_kg) / 1000,
+    0,
+  );
 
   return (
-    <div className="flex flex-col gap-4 p-5">
+    <div className="flex flex-col gap-4 p-4 sm:p-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-ink">Stock on hand</h1>
@@ -172,7 +197,7 @@ export default function Stock() {
 
       {error && <ErrorNote message={error} />}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
         <Kpi label="On hand" value={`${Math.round(totalMt).toLocaleString("en-IN")} MT`} hint={`${data?.length ?? 0} specs`} />
         <Kpi label="Stock value" value={inrShort(totalValue)} hint="at landed cost" tone="brand" />
         <Kpi
@@ -181,8 +206,28 @@ export default function Stock() {
           hint={`${dead.length} spec${dead.length === 1 ? "" : "s"} ageing`}
           tone={deadMt > 0 ? "warn" : "default"}
         />
-        <Kpi label="Locations" value={String(locations)} hint="holding stock" />
+        <Kpi
+          label="Held back"
+          value={`${Math.round(heldMt).toLocaleString("en-IN")} MT`}
+          hint={locations > 0 ? `across ${locations} location${locations === 1 ? "" : "s"}` : undefined}
+          tone={heldMt > 0 ? "warn" : "default"}
+        />
       </div>
+
+      {(holds.data?.length ?? 0) > 0 && (
+        <Card
+          title="Held back from quoting"
+          subtitle={`${holds.data!.length} hold${holds.data!.length === 1 ? "" : "s"} · this tonnage is on hand but not offered`}
+          padded={false}
+          action={
+            <Button onClick={() => setShowHolds((v) => !v)}>
+              {showHolds ? "Hide" : "Show"}
+            </Button>
+          }
+        >
+          {showHolds && <HoldsPanel holds={holds.data!} onChanged={refreshAll} />}
+        </Card>
+      )}
 
       {data && data.length > 0 && (
         <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
@@ -258,7 +303,7 @@ export default function Stock() {
                     open ? (
                       <tr key={`${key}-lots`}>
                         <td colSpan={10} className="p-0">
-                          <LotTable lots={row.lots} />
+                          <LotTable lots={row.lots} onAdjust={setAdjusting} />
                         </td>
                       </tr>
                     ) : null,
@@ -269,6 +314,14 @@ export default function Stock() {
           </div>
         )}
       </Card>
+
+      {adjusting && (
+        <StockAdjustDialog
+          lot={adjusting}
+          onClose={() => setAdjusting(null)}
+          onSaved={refreshAll}
+        />
+      )}
     </div>
   );
 }

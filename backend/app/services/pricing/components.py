@@ -230,11 +230,18 @@ def transportation(
 
     hire = vehicle.rate_per_day * days
 
-    # Charge over what the lorry actually carries: a part load still pays for
-    # the whole vehicle, so spreading over its capacity would under-recover.
-    carried = ctx.quantity_mt if ctx.quantity_mt else vehicle.capacity_mt
-    carried = min(carried, vehicle.capacity_mt) if carried else vehicle.capacity_mt
-    if not carried or carried <= 0:
+    # How the hire is shared out. A part load does not pay for a whole lorry:
+    # below `min_load_pct` of capacity the consignment is assumed to travel
+    # with other freight, so the cost spreads over that minimum rather than
+    # over the order alone. Without this a 0.5 MT enquiry carries an entire
+    # trailer and prices at several lakh per MT - arithmetically true, and
+    # commercially nonsense.
+    capacity = vehicle.capacity_mt
+    min_load_pct = dec(config.get("min_load_pct"), "40")
+    shared_floor = capacity * min_load_pct / Decimal(100)
+
+    ordered = ctx.quantity_mt if ctx.quantity_mt and ctx.quantity_mt > 0 else None
+    if ordered is None:
         return ComponentResult(
             amount=Decimal(0),
             note="Freight cannot be apportioned without a quantity.",
@@ -242,16 +249,30 @@ def transportation(
             warning="Quantity unknown; freight excluded.",
         )
 
-    per_mt = money(hire / carried)
+    part_load = ordered < shared_floor
+    basis = max(min(ordered, capacity), shared_floor)
+
+    per_mt = money(hire / basis)
     leg = "round trip" if round_trip else "one way"
+    sharing = (
+        f" Part load, so the cost is spread over the {basis:g} MT minimum "
+        f"({min_load_pct:g}% of a {capacity:g} MT {vehicle.name.lower()}) rather than "
+        f"{ordered:g} MT alone."
+        if part_load
+        else ""
+    )
     return ComponentResult(
         amount=per_mt,
         note=(
             f"Freight to {ctx.delivery_location}: {distance.distance_km:g} km ({leg}) by "
             f"{vehicle.name} at INR {vehicle.rate_per_day:,.2f}/day x {days:g} days "
-            f"over {carried:g} MT = INR {per_mt:,.2f} per MT."
+            f"over {basis:g} MT = INR {per_mt:,.2f} per MT.{sharing}"
         ),
-        meta={"distance_km": float(distance.distance_km), "days": float(days)},
+        meta={
+            "distance_km": float(distance.distance_km),
+            "days": float(days),
+            "part_load": part_load,
+        },
     )
 
 
@@ -269,9 +290,9 @@ def financing(config: dict, ctx: PricingContext, running: Decimal, base: Decimal
     the money tied up is what was spent, and financing the margin would be
     charging the customer interest on the profit.
     """
-    days = config.get("days")
-    if days is None:
-        days = ctx.payment_days
+    # Stated terms beat the configured default: a rule saying 60 days is the
+    # house assumption, not a contradiction of what this customer agreed.
+    days = ctx.payment_days if ctx.payment_days is not None else config.get("days")
     if days is None:
         return ComponentResult(
             amount=Decimal(0),
@@ -291,7 +312,9 @@ def financing(config: dict, ctx: PricingContext, running: Decimal, base: Decimal
     return ComponentResult(
         amount=amount,
         note=(
-            f"Financing for {pct_text(days_dec)} days at {pct_text(rate_pct)}% p.a. on INR "
+            f"Financing for {pct_text(days_dec)} days"
+            f"{' (as agreed with this customer)' if ctx.payment_days is not None else ''}"
+            f" at {pct_text(rate_pct)}% p.a. on INR "
             f"{principal:,.2f}: INR {amount:,.2f} per MT."
         ),
     )

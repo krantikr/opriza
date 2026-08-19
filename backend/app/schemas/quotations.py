@@ -47,10 +47,24 @@ class EmailOut(ORMModel):
     has_attachments: bool = False
     quotation_id: int | None = None
     quotation_number: str | None = None
+    # Lets the mailbox show which enquiries are still waiting on a person
+    # without a second request per message.
+    quotation_status: str | None = None
+    #: True when a follow-up rule says this quotation is owed a nudge now.
+    follow_up_due: bool = False
+    #: When the next nudge falls due, so the mailbox can say "in 22 hours"
+    #: rather than leaving a trader to guess why nothing has happened yet.
+    follow_up_at: datetime | None = None
+    #: The single pipeline stage this message is stuck at, or DONE.
+    state: str = "DONE"
     replied_to_quotation_id: int | None = None
     reply_intent: str | None = None
     reply_intent_confidence: float | None = None
     reply_intent_reason: str | None = None
+    promised_date_raw: str | None = None
+    promised_date: Any | None = None
+    awaiting_us: bool = False
+    answered_at: datetime | None = None
 
 
 class EmailDetailOut(EmailOut):
@@ -69,6 +83,8 @@ class MatchCandidateOut(BaseModel):
 class StockAvailabilityOut(ORMModel):
     available_qty_mt: Decimal | None = None
     available_nop: float | None = None
+    on_hand_qty_mt: Decimal | None = None
+    reserved_qty_mt: Decimal | None = None
     sufficient: bool | None = None
     locations: list[dict[str, Any]] = Field(default_factory=list)
     ageing_min_days: int | None = None
@@ -213,3 +229,11 @@ class AuditLogOut(ORMModel):
     details: dict[str, Any] | None = None
     user_id: int | None = None
     created_at: datetime
+
+
+class QuotationDetailsIn(BaseModel):
+    """Commercial terms a reviewer supplies when the enquiry did not state them."""
+
+    delivery_location: str | None = Field(default=None, max_length=120)
+    required_delivery_date: str | None = Field(default=None, max_length=120)
+    payment_terms: str | None = Field(default=None, max_length=200)

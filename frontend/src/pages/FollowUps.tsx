@@ -64,13 +64,13 @@ function QueueItem({ item, onDone }: { item: FollowUpSchedule; onDone: () => voi
         </div>
 
         <div className="flex shrink-0 items-center gap-1.5">
-          <Button size="sm" variant="ghost" onClick={() => setExpanded((v) => !v)}>
+          <Button compact variant="ghost" onClick={() => setExpanded((v) => !v)}>
             {expanded ? "Hide" : "Preview"}
           </Button>
-          <Button size="sm" variant="secondary" disabled={busy} onClick={() => act("skip")}>
+          <Button compact variant="secondary" disabled={busy} onClick={() => act("skip")}>
             Skip
           </Button>
-          <Button size="sm" variant="primary" disabled={busy} onClick={() => act("send")}>
+          <Button compact variant="primary" disabled={busy} onClick={() => act("send")}>
             Send
           </Button>
         </div>
@@ -110,7 +110,7 @@ function RuleEditor({ rule, onSaved }: { rule: FollowUpRule; onSaved: () => void
             onChange={(is_active) => setDraft({ ...draft, is_active })}
             label="Active"
           />
-          <Button variant="primary" size="sm" disabled={!dirty || busy} onClick={save}>
+          <Button variant="primary" compact disabled={!dirty || busy} onClick={save}>
             Save
           </Button>
         </div>

@@ -30,6 +30,7 @@ from app.models import (
     RecordStatus,
     StockItem,
     StockMovement,
+    StockMovementKind,
     User,
 )
 from app.schemas.common import ActionResult, Page
@@ -48,6 +49,7 @@ from app.schemas.ops import (
     StockMovementOut,
     TimelineEntry,
 )
+from app.services.insights import InsightService
 from app.services.notifications import NotificationService
 from app.services.quotations.followup import FollowUpError, FollowUpService
 from app.services.quotations.followup_rules import FollowUpScheduler
@@ -327,6 +329,32 @@ def create_movement(
     )
 
 
+@router.get("/stock/holds", response_model=list[StockMovementOut], tags=["stock"])
+def list_holds(db: Session = Depends(get_db)) -> list[StockMovement]:
+    """Open blocks and reservations - everything held back from quoting."""
+    return list(
+        db.scalars(
+            select(StockMovement)
+            .where(
+                StockMovement.is_open.is_(True),
+                StockMovement.kind.in_(
+                    [StockMovementKind.BLOCK, StockMovementKind.RESERVATION]
+                ),
+            )
+            .order_by(StockMovement.created_at.desc())
+        )
+    )
+
+
+@router.post("/stock/holds/{movement_id}/lift", tags=["stock"])
+def lift_hold(movement_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
+    """Release a hold, putting the tonnage back on offer."""
+    lifted = StockMovementService(db).lift_hold(movement_id)
+    if not lifted:
+        raise HTTPException(status_code=404, detail="No open hold with that id")
+    return {"ok": True}
+
+
 @router.get("/stock/{stock_item_id}/balance", response_model=BalanceOut, tags=["stock"])
 def stock_balance(stock_item_id: int, db: Session = Depends(get_db)) -> BalanceOut:
     """Imported balance plus movements - what is actually free to sell."""
@@ -487,6 +515,14 @@ def _period(days: int, start: date | None, end: date | None) -> DateRange:
     if start and end:
         return DateRange(start=start, end=end)
     return DateRange.last_days(days)
+
+
+@router.get("/reports/insights", tags=["reports"])
+def insights(
+    days: int = Query(30, ge=7, le=365), db: Session = Depends(get_db)
+) -> dict:
+    """Headline metrics against the preceding window, plus what needs a person."""
+    return InsightService(db).build(days).to_dict()
 
 
 @router.get("/reports/funnel", tags=["reports"])

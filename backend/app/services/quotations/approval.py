@@ -229,6 +229,7 @@ class ApprovalService:
             quotation.sent_at = utcnow()
             quotation.sent_message_id = result.message_id
             quotation.send_error = None
+            self._clear_awaiting(quotation)
             self._schedule_follow_up(quotation)
         else:
             # Approval stands - the human did approve it - but the send failed
@@ -302,3 +303,15 @@ class ApprovalService:
             FollowUpScheduler(self.db).schedule_for(quotation)
         except Exception:  # noqa: BLE001 - the quotation has already gone out
             logger.exception("Could not schedule a follow-up for %s", quotation.quotation_number)
+
+    def _clear_awaiting(self, quotation) -> None:
+        """Answering the customer clears "needs reply" for their messages.
+
+        Without this the tab fills with mail that has in fact been answered,
+        and a queue nobody can empty is a queue people stop reading.
+        """
+        from app.core.db import utcnow
+
+        for email in [quotation.email, *quotation.replies]:
+            if email is not None and email.awaiting_us and email.answered_at is None:
+                email.answered_at = utcnow()

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.db import Base
 from app.models.enums import (
     FollowUpStatus,
+    FollowUpTrigger,
     NotificationChannel,
     NotificationKind,
     NotificationStatus,
@@ -122,6 +123,15 @@ class Notification(Base, CreatedAtMixin):
 class FollowUpRule(Base, TimestampMixin):
     """When to chase a quotation that has gone quiet.
 
+    Two shapes of rule, because a desk needs both:
+
+    * **Elapsed** - "chase 24 hours after sending, then every 5 days". Timed
+      from when the quotation went out, and measured in *hours* so a same-day
+      confirmation is expressible; a day is just 24 of them.
+    * **Promised date** - "the customer said they would decide on the 14th, so
+      remind me on the 14th". Timed from what the customer actually said,
+      which is a far better moment to call than an arbitrary interval.
+
     `auto_send` exists and defaults to False on purpose. The rule decides
     *when* a nudge is owed and drafts it; a human still presses send. Turning
     it on is a deliberate, per-rule, auditable choice - not a global setting
@@ -134,6 +144,16 @@ class FollowUpRule(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     label: Mapped[str] = mapped_column(String(120), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    trigger: Mapped[FollowUpTrigger] = mapped_column(
+        enum_col(FollowUpTrigger), default=FollowUpTrigger.ELAPSED, nullable=False
+    )
+    #: Hours after sending before the first nudge. Kept in hours rather than
+    #: days so "confirm within 24 hours" is a rule, not an approximation.
+    first_after_hours: Mapped[int] = mapped_column(Integer, default=72, nullable=False)
+    #: For PROMISED_DATE: how long before the date the reminder is raised.
+    #: Zero means on the day itself.
+    remind_before_hours: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     first_after_days: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     interval_days: Mapped[int] = mapped_column(Integer, default=5, nullable=False)

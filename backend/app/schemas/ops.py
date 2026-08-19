@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.models.enums import (
     FollowUpStatus,
+    FollowUpTrigger,
     NotificationChannel,
     NotificationKind,
     NotificationStatus,
@@ -65,6 +66,11 @@ class NotificationRuleOut(ORMModel):
 class FollowUpRuleIn(BaseModel):
     label: str = Field(min_length=1, max_length=120)
     is_active: bool = True
+    trigger: FollowUpTrigger = FollowUpTrigger.ELAPSED
+    #: Hours, so "confirm within 24 hours" is a rule rather than a rounding.
+    first_after_hours: int = Field(default=72, ge=1, le=8760)
+    #: PROMISED_DATE only: how far ahead of the customer's date to remind.
+    remind_before_hours: int = Field(default=0, ge=0, le=720)
     first_after_days: int = Field(default=3, ge=1, le=365)
     interval_days: int = Field(default=5, ge=1, le=365)
     max_attempts: int = Field(default=2, ge=1, le=10)
@@ -80,6 +86,9 @@ class FollowUpRuleOut(ORMModel):
     id: int
     label: str
     is_active: bool
+    trigger: FollowUpTrigger
+    first_after_hours: int
+    remind_before_hours: int
     first_after_days: int
     interval_days: int
     max_attempts: int

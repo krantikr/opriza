@@ -87,17 +87,30 @@ def seed_defaults() -> None:
             logger.info("Seeded the default notification rule")
 
         if db.query(FollowUpRule).count() == 0:
+            from app.models import FollowUpTrigger
+
             db.add(
                 FollowUpRule(
-                    label="Standard chase",
-                    first_after_days=3,
+                    label="Confirm within 24 hours",
+                    trigger=FollowUpTrigger.ELAPSED,
+                    first_after_hours=24,
                     interval_days=5,
                     max_attempts=2,
                     stop_after_days=30,
                     auto_send=False,
                 )
             )
-            logger.info("Seeded the default follow-up rule (queues for approval)")
+            db.add(
+                FollowUpRule(
+                    label="Follow up on the customer's own date",
+                    trigger=FollowUpTrigger.PROMISED_DATE,
+                    remind_before_hours=0,
+                    max_attempts=2,
+                    stop_after_days=60,
+                    auto_send=False,
+                )
+            )
+            logger.info("Seeded two follow-up rules (both queue for approval)")
         db.commit()
     finally:
         db.close()

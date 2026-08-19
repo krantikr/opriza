@@ -13,7 +13,7 @@ a global switch someone flips without noticing the consequence.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,6 +25,7 @@ from app.models import (
     FollowUpRule,
     FollowUpSchedule,
     FollowUpStatus,
+    FollowUpTrigger,
     QuotationRequest,
     QuotationStatus,
 )
@@ -48,12 +49,15 @@ class SchedulerResult:
     scheduled: list[FollowUpSchedule] = field(default_factory=list)
     due: list[FollowUpSchedule] = field(default_factory=list)
     cancelled: list[FollowUpSchedule] = field(default_factory=list)
+    #: Pending nudges re-dated because their rule was edited.
+    retimed: list[FollowUpSchedule] = field(default_factory=list)
     marked_cold: int = 0
 
     def summary(self) -> str:
         return (
             f"scheduled={len(self.scheduled)} due={len(self.due)} "
-            f"cancelled={len(self.cancelled)} cold={self.marked_cold}"
+            f"retimed={len(self.retimed)} cancelled={len(self.cancelled)} "
+            f"cold={self.marked_cold}"
         )
 
 
@@ -77,6 +81,7 @@ class FollowUpScheduler:
             return result
 
         self._cancel_settled(result)
+        self._retime_pending(rules, result)
 
         for quotation in self._chaseable():
             rule = self._rule_for(quotation, rules)
@@ -132,6 +137,38 @@ class FollowUpScheduler:
             )
         )
 
+    def _retime_pending(self, rules: list[FollowUpRule], result: SchedulerResult) -> None:
+        """Re-date scheduled nudges whose rule has since been edited.
+
+        Without this, changing "chase after 3 days" to "chase after 24 hours"
+        leaves every pending schedule on the old timing - the rule reads as
+        changed while nothing actually happens sooner, which is worse than
+        having no rule at all.
+        """
+        by_id = {rule.id: rule for rule in rules}
+
+        for schedule in self.db.scalars(
+            select(FollowUpSchedule).where(
+                FollowUpSchedule.status == FollowUpStatus.SCHEDULED
+            )
+        ):
+            rule = by_id.get(schedule.rule_id or -1)
+            quotation = schedule.quotation_request
+            if rule is None or quotation is None:
+                continue
+
+            recomputed = self._due_at(quotation, rule, schedule.attempt_no)
+            if recomputed is not None and recomputed != schedule.due_at:
+                logger.info(
+                    "Re-timed follow-up for %s: %s -> %s (rule %s changed)",
+                    quotation.quotation_number,
+                    schedule.due_at,
+                    recomputed,
+                    rule.label,
+                )
+                schedule.due_at = recomputed
+                result.retimed.append(schedule)
+
     def _cancel_settled(self, result: SchedulerResult) -> None:
         pending = list(
             self.db.scalars(
@@ -185,8 +222,9 @@ class FollowUpScheduler:
         if anchor is None:
             return None
 
-        delay = rule.first_after_days if attempt == 1 else rule.interval_days
-        due_at = anchor + timedelta(days=delay)
+        due_at = self._due_at(quotation, rule, attempt, anchor)
+        if due_at is None:
+            return None
 
         if rule.stop_after_days is not None:
             deadline = quotation.sent_at + timedelta(days=rule.stop_after_days)
@@ -204,6 +242,50 @@ class FollowUpScheduler:
         self.db.flush()
         result.scheduled.append(schedule)
         return schedule
+
+    def _due_at(
+        self,
+        quotation: QuotationRequest,
+        rule: FollowUpRule,
+        attempt: int,
+        anchor: datetime | None = None,
+    ) -> datetime | None:
+        """When this attempt falls due, from the rule as it stands right now."""
+        if anchor is None:
+            sent = [
+                s
+                for s in quotation.follow_up_schedules
+                if s.status is FollowUpStatus.SENT
+            ]
+            anchor = sent[-1].resolved_at if sent else quotation.sent_at
+        if anchor is None:
+            return None
+
+        if rule.trigger is FollowUpTrigger.PROMISED_DATE:
+            # The customer named a day; calling on that day is following up,
+            # calling on an interval is chasing. Without a promise there is
+            # nothing for this rule to act on, so it stands aside rather than
+            # inventing a date.
+            if quotation.promised_date is None:
+                return None
+            # 9am on the day they named, in the same tz the anchor carries.
+            # Mixing naive and aware datetimes raises rather than compares, so
+            # the tz is matched explicitly rather than hoped for.
+            due_at = datetime.combine(quotation.promised_date, time(9, 0)) - timedelta(
+                hours=rule.remind_before_hours
+            )
+            due_at = due_at.replace(tzinfo=anchor.tzinfo)
+        else:
+            # Hours throughout: "confirm within 24 hours" is a real rule, and a
+            # day is simply 24 of them.
+            hours = (
+                rule.first_after_hours
+                if attempt == 1
+                else rule.interval_days * 24
+            )
+            due_at = anchor + timedelta(hours=hours)
+
+        return due_at
 
     def _mark_due(self, result: SchedulerResult) -> None:
         """Promote scheduled nudges whose time has come, and draft them."""

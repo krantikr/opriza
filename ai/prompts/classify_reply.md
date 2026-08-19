@@ -25,3 +25,24 @@ Report your own confidence as a number between 0.0 and 1.0, using the same scale
 ## Reason
 
 One sentence, naming the specific words in the reply that decided the intent. Not a summary of the reply.
+
+## Promised date
+
+If the customer names a date or a timeframe by which they will come back —
+"we will confirm by Friday", "decision after the 15th", "give us a week" —
+repeat it here exactly as they wrote it. A trader uses this to call on the day
+the customer chose rather than on an arbitrary interval, so an invented date is
+worse than none.
+
+Report null when they gave no timeframe. Do not convert a vague sentiment
+("soon", "shortly") into a date, and do not infer one from the tone.
+
+## Awaiting us
+
+Set `awaiting_us` true when the reply puts the ball back in our court — a
+question, a request for a revised rate or a changed specification, a document
+they need from us. Set it false when nothing is required back: a plain
+acknowledgement, a confirmation with no query attached, or a decline.
+
+An ACCEPTED reply that also asks something ("go ahead — can you send the
+proforma?") is still awaiting us. The intent and this flag are independent.

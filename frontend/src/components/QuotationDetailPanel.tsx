@@ -13,6 +13,7 @@ import {
   Empty,
   ErrorNote,
   Field,
+  Input,
   inr,
   Loading,
   num,
@@ -36,6 +37,201 @@ function SendIcon() {
     <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.8">
       <path d="M22 2L11 13M22 2l-7 20-4-9-9-4z" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  );
+}
+
+/** One message in the thread, inbound or outbound. */
+function Message({
+  from,
+  address,
+  at,
+  subject,
+  body,
+  outbound = false,
+  label,
+  action,
+}: {
+  from: string;
+  address?: string | null;
+  at: string | null;
+  subject?: string | null;
+  body?: string | null;
+  outbound?: boolean;
+  label?: React.ReactNode;
+  action?: React.ReactNode;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const text = body ?? "";
+  const long = text.length > 420;
+  const shown = expanded || !long ? text : `${text.slice(0, 420)}…`;
+
+  let hash = 0;
+  for (const ch of from) hash = (hash * 31 + ch.charCodeAt(0)) % 360;
+
+  return (
+    <article
+      className={`overflow-hidden rounded-card border shadow-card ${
+        outbound ? "border-brand/25 bg-brand-wash/40" : "border-rule bg-surface"
+      }`}
+    >
+      <header className="flex flex-wrap items-start justify-between gap-2 px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span
+            className="grid size-8 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white"
+            style={{ background: outbound ? "var(--color-brand)" : `oklch(0.58 0.1 ${hash})` }}
+            aria-hidden="true"
+          >
+            {from.slice(0, 2).toUpperCase()}
+          </span>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[13px] font-semibold text-ink">{from}</span>
+              {label}
+            </div>
+            {address && <p className="truncate text-[11px] text-ink-faint">{address}</p>}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {action}
+          <span className="text-[11px] text-ink-faint">{when(at)}</span>
+        </div>
+      </header>
+
+      <div className="border-t border-rule/70 px-4 py-3">
+        {subject && <p className="mb-1.5 text-sm font-medium text-ink">{subject}</p>}
+        <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-ink-soft">
+          {shown || "(no content)"}
+        </pre>
+        {long && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-1.5 text-xs font-medium text-brand hover:underline"
+          >
+            {expanded ? "Show less" : "Show full message"}
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
+/** The commercial terms a reviewer completes when the enquiry did not state them. */
+function EnquiryTerms({
+  quotation,
+  onSaved,
+}: {
+  quotation: Detail;
+  onSaved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState({
+    delivery_location: quotation.delivery_location ?? "",
+    required_delivery_date: quotation.required_delivery_date ?? "",
+    payment_terms: quotation.payment_terms ?? "",
+  });
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setDraft({
+      delivery_location: quotation.delivery_location ?? "",
+      required_delivery_date: quotation.required_delivery_date ?? "",
+      payment_terms: quotation.payment_terms ?? "",
+    });
+  }, [quotation.id, quotation.delivery_location, quotation.required_delivery_date, quotation.payment_terms]);
+
+  const missing = [
+    !draft.delivery_location && "delivery location",
+    !draft.required_delivery_date && "delivery date",
+    !draft.payment_terms && "payment terms",
+  ].filter(Boolean) as string[];
+
+  const dirty =
+    draft.delivery_location !== (quotation.delivery_location ?? "") ||
+    draft.required_delivery_date !== (quotation.required_delivery_date ?? "") ||
+    draft.payment_terms !== (quotation.payment_terms ?? "");
+
+  async function save() {
+    setBusy(true);
+    try {
+      await api.put(`/quotations/${quotation.id}/details`, draft);
+      onSaved();
+      setOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const field = (
+    key: keyof typeof draft,
+    label: string,
+    placeholder: string,
+  ) => (
+    <label className="flex flex-col gap-1">
+      <span className="text-[11px] font-medium text-ink-faint">{label}</span>
+      {open ? (
+        <Input
+          value={draft[key]}
+          onChange={(v) => setDraft({ ...draft, [key]: v })}
+          placeholder={placeholder}
+        />
+      ) : (
+        <span className={`text-sm ${draft[key] ? "text-ink" : "text-ink-faint"}`}>
+          {draft[key] || "not stated"}
+        </span>
+      )}
+    </label>
+  );
+
+  return (
+    <section className="overflow-hidden rounded-card border border-rule bg-surface shadow-card">
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-rule px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-ink">Enquiry details</h3>
+          {missing.length > 0 && !open && (
+            <span className="rounded-full bg-attention-wash px-2 py-0.5 text-[11px] font-medium text-attention-ink">
+              {missing.length} to fill in
+            </span>
+          )}
+        </div>
+        {open ? (
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" disabled={!dirty || busy} onClick={save}>
+              {busy ? "Saving…" : "Save"}
+            </Button>
+          </div>
+        ) : (
+          <Button onClick={() => setOpen(true)}>
+            {missing.length > 0 ? "Fill in" : "Edit"}
+          </Button>
+        )}
+      </header>
+
+      <div className="grid gap-3 px-4 py-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] font-medium text-ink-faint">Customer</span>
+          <span className="truncate text-sm text-ink">
+            {quotation.customer_company || quotation.customer_name || "—"}
+          </span>
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] font-medium text-ink-faint">Email</span>
+          <span className="truncate text-sm text-ink">{quotation.customer_email ?? "—"}</span>
+        </div>
+        {field("delivery_location", "Deliver to", "e.g. Patna")}
+        {field("required_delivery_date", "Wanted by", "e.g. within 2 weeks")}
+        {field("payment_terms", "Payment terms", "e.g. 30 days from invoice")}
+      </div>
+
+      {open && (
+        <p className="border-t border-rule px-4 py-2 text-[11px] text-ink-faint">
+          Saving re-prices every line — a delivery location brings freight into the build-up.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -114,9 +310,12 @@ function MaterialOverview({ item }: { item: LineItem }) {
 export default function QuotationDetailPanel({
   id,
   onChanged,
+  onBack,
 }: {
   id: number;
   onChanged: () => void;
+  /** Shown on narrow screens, where the detail replaces the list. */
+  onBack?: () => void;
 }) {
   const { data, error, loading, reload } = useApi<Detail>(`/quotations/${id}`);
   const [params, setParams] = useSearchParams();
@@ -172,27 +371,41 @@ export default function QuotationDetailPanel({
   return (
     <div className="flex flex-col">
       {/* --- Action bar ----------------------------------------------------- */}
-      <header className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-rule bg-surface px-5 py-3">
-        <h2 className="text-base font-semibold text-ink">Quotation details</h2>
-        <div className="flex items-center gap-2">
+      <header className="sticky top-0 z-10 flex flex-col gap-2 border-b border-rule bg-surface px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3">
+        <div className="flex min-w-0 items-center gap-2">
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="Back to the list"
+              className="-ml-1 rounded-lg p-1 text-ink-faint hover:bg-sunk hover:text-ink xl:hidden"
+            >
+              <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.8">
+                <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          )}
+          <h2 className="truncate text-base font-semibold text-ink">Quotation details</h2>
+        </div>
+        <div className="flex w-full items-center gap-2 sm:w-auto">
           <Button
-            size="sm"
+            className="flex-1 sm:flex-none"
             disabled={busy !== null}
             onClick={() => act("regen", () => api.post(`/quotations/${data.id}/regenerate`))}
           >
             {busy === "regen" ? "Regenerating…" : "Regenerate"}
           </Button>
           <Button
-            size="sm"
             variant="danger"
+            className="flex-1 sm:flex-none"
             disabled={busy !== null}
             onClick={() => act("reject", () => api.post(`/quotations/${data.id}/reject`, {}))}
           >
             Reject
           </Button>
           <Button
-            size="sm"
             variant="primary"
+            className="flex-1 sm:flex-none"
             disabled={!sendable || busy !== null}
             onClick={() =>
               act("send", () =>
@@ -209,18 +422,18 @@ export default function QuotationDetailPanel({
         </div>
       </header>
 
-      <div className="flex flex-col gap-4 p-5">
+      <div className="flex flex-col gap-4 p-4 sm:p-5">
         {/* --- Identity --------------------------------------------------- */}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-2xl font-bold tracking-tight text-ink">
+              <h3 className="text-xl font-bold tracking-tight text-ink sm:text-2xl">
                 {data.quotation_number}
               </h3>
               <Badge value={data.status} dot={false} />
               <Badge value={data.confidence} dot={false} />
             </div>
-            <p className="mt-1 flex flex-wrap items-center gap-x-2 text-sm text-ink-soft">
+            <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-ink-soft">
               <span>{headline?.matched_stock_item_name ?? headline?.raw_text ?? "—"}</span>
               <span className="text-ink-faint">|</span>
               <span>{data.customer_company || data.customer_name || "Unknown customer"}</span>
@@ -233,7 +446,7 @@ export default function QuotationDetailPanel({
             </p>
           </div>
 
-          <div className="text-right text-sm">
+          <div className="text-sm sm:text-right">
             <p className="text-ink-soft">
               Indicative value{" "}
               <span className="tabular ml-1 font-bold text-brand">{inr(totalValue)}</span>
@@ -249,7 +462,6 @@ export default function QuotationDetailPanel({
             tone="attention"
             action={
               <Button
-                size="sm"
                 disabled={busy !== null}
                 onClick={() => act("regen", () => api.post(`/quotations/${data.id}/regenerate`))}
               >
@@ -277,6 +489,73 @@ export default function QuotationDetailPanel({
         {/* --- Overview ---------------------------------------------------- */}
         {tab === "overview" && (
           <div className="flex flex-col gap-4">
+            {/* Commercial terms first: these are the fields a reviewer fills
+                in or corrects, and they gate everything downstream. */}
+            <EnquiryTerms quotation={data} onSaved={() => { reload(); onChanged(); }} />
+
+            {/* Then the conversation, in the order it happened. */}
+            <div className="flex flex-col gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+                Conversation
+              </p>
+
+              {data.email && (
+                <Message
+                  from={data.email.sender_name || data.email.sender_email || "Customer"}
+                  address={data.email.sender_email}
+                  at={data.email.received_at}
+                  subject={data.email.subject}
+                  body={data.email.body_text}
+                  label={data.email.category ? <Badge value={data.email.category} dot={false} /> : null}
+                />
+              )}
+
+              {data.replies?.map((r) => (
+                <Message
+                  key={r.id}
+                  from={r.sender_name || r.sender_email || "Customer"}
+                  address={r.sender_email}
+                  at={r.received_at}
+                  body={r.body_text}
+                  label={r.reply_intent ? <Badge value={r.reply_intent} dot={false} /> : null}
+                />
+              ))}
+
+              {data.follow_ups?.map((f) => (
+                <Message
+                  key={`f-${f.id}`}
+                  from="You"
+                  at={f.created_at}
+                  subject={f.subject}
+                  body={f.body}
+                  outbound
+                  label={<Badge value={f.sent ? "SENT" : "FAILED"} dot={false} />}
+                />
+              ))}
+
+              {/* The reply being composed sits at the end of the thread, where
+                  the next message in a mail client would be. */}
+              {draft && (
+                <Message
+                  from="You"
+                  at={data.sent_at}
+                  subject={subject}
+                  body={body}
+                  outbound
+                  label={
+                    <Badge value={data.sent_at ? "SENT" : `DRAFT V${draft.version}`} dot={false} />
+                  }
+                  action={
+                    !data.sent_at && (
+                      <Button onClick={() => setTab("content")}>
+                        Edit reply
+                      </Button>
+                    )
+                  }
+                />
+              )}
+            </div>
+
             {(data.review_notes || data.missing_information.length > 0) && (
               <Banner tone="attention">
                 {data.missing_information.length > 0 && (
@@ -293,53 +572,14 @@ export default function QuotationDetailPanel({
               </Banner>
             )}
 
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Card title="Enquiry">
-                <dl className="divide-y divide-rule">
-                  <Field label="Customer">
-                    {data.customer_company || data.customer_name || "—"}
-                  </Field>
-                  <Field label="Email">{data.customer_email ?? "—"}</Field>
-                  <Field label="Deliver to">{data.delivery_location ?? "not stated"}</Field>
-                  <Field label="Wanted by">{data.required_delivery_date ?? "not stated"}</Field>
-                  <Field label="Payment terms">{data.payment_terms ?? "not stated"}</Field>
-                </dl>
-              </Card>
-
-              <Card title="Original message" subtitle={when(data.email?.received_at)}>
-                <p className="mb-2 text-sm font-medium text-ink">{data.email?.subject}</p>
-                <pre className="max-h-56 overflow-y-auto whitespace-pre-wrap font-sans text-sm leading-relaxed text-ink-soft">
-                  {data.email?.body_text ?? "—"}
-                </pre>
-              </Card>
-            </div>
-
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
+                Materials
+              </p>
               {data.line_items.map((item) => (
                 <MaterialOverview key={item.id} item={item} />
               ))}
             </div>
-
-            {data.replies?.length > 0 && (
-              <Card title={`Customer replies (${data.replies.length})`} padded={false}>
-                {data.replies.map((r) => (
-                  <div key={r.id} className="border-b border-rule px-4 py-3 last:border-0">
-                    <div className="mb-1 flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium text-ink">
-                        {r.sender_name || r.sender_email}
-                      </span>
-                      <div className="flex items-center gap-2">
-                        {r.reply_intent && <Badge value={r.reply_intent} dot={false} />}
-                        <span className="text-[11px] text-ink-faint">{ago(r.received_at)}</span>
-                      </div>
-                    </div>
-                    <pre className="whitespace-pre-wrap font-sans text-sm text-ink-soft">
-                      {r.body_text}
-                    </pre>
-                  </div>
-                ))}
-              </Card>
-            )}
           </div>
         )}
 
@@ -410,7 +650,6 @@ export default function QuotationDetailPanel({
                 />
                 <div className="flex justify-end gap-2 border-t border-rule bg-sunk px-4 py-2.5">
                   <Button
-                    size="sm"
                     disabled={!edited || busy !== null}
                     onClick={() =>
                       act("save", () =>

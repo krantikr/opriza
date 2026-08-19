@@ -257,3 +257,31 @@ def test_business_rules_are_inspectable(client):
     body = client.get("/api/v1/system/rules").json()
     assert body["stock_pricing"]["markup_pct"] == 8.0
     assert body["matching"]["accept_score"] == 80.0
+
+
+def test_every_email_category_is_a_valid_filter(client):
+    """The mailbox filters by category, so each one must be accepted.
+
+    Regression: the UI sent `ORDER_CONFIRMATION` and `GENERAL_INQUIRY`, which
+    are not members of the enum. Every folder using them 422'd.
+    """
+    from app.models import EmailCategory
+
+    for category in EmailCategory:
+        response = client.get("/api/v1/emails", params={"category": category.value})
+        assert response.status_code == 200, f"{category.value} was rejected"
+
+
+def test_an_unknown_category_is_refused_rather_than_ignored(client):
+    """A typo must fail loudly, not silently return the whole mailbox."""
+    response = client.get("/api/v1/emails", params={"category": "ORDER_CONFIRMATION"})
+    assert response.status_code == 422
+
+
+def test_an_email_carries_its_quotation_status(client, db, quoted_quotation):
+    """The mailbox shows which enquiries still wait on a person."""
+    body = client.get("/api/v1/emails").json()
+    row = next(e for e in body["items"] if e["quotation_id"] == quoted_quotation.id)
+
+    assert row["quotation_number"] == quoted_quotation.quotation_number
+    assert row["quotation_status"] == "READY_FOR_REVIEW"

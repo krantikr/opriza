@@ -52,6 +52,7 @@ from app.models import (
     StockAvailability,
 )
 from app.services import audit, telemetry
+from app.services.dates import parse_promised_date
 from app.services.notifications.service import NotificationService
 from app.services.pricing.service import PricingService
 from app.services.products.matcher import ProductMatcher
@@ -327,6 +328,16 @@ class QuotationWorkflow:
         email.reply_intent = result.intent
         email.reply_intent_confidence = result.confidence
         email.reply_intent_reason = result.reason
+
+        # What the customer said about coming back, and whether the ball is
+        # now in our court. Both drive the mailbox and the follow-up rules.
+        email.awaiting_us = bool(result.awaiting_us)
+        email.promised_date_raw = result.promised_date
+        if result.promised_date:
+            parsed = parse_promised_date(result.promised_date, email.received_at)
+            email.promised_date = parsed
+            if parsed:
+                quotation.promised_date = parsed
         self.db.commit()
 
         return {
@@ -539,6 +550,8 @@ class QuotationWorkflow:
                 StockAvailability(
                     quotation_line_item_id=item.id,
                     available_qty_mt=outcome.available_qty_mt,
+                    on_hand_qty_mt=outcome.on_hand_qty_mt,
+                    reserved_qty_mt=outcome.reserved_qty_mt,
                     available_nop=outcome.available_nop,
                     sufficient=outcome.sufficient,
                     locations=outcome.locations_as_json(),

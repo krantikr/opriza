@@ -439,3 +439,291 @@ def test_trends_serialise_for_the_api(db, quoted_quotation, default_user):
     assert set(payload) == {"days", "period_label", "previous_label", "series", "deltas"}
     assert all("day" in p and "value" in p for p in payload["series"])
     assert all({"key", "direction", "good"} <= set(d) for d in payload["deltas"])
+
+
+def test_a_soft_block_holds_stock_without_moving_it(db, plate, default_user):
+    """A block withholds tonnage from quoting but leaves it on the floor."""
+    service = StockMovementService(db)
+    before = service.balance_for_lots([plate])
+
+    service.record(
+        kind=StockMovementKind.BLOCK,
+        quantity_kg=Decimal("5000"),
+        stock_item=plate,
+        note="Held for an expected order",
+    )
+    after = service.balance_for_lots([plate])
+
+    assert after.on_hand_kg == before.on_hand_kg  # still physically present
+    assert after.available_kg == before.available_kg - Decimal("5000")
+
+
+def test_lifting_a_block_puts_the_tonnage_back_on_offer(db, plate, default_user):
+    service = StockMovementService(db)
+    movement = service.record(
+        kind=StockMovementKind.BLOCK, quantity_kg=Decimal("5000"), stock_item=plate
+    )
+    held = service.balance_for_lots([plate])
+
+    assert service.lift_hold(movement.id) is True
+    freed = service.balance_for_lots([plate])
+
+    assert freed.available_kg == held.available_kg + Decimal("5000")
+    # Lifting something already lifted is a no-op, not an error.
+    assert service.lift_hold(movement.id) is False
+
+
+def test_availability_quotes_free_stock_not_the_imported_figure(db, plate, customer):
+    """The check must not promise material that is despatched or held.
+
+    Regression: availability read `StockItem.balance_qty_kg` alone, so a block
+    or an issue recorded after the last import changed nothing about what the
+    system was willing to quote.
+    """
+    from app.services.stock.availability import StockAvailabilityService
+
+    StockMovementService(db).record(
+        kind=StockMovementKind.BLOCK, quantity_kg=Decimal("20000"), stock_item=plate
+    )
+
+    outcome = StockAvailabilityService(db).check(
+        lot_ids=[plate.id], quantity_mt=Decimal("25"), customer=customer
+    )
+
+    # 28.26 MT on hand, 20 MT held, so 8.26 MT may actually be promised.
+    assert outcome.on_hand_qty_mt == Decimal("28.260")
+    assert outcome.available_qty_mt == Decimal("8.260")
+    assert outcome.sufficient is False
+    assert "reserved against other quotations" in outcome.explanation
+
+
+# ---------------------------------------------------------------------------
+# Business insights
+# ---------------------------------------------------------------------------
+
+
+def test_a_metric_knows_whether_its_movement_is_welcome(db):
+    """Rising value is good; rising time-to-quote is not."""
+    from app.services.insights import Metric
+
+    more_value = Metric("v", "Quoted value", current=200, previous=100)
+    assert more_value.direction == "up"
+    assert more_value.good is True
+    assert more_value.change_pct == 100.0
+
+    slower = Metric("t", "Time to quote", current=30, previous=10, lower_is_better=True)
+    assert slower.direction == "up"
+    assert slower.good is False
+
+    unchanged = Metric("s", "Sent", current=5, previous=5)
+    assert unchanged.direction == "flat"
+    assert unchanged.good is None
+
+
+def test_growth_from_zero_does_not_divide_by_zero(db):
+    from app.services.insights import Metric
+
+    assert Metric("v", "V", current=100, previous=0).change_pct == 100.0
+    assert Metric("v", "V", current=0, previous=0).change_pct is None
+
+
+def test_insights_compare_like_for_like_windows(db, quoted_quotation, default_user):
+    from app.services.insights import InsightService
+
+    result = InsightService(db).build(30)
+
+    assert result.period_label and result.previous_label
+    assert result.period_label != result.previous_label
+    keys = {m.key for m in result.metrics}
+    assert {"quoted_value", "win_rate", "margin_pct", "response_hours"} <= keys
+
+
+def test_open_quotations_are_surfaced_largest_first(db, quoted_quotation, default_user):
+    """The cost of leaving a quotation is its value, so that leads the order."""
+    from app.services.insights import InsightService
+
+    result = InsightService(db).build(30)
+
+    assert result.attention, "a READY_FOR_REVIEW quotation should be waiting"
+    values = [row["value"] for row in result.attention]
+    assert values == sorted(values, reverse=True)
+    assert result.attention[0]["number"] == quoted_quotation.quotation_number
+
+
+def test_deadstock_raises_a_highlight_worth_reading(db, plate, default_user):
+    from app.services.insights import InsightService
+
+    plate.ageing_days = 200
+    db.commit()
+
+    result = InsightService(db).build(30)
+    titles = [h.title for h in result.highlights]
+
+    assert any("90 days" in t for t in titles)
+
+
+def test_highlights_stay_silent_when_there_is_nothing_to_say(db, default_user):
+    """An empty desk should not be given invented commentary."""
+    from app.services.insights import InsightService
+
+    result = InsightService(db).build(30)
+    assert result.highlights == []
+
+
+def test_the_series_buckets_weekly_over_a_long_window(db, default_user):
+    """Ninety daily points is a picket fence; the shape is what matters."""
+    from app.services.insights import InsightService
+
+    daily = InsightService(db).build(30)
+    weekly = InsightService(db).build(90)
+
+    assert len(daily.series) == 30
+    assert len(weekly.series) < 30
+
+
+def test_insights_serialise_for_the_api(db, quoted_quotation, default_user):
+    from app.services.insights import InsightService
+
+    payload = InsightService(db).build(30).to_dict()
+
+    assert {"metrics", "highlights", "series", "attention", "top_customers"} <= set(payload)
+    assert all({"key", "direction", "good"} <= set(m) for m in payload["metrics"])
+
+
+# ---------------------------------------------------------------------------
+# The two shapes of follow-up rule
+# ---------------------------------------------------------------------------
+
+
+def test_a_24_hour_rule_is_expressible_in_hours(db, sent_quotation, default_user):
+    """"Confirm within 24 hours" must be a real rule, not a rounded day."""
+    from app.models import FollowUpTrigger
+
+    sent_quotation.sent_at = utcnow() - timedelta(hours=26)
+    db.add(
+        FollowUpRule(
+            label="Confirm within 24 hours",
+            trigger=FollowUpTrigger.ELAPSED,
+            first_after_hours=24,
+        )
+    )
+    db.commit()
+
+    result = FollowUpScheduler(db).run()
+
+    assert len(result.due) == 1, "26 hours after sending, a 24-hour rule is due"
+
+
+def test_a_24_hour_rule_is_not_due_after_20_hours(db, sent_quotation, default_user):
+    from app.models import FollowUpTrigger
+
+    sent_quotation.sent_at = utcnow() - timedelta(hours=20)
+    db.add(
+        FollowUpRule(
+            label="Confirm within 24 hours",
+            trigger=FollowUpTrigger.ELAPSED,
+            first_after_hours=24,
+        )
+    )
+    db.commit()
+
+    result = FollowUpScheduler(db).run()
+
+    assert result.due == []
+    assert len(result.scheduled) == 1, "scheduled, but not yet owed"
+
+
+def test_a_promised_date_rule_fires_on_the_customers_own_day(db, sent_quotation, default_user):
+    """Calling on the day they named is following up; an interval is chasing."""
+    from app.models import FollowUpTrigger
+
+    # Anchored on UTC, because that is the clock the scheduler runs on.
+    sent_quotation.promised_date = utcnow().date()
+    db.add(
+        FollowUpRule(
+            label="Follow up on the customer's date",
+            trigger=FollowUpTrigger.PROMISED_DATE,
+        )
+    )
+    db.commit()
+
+    result = FollowUpScheduler(db).run()
+
+    assert len(result.due) == 1
+
+
+def test_a_promised_date_rule_waits_for_a_future_date(db, sent_quotation, default_user):
+    from app.models import FollowUpTrigger
+
+    sent_quotation.promised_date = utcnow().date() + timedelta(days=5)
+    db.add(FollowUpRule(label="On their date", trigger=FollowUpTrigger.PROMISED_DATE))
+    db.commit()
+
+    result = FollowUpScheduler(db).run()
+
+    assert result.due == []
+    assert len(result.scheduled) == 1
+
+
+def test_a_promised_date_rule_stands_aside_with_no_promise(db, sent_quotation, default_user):
+    """No date was given, so there is nothing for this rule to act on."""
+    from app.models import FollowUpTrigger
+
+    assert sent_quotation.promised_date is None
+    db.add(FollowUpRule(label="On their date", trigger=FollowUpTrigger.PROMISED_DATE))
+    db.commit()
+
+    result = FollowUpScheduler(db).run()
+
+    assert result.scheduled == []
+    assert result.due == []
+
+
+def test_editing_a_rule_re_dates_the_nudges_already_scheduled(db, sent_quotation, default_user):
+    """Changing "chase in 3 days" to "24 hours" must actually chase sooner.
+
+    Regression: a schedule kept the timing it was created with, so the rule
+    read as changed while nothing happened any earlier - worse than having no
+    rule, because it looks like it is working.
+    """
+    from app.models import FollowUpTrigger
+
+    sent_quotation.sent_at = utcnow() - timedelta(hours=30)
+    rule = FollowUpRule(
+        label="Standard chase",
+        trigger=FollowUpTrigger.ELAPSED,
+        first_after_hours=72,
+    )
+    db.add(rule)
+    db.commit()
+
+    first = FollowUpScheduler(db).run()
+    assert first.due == [], "72 hours has not elapsed yet"
+    assert len(first.scheduled) == 1
+
+    # The trader shortens the rule.
+    rule.first_after_hours = 24
+    db.commit()
+
+    second = FollowUpScheduler(db).run()
+
+    assert len(second.retimed) == 1, "the pending nudge should follow the rule"
+    assert len(second.due) == 1, "30 hours after sending, a 24-hour rule is owed"
+
+
+def test_re_timing_leaves_a_nudge_alone_when_its_rule_is_unchanged(db, sent_quotation, default_user):
+    from app.models import FollowUpTrigger
+
+    db.add(
+        FollowUpRule(
+            label="Standard chase",
+            trigger=FollowUpTrigger.ELAPSED,
+            first_after_hours=72,
+        )
+    )
+    db.commit()
+
+    FollowUpScheduler(db).run()
+    second = FollowUpScheduler(db).run()
+
+    assert second.retimed == [], "nothing changed, so nothing should move"

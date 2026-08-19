@@ -166,6 +166,23 @@ class ReplyClassification(LLMBaseModel):
         le=1.0,
     )
     reason: str = Field(description="One short sentence justifying the intent.")
+    promised_date: str | None = Field(
+        default=None,
+        description=(
+            "If the customer named a date or timeframe by which they would come "
+            "back - 'we will confirm by Friday', 'decision next week', 'after the "
+            "15th' - repeat it here exactly as they wrote it. Null if they gave "
+            "no timeframe. Never infer or invent one."
+        ),
+    )
+    awaiting_us: bool = Field(
+        default=False,
+        description=(
+            "True when the customer has asked something that needs an answer from "
+            "us - a question, a request for a revision, a document. False when the "
+            "reply needs nothing back, such as a plain acknowledgement."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

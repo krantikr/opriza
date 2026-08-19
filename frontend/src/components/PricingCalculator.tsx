@@ -79,7 +79,7 @@ function Row({
               className="tabular w-28 rounded-lg border border-brand bg-surface px-2 py-1 text-right text-sm text-ink outline-none"
             />
             <Button
-              size="sm"
+              compact
               variant="primary"
               disabled={busy}
               onClick={() => {

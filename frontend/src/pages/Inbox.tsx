@@ -13,6 +13,7 @@ import {
   Input,
   Loading,
   Scroller,
+  until,
   when,
 } from "../components/ui";
 
@@ -26,23 +27,104 @@ import {
    so "why did it do that?" is answered where the question occurs.
    --------------------------------------------------------------------------- */
 
-const FOLDERS = [
-  { key: "", label: "All mail" },
-  { key: "QUOTATION_REQUEST", label: "Enquiries" },
-  { key: "GENERAL_INQUIRY", label: "General" },
-  { key: "ORDER_CONFIRMATION", label: "Orders" },
-  { key: "DELIVERY_QUERY", label: "Delivery" },
-  { key: "COMPLAINT", label: "Complaints" },
-  { key: "SPAM", label: "Spam" },
+/**
+ * Folders, in the order a desk works them.
+ *
+ * A folder holds one or more *categories* rather than a single one, because
+ * the taxonomy the classifier uses is finer than the way a trader thinks:
+ * PRICE_NEGOTIATION and PAYMENT_QUERY both belong with the commercial
+ * conversation, and GENERAL / SPAM / OTHER are all "not work" - keeping them
+ * apart just makes three near-empty tabs.
+ *
+ * `pending` is not a category at all: it is every enquiry that became a
+ * quotation still waiting on a person. It sits with the categories because
+ * that is where someone looks for it.
+ */
+/**
+ * The mailbox is a queue of work, not a filing cabinet.
+ *
+ * Every message resolves to exactly one *pending state* on the backend
+ * (`services/pipeline_state.py`), and leaves it the moment somebody acts. So a
+ * tab's number is a true count of outstanding work, and all tabs empty means
+ * the desk is clear - something a category scheme can never tell you.
+ *
+ * "All mail" is the only non-pending tab: the archive and the search surface,
+ * where anything already handled still lives.
+ */
+const FOLDERS: { key: string; label: string; state?: string; hint: string }[] = [
+  { key: "", label: "All mail", hint: "Everything, including what is already handled" },
+  {
+    key: "enquiries",
+    label: "Enquiries",
+    state: "ENQUIRY",
+    hint: "Asked for a price. No quotation has gone out yet.",
+  },
+  {
+    key: "follow-up",
+    label: "Follow up",
+    state: "FOLLOW_UP",
+    hint: "Quotation sent, no reply yet. A rule says when to chase.",
+  },
+  {
+    key: "needs-reply",
+    label: "Needs reply",
+    state: "NEEDS_REPLY",
+    hint: "They asked something. Nobody has answered.",
+  },
+  {
+    key: "delivery",
+    label: "Delivery",
+    state: "DELIVERY",
+    hint: "Order confirmed. Waiting for the goods to go out.",
+  },
+  {
+    key: "complaints",
+    label: "Complaints",
+    state: "COMPLAINT",
+    hint: "Something went wrong and nobody has answered.",
+  },
 ];
 
+
+
+/** The stripe down a message's left edge, so a folder reads at a glance. */
 const CATEGORY_TONE: Record<string, string> = {
   QUOTATION_REQUEST: "border-l-brand",
-  ORDER_CONFIRMATION: "border-l-settled",
+  ORDER: "border-l-settled",
   COMPLAINT: "border-l-danger",
   DELIVERY_QUERY: "border-l-info",
+  PRICE_NEGOTIATION: "border-l-info",
+  PAYMENT_QUERY: "border-l-info",
   SPAM: "border-l-rule-firm",
+  GENERAL: "border-l-rule-firm",
 };
+
+/**
+ * A sentence a trader can act on, from a stack trace they cannot.
+ *
+ * The raw text is kept behind a disclosure - it matters when reporting a
+ * problem - but leading with it means the actual message ("the enquiry is
+ * still here, press try again") is buried in provider JSON.
+ */
+function summariseError(raw: string): string {
+  const text = raw.toLowerCase();
+  if (text.includes("429") || text.includes("rate-limit") || text.includes("rate limit")) {
+    return "The AI provider was busy and refused the request. Nothing is lost — try again.";
+  }
+  if (text.includes("not a valid model")) {
+    return "The configured AI model does not exist. Check LLM_MODEL_* in your settings.";
+  }
+  if (text.includes("401") || text.includes("api key") || text.includes("unauthorized")) {
+    return "The AI provider rejected the API key. Check OPENROUTER_API_KEY.";
+  }
+  if (text.includes("timeout") || text.includes("timed out")) {
+    return "The AI provider took too long to answer. Try again.";
+  }
+  if (text.includes("extraction failed")) {
+    return "The enquiry could not be read well enough to quote. It needs a person.";
+  }
+  return "This message could not be processed automatically. It needs a person.";
+}
 
 /** Colour-blocked initials, so a sender is recognisable before it is read. */
 function Avatar({ name, email }: { name: string | null; email: string | null }) {
@@ -73,10 +155,13 @@ function Avatar({ name, email }: { name: string | null; email: string | null }) 
 function MessageRow({
   email,
   active,
+  showStatus = false,
   onSelect,
 }: {
   email: Email;
   active: boolean;
+  /** In the pending folder, the quotation's state is the reason it is listed. */
+  showStatus?: boolean;
   onSelect: () => void;
 }) {
   const unprocessed = email.processing_status === "PENDING";
@@ -86,7 +171,9 @@ function MessageRow({
       type="button"
       onClick={onSelect}
       className={`flex w-full gap-3 border-b border-l-2 border-rule px-3 py-2.5 text-left transition-colors ${
-        CATEGORY_TONE[email.category ?? ""] ?? "border-l-transparent"
+        email.processing_status === "FAILED"
+          ? "border-l-danger"
+          : (CATEGORY_TONE[email.category ?? ""] ?? "border-l-transparent")
       } ${active ? "bg-brand-wash" : "hover:bg-sunk"}`}
     >
       <Avatar name={email.sender_name} email={email.sender_email} />
@@ -105,7 +192,26 @@ function MessageRow({
         <p className="truncate text-xs text-ink-faint">{email.snippet}</p>
 
         <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-          {email.category && <Badge value={email.category} dot={false} />}
+          {showStatus && email.quotation_status ? (
+            <Badge value={email.quotation_status} dot={false} />
+          ) : (
+            email.category && <Badge value={email.category} dot={false} />
+          )}
+          {showStatus && email.follow_up_due && (
+            <span className="rounded-full bg-attention-wash px-1.5 py-0.5 text-[10px] font-medium text-attention-ink">
+              chase now
+            </span>
+          )}
+          {showStatus && !email.follow_up_due && email.follow_up_at && (
+            <span className="rounded-full bg-sunk px-1.5 py-0.5 text-[10px] font-medium text-ink-soft">
+              chase {until(email.follow_up_at)}
+            </span>
+          )}
+          {showStatus && email.promised_date_raw && (
+            <span className="rounded-full bg-info-wash px-1.5 py-0.5 text-[10px] font-medium text-info-ink">
+              said {email.promised_date_raw}
+            </span>
+          )}
           {email.quotation_number && (
             <span className="rounded bg-sunk px-1.5 py-0.5 text-[10px] font-medium text-ink-soft">
               {email.quotation_number}
@@ -116,7 +222,11 @@ function MessageRow({
               <path d="M21 12.5L12.5 21a5 5 0 0 1-7-7l8.5-8.5a3.5 3.5 0 0 1 5 5L10.5 19a2 2 0 0 1-3-3L15 8.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           )}
-          {email.processing_status === "FAILED" && <Badge value="FAILED" />}
+          {email.processing_status === "FAILED" && (
+            <span className="rounded-full bg-danger-wash px-2 py-0.5 text-[11px] font-medium text-danger-ink">
+              could not be read
+            </span>
+          )}
         </div>
       </div>
     </button>
@@ -163,15 +273,40 @@ function Reading({ id, onProcessed }: { id: number; onProcessed: () => void }) {
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
+            {data.state === "DELIVERY" && data.quotation_id && (
+              <Button
+                compact
+                variant="primary"
+                onClick={async () => {
+                  await api.post(`/quotations/${data.quotation_id}/despatched`);
+                  reload();
+                  onProcessed();
+                }}
+              >
+                Mark despatched
+              </Button>
+            )}
+            {data.awaiting_us && !data.answered_at && (
+              <Button
+                compact
+                onClick={async () => {
+                  await api.post(`/emails/${data.id}/answered`);
+                  reload();
+                  onProcessed();
+                }}
+              >
+                Mark answered
+              </Button>
+            )}
             {data.quotation_id ? (
               <Link to={`/quotations/${data.quotation_id}`}>
-                <Button variant="primary" size="sm">
+                <Button variant="primary">
                   Open {data.quotation_number}
                 </Button>
               </Link>
             ) : (
               data.processing_status === "PENDING" && (
-                <Button size="sm" onClick={reprocess} disabled={busy}>
+                <Button onClick={reprocess} disabled={busy}>
                   {busy ? "Processing…" : "Process now"}
                 </Button>
               )
@@ -180,6 +315,12 @@ function Reading({ id, onProcessed }: { id: number; onProcessed: () => void }) {
         </div>
 
         <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+          {data.state !== "DONE" && <Badge value={data.state} dot={false} />}
+          {data.promised_date_raw && (
+            <span className="rounded-full bg-info-wash px-2 py-0.5 text-[11px] font-medium text-info-ink">
+              customer said: {data.promised_date_raw}
+            </span>
+          )}
           {data.category && <Badge value={data.category} />}
           <Badge value={data.processing_status} />
           {data.reply_intent && <Badge value={data.reply_intent} />}
@@ -196,7 +337,33 @@ function Reading({ id, onProcessed }: { id: number; onProcessed: () => void }) {
         {(data.classification_reason || data.error_message) && (
           <div className="border-b border-rule px-5 py-3">
             {data.error_message ? (
-              <Banner tone="danger">{data.error_message}</Banner>
+              <Banner
+                tone="danger"
+                action={
+                  <Button
+                    compact
+                    onClick={async () => {
+                      await api.post("/pipeline/process");
+                      setTimeout(() => {
+                        reload();
+                        onProcessed();
+                      }, 2500);
+                    }}
+                  >
+                    Try again
+                  </Button>
+                }
+              >
+                <p className="font-medium">{summariseError(data.error_message)}</p>
+                <details className="mt-1">
+                  <summary className="cursor-pointer text-xs opacity-80">
+                    Technical detail
+                  </summary>
+                  <pre className="mt-1 whitespace-pre-wrap text-[11px] leading-snug opacity-80">
+                    {data.error_message}
+                  </pre>
+                </details>
+              </Banner>
             ) : (
               <div className="rounded-lg border border-rule bg-sunk px-3 py-2">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
@@ -260,27 +427,42 @@ export default function Inbox() {
   const [selected, setSelected] = useState<number | null>(null);
 
   const { data, error, loading, reload } = useApi<Page<Email>>(
-    `/emails${query({ category: folder, search, limit: 100 })}`,
+    `/emails${query({ search, limit: 200 })}`,
     30_000,
   );
 
+  const all = data?.items ?? [];
+
+  /** One state per message, decided by the backend so the tabs agree with it. */
+  const inFolder = (email: Email, f: (typeof FOLDERS)[number]) =>
+    !f.state || email.state === f.state;
+
+  const active = FOLDERS.find((f) => f.key === folder) ?? FOLDERS[0];
+  const rows = all.filter((e) => inFolder(e, active));
+
   // Open the newest message by default, so the pane is never blank on arrival.
   useEffect(() => {
-    if (selected === null && data?.items.length) setSelected(data.items[0].id);
-  }, [data, selected]);
+    if (rows.length === 0) return;
+    if (selected === null || !rows.some((e) => e.id === selected)) {
+      setSelected(rows[0].id);
+    }
+  }, [rows, selected]);
 
-  const counts = (data?.items ?? []).reduce<Record<string, number>>((acc, e) => {
-    if (e.category) acc[e.category] = (acc[e.category] ?? 0) + 1;
-    return acc;
-  }, {});
+  const counts = Object.fromEntries(
+    FOLDERS.map((f) => [f.key, all.filter((e) => inFolder(e, f)).length]),
+  );
 
   return (
-    <div className="flex h-[calc(100vh-3rem)] flex-col">
+    <div className="flex h-[calc(100vh-7rem)] flex-col md:h-[calc(100vh-3.25rem)]">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-rule px-5 py-3">
         <div>
           <h1 className="text-lg font-semibold text-ink">Inbox</h1>
           <p className="text-sm text-ink-faint">
-            {data ? `${data.total} message${data.total === 1 ? "" : "s"}` : "Loading…"}
+            {data
+              ? `${rows.length} message${rows.length === 1 ? "" : "s"}${
+                  active.key ? ` in ${active.label.toLowerCase()}` : ""
+                }`
+              : "Loading…"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -299,6 +481,7 @@ export default function Inbox() {
           <button
             key={f.key}
             type="button"
+            title={f.hint}
             onClick={() => {
               setFolder(f.key);
               setSelected(null);
@@ -311,7 +494,15 @@ export default function Inbox() {
           >
             {f.label}
             {f.key && counts[f.key] > 0 && (
-              <span className="rounded bg-sunk px-1 text-[10px] tabular text-ink-soft">
+              <span
+                className={`tabular rounded px-1 text-[10px] ${
+                  f.state
+                    ? "bg-attention text-white"
+                    : folder === f.key
+                      ? "bg-brand-wash text-brand-soft-ink"
+                      : "bg-sunk text-ink-soft"
+                }`}
+              >
                 {counts[f.key]}
               </span>
             )}
@@ -322,24 +513,39 @@ export default function Inbox() {
       {error && <div className="p-4"><ErrorNote message={error} /></div>}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[22rem_1fr]">
-        <Scroller className="min-h-0 overflow-y-auto border-r border-rule">
+        <Scroller
+          className={`min-h-0 overflow-y-auto border-r border-rule ${
+            selected ? "hidden lg:block" : "block"
+          }`}
+        >
           {loading && !data ? (
             <Loading />
-          ) : data?.items.length ? (
-            data.items.map((email) => (
+          ) : rows.length ? (
+            rows.map((email) => (
               <MessageRow
                 key={email.id}
                 email={email}
                 active={selected === email.id}
+                showStatus={active.key === "follow-up" || active.key === "delivery"}
                 onSelect={() => setSelected(email.id)}
               />
             ))
           ) : (
-            <Empty message="No mail here." />
+            <Empty
+              message={
+                active.state
+                  ? `Nothing pending here. ${active.hint}`
+                  : "No mail matches."
+              }
+            />
           )}
         </Scroller>
 
-        <div className="min-h-0 overflow-hidden bg-surface">
+        <div
+          className={`min-h-0 overflow-hidden bg-surface ${
+            selected ? "block" : "hidden lg:block"
+          }`}
+        >
           {selected ? (
             <Reading id={selected} onProcessed={reload} />
           ) : (

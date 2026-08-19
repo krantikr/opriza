@@ -37,6 +37,10 @@ KG_PER_MT = Decimal(1000)
 #: quoting it twice is how a desk over-commits.
 COMMITTING = (StockMovementKind.ISSUE, StockMovementKind.RESERVATION)
 
+#: Kinds that hold material back without moving it. Both reduce what may be
+#: promised; neither changes what is physically on the floor.
+HOLDING = (StockMovementKind.RESERVATION, StockMovementKind.BLOCK)
+
 
 @dataclass(slots=True)
 class Balance:
@@ -156,6 +160,23 @@ class StockMovementService:
             )
         return movements
 
+    def lift_hold(self, movement_id: int, reason: str = "Lifted by a reviewer.") -> bool:
+        """Release one open block or reservation, freeing the tonnage again."""
+        movement = self.db.get(StockMovement, movement_id)
+        if movement is None or not movement.is_open or movement.kind not in HOLDING:
+            return False
+        movement.is_open = False
+        movement.note = f"{movement.note or ''} {reason}".strip()
+        audit.record(
+            self.db,
+            entity_type="stock_movement",
+            entity_id=movement.id,
+            action="STOCK_HOLD_LIFTED",
+            details={"kind": movement.kind.value, "quantity_kg": str(movement.quantity_kg)},
+        )
+        self.db.commit()
+        return True
+
     def release_for(self, quotation: QuotationRequest, reason: str) -> int:
         """Give reserved material back - the deal fell through."""
         open_reservations = list(
@@ -185,7 +206,9 @@ class StockMovementService:
         for movement in self.db.scalars(
             _spec_query(select(StockMovement), spec, StockMovement)
         ):
-            if movement.kind is StockMovementKind.RESERVATION:
+            if movement.kind in HOLDING:
+                # Held, not moved: it stays in `on_hand` and comes out of
+                # `available` only while the hold is open.
                 if movement.is_open:
                     reserved_kg += abs(movement.quantity_kg)
                 continue
@@ -218,9 +241,11 @@ class StockMovementService:
         caller passed - which stops a mistyped minus from inflating stock.
         """
         magnitude = abs(quantity_kg)
-        if kind in (StockMovementKind.ISSUE,):
+        if kind is StockMovementKind.ISSUE:
             return -magnitude
         if kind is StockMovementKind.ADJUSTMENT:
+            # The only kind whose direction the caller genuinely decides: a
+            # stocktake correction can go either way.
             return quantity_kg
         return magnitude
 
