@@ -1,13 +1,159 @@
 @import "tailwindcss";
 
+/* ===========================================================================
+   Design tokens.
+
+   Cool slate neutrals, a deep navy rail, and a single bright blue for anything
+   actionable. Semantic colours stay separate from that blue, so "needs
+   attention" never reads as "primary" - the amber of a draft and the blue of a
+   quote price are saying different kinds of thing.
+
+   Every colour is defined here at :root and only *redefined* under the dark
+   variants. Nothing gets its sole definition inside a media query, which is
+   what keeps the un-stamped "system" state rendering correctly.
+   =========================================================================== */
+
 @theme {
-  --color-ink-50: oklch(0.98 0.003 250);
-  --color-ink-100: oklch(0.96 0.004 250);
-  --color-ink-200: oklch(0.92 0.006 250);
-  --color-ink-300: oklch(0.85 0.008 250);
-  --color-ink-500: oklch(0.6 0.015 250);
-  --color-ink-700: oklch(0.42 0.02 250);
-  --color-ink-900: oklch(0.24 0.025 250);
+  /* Neutrals - slate, faintly blue, never a dead grey */
+  --color-ground: #F8FAFC;
+  --color-surface: #FFFFFF;
+  --color-sunk: #F1F5F9;
+  --color-rule: #E2E8F0;
+  --color-rule-firm: #CBD5E1;
+
+  --color-ink: #0F172A;
+  --color-ink-soft: #475569;
+  --color-ink-faint: #94A3B8;
+
+  /* The navigation rail is its own dark surface in both themes. */
+  --color-rail: #0F172A;
+  --color-rail-hover: #1E293B;
+  --color-rail-ink: #94A3B8;
+  --color-rail-ink-strong: #F1F5F9;
+
+  /* Accent */
+  --color-brand: #2563EB;
+  --color-brand-hover: #1D4ED8;
+  --color-brand-wash: #EFF6FF;
+  --color-brand-ink: #1E40AF;
+  /* Lighter accent for selection state - a location, not an action. */
+  --color-brand-soft: #60A5FA;
+  --color-brand-soft-ink: #3B82F6;
+
+  /* Semantic */
+  --color-attention: #D97706;
+  --color-attention-wash: #FEF3C7;
+  --color-attention-ink: #92400E;
+
+  --color-settled: #059669;
+  --color-settled-wash: #D1FAE5;
+  --color-settled-ink: #065F46;
+
+  --color-danger: #DC2626;
+  --color-danger-wash: #FEE2E2;
+  --color-danger-ink: #991B1B;
+
+  --color-info: #7C3AED;
+  --color-info-wash: #EDE9FE;
+  --color-info-ink: #5B21B6;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --radius-card: 0.75rem;
+
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 1px 3px rgb(15 23 42 / 0.06);
+  --shadow-raised: 0 4px 6px -1px rgb(15 23 42 / 0.07), 0 10px 24px -4px rgb(15 23 42 / 0.1);
+}
+
+/* Dark, for viewers whose OS asks for it but who have made no explicit choice. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-ground: #0B1220;
+    --color-surface: #131C2E;
+    --color-sunk: #1B2639;
+    --color-rule: #263149;
+    --color-rule-firm: #37455F;
+
+    --color-ink: #E8EDF5;
+    --color-ink-soft: #A7B4C8;
+    --color-ink-faint: #6B7C95;
+
+    --color-rail: #0A101C;
+    --color-rail-hover: #18233A;
+    --color-rail-ink: #8494AC;
+    --color-rail-ink-strong: #EEF2F8;
+
+    --color-brand: #60A5FA;
+    --color-brand-hover: #93C5FD;
+    --color-brand-wash: #172542;
+    --color-brand-ink: #BFDBFE;
+    --color-brand-soft: #93C5FD;
+    --color-brand-soft-ink: #7DD3FC;
+
+    --color-attention: #FBBF24;
+    --color-attention-wash: #2E2412;
+    --color-attention-ink: #FDE68A;
+
+    --color-settled: #34D399;
+    --color-settled-wash: #10281F;
+    --color-settled-ink: #A7F3D0;
+
+    --color-danger: #F87171;
+    --color-danger-wash: #2C1517;
+    --color-danger-ink: #FECACA;
+
+    --color-info: #A78BFA;
+    --color-info-wash: #221A38;
+    --color-info-ink: #DDD6FE;
+
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4);
+    --shadow-raised: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 10px 24px -4px rgb(0 0 0 / 0.45);
+  }
+}
+
+/* Explicit dark choice wins over a light OS. */
+:root[data-theme="dark"] {
+  --color-ground: #0B1220;
+  --color-surface: #131C2E;
+  --color-sunk: #1B2639;
+  --color-rule: #263149;
+  --color-rule-firm: #37455F;
+
+  --color-ink: #E8EDF5;
+  --color-ink-soft: #A7B4C8;
+  --color-ink-faint: #6B7C95;
+
+  --color-rail: #0A101C;
+  --color-rail-hover: #18233A;
+  --color-rail-ink: #8494AC;
+  --color-rail-ink-strong: #EEF2F8;
+
+  --color-brand: #60A5FA;
+  --color-brand-hover: #93C5FD;
+  --color-brand-wash: #172542;
+  --color-brand-ink: #BFDBFE;
+  --color-brand-soft: #93C5FD;
+  --color-brand-soft-ink: #7DD3FC;
+
+  --color-attention: #FBBF24;
+  --color-attention-wash: #2E2412;
+  --color-attention-ink: #FDE68A;
+
+  --color-settled: #34D399;
+  --color-settled-wash: #10281F;
+  --color-settled-ink: #A7F3D0;
+
+  --color-danger: #F87171;
+  --color-danger-wash: #2C1517;
+  --color-danger-ink: #FECACA;
+
+  --color-info: #A78BFA;
+  --color-info-wash: #221A38;
+  --color-info-ink: #DDD6FE;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-raised: 0 4px 6px -1px rgb(0 0 0 / 0.5), 0 10px 24px -4px rgb(0 0 0 / 0.45);
 }
 
 html,
@@ -17,11 +163,59 @@ body,
 }
 
 body {
-  @apply bg-ink-50 text-ink-900 antialiased;
-  font-feature-settings: "tnum" 1;
+  background: var(--color-ground);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  /* This application is columns of money. Figures line up everywhere. */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "cv05" 1;
 }
 
-/* Figures in a pricing table must line up to be scannable. */
-.tabular {
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-rule-firm) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-rule-firm);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 99px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@utility tabular {
   font-variant-numeric: tabular-nums;
+}
+
+@utility sticky-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-sunk);
 }

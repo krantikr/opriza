@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.schemas.common import ORMModel
+from app.schemas.pricing import PricingOut
 
 
 class AttachmentOut(ORMModel):
@@ -106,6 +107,7 @@ class LineItemOut(ORMModel):
     matched_stock_item_name: str | None = None
     match_candidates: list[MatchCandidateOut] = Field(default_factory=list)
     stock_availability: StockAvailabilityOut | None = None
+    pricing: PricingOut | None = None
 
 
 class DraftOut(ORMModel):

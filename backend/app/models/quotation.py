@@ -87,6 +87,11 @@ class QuotationRequest(Base, TimestampMixin):
         cascade="all, delete-orphan",
         order_by="FollowUp.created_at",
     )
+    follow_up_schedules: Mapped[list["FollowUpSchedule"]] = relationship(  # noqa: F821
+        back_populates="quotation_request",
+        cascade="all, delete-orphan",
+        order_by="FollowUpSchedule.due_at",
+    )
 
     @property
     def current_draft(self) -> "QuotationDraft | None":
@@ -144,6 +149,9 @@ class QuotationLineItem(Base, TimestampMixin):
     quotation_request: Mapped[QuotationRequest] = relationship(back_populates="line_items")
     matched_stock_item: Mapped["StockItem | None"] = relationship()  # noqa: F821
     stock_availability: Mapped["StockAvailability | None"] = relationship(
+        back_populates="line_item", cascade="all, delete-orphan", uselist=False
+    )
+    pricing: Mapped["QuotationPricing | None"] = relationship(  # noqa: F821
         back_populates="line_item", cascade="all, delete-orphan", uselist=False
     )
 

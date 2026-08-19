@@ -1,122 +1,296 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 
-import { query, useApi } from "../api/client";
-import type { Customer, Page } from "../api/types";
-import { Card, Empty, ErrorNote, Field, Loading } from "../components/ui";
+import { api, query, useApi } from "../api/client";
+import type { Customer, CustomerNote, Page, TimelineEntry } from "../api/types";
+import {
+  ago,
+  Badge,
+  Banner,
+  Button,
+  Empty,
+  ErrorNote,
+  Field,
+  Input,
+  Loading,
+  Scroller,
+  when,
+} from "../components/ui";
+
+/* ---------------------------------------------------------------------------
+   Accounts.
+
+   A directory beside a record, with the interaction timeline built from what
+   already happened - every enquiry, every quotation, every note - rather than
+   from a separate CRM the desk would have to keep up to date by hand.
+   --------------------------------------------------------------------------- */
+
+function Avatar({ name }: { name: string }) {
+  const initials = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase())
+    .join("");
+  let hash = 0;
+  for (const ch of name) hash = (hash * 31 + ch.charCodeAt(0)) % 360;
+
+  return (
+    <span
+      className="grid size-8 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white"
+      style={{ background: `oklch(0.58 0.1 ${hash})` }}
+      aria-hidden="true"
+    >
+      {initials || "?"}
+    </span>
+  );
+}
+
+const TIMELINE_TONE: Record<string, string> = {
+  ENQUIRY: "bg-info",
+  QUOTED: "bg-brand",
+  NOTE: "bg-ink-faint",
+};
+
+function Timeline({ customerId }: { customerId: number }) {
+  const { data } = useApi<TimelineEntry[]>(`/customers/${customerId}/timeline`);
+
+  if (!data) return <Loading label="Loading history" />;
+  if (data.length === 0) return <Empty message="Nothing recorded yet." />;
+
+  return (
+    <ol className="flex flex-col">
+      {data.map((entry, i) => (
+        <li key={`${entry.at}-${i}`} className="flex gap-3">
+          <div className="flex flex-col items-center">
+            <span
+              className={`mt-1.5 size-2 shrink-0 rounded-full ${TIMELINE_TONE[entry.kind] ?? "bg-rule-firm"}`}
+            />
+            {i < data.length - 1 && <span className="w-px flex-1 bg-rule" />}
+          </div>
+          <div className="min-w-0 flex-1 pb-4">
+            <div className="flex items-baseline justify-between gap-2">
+              {entry.link ? (
+                <Link to={entry.link} className="text-sm font-medium text-brand hover:underline">
+                  {entry.title}
+                </Link>
+              ) : (
+                <span className="text-sm font-medium text-ink">{entry.title}</span>
+              )}
+              <span className="shrink-0 text-[11px] text-ink-faint">{ago(entry.at)}</span>
+            </div>
+            {entry.detail && (
+              <p className="mt-0.5 whitespace-pre-wrap text-xs text-ink-soft">{entry.detail}</p>
+            )}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function Notes({ customerId }: { customerId: number }) {
+  const { data, reload } = useApi<CustomerNote[]>(`/customers/${customerId}/notes`);
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function add() {
+    if (!draft.trim()) return;
+    setBusy(true);
+    try {
+      await api.post(`/customers/${customerId}/notes`, { body: draft.trim() });
+      setDraft("");
+      reload();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex gap-2">
+        <Input
+          value={draft}
+          onChange={setDraft}
+          placeholder="Add a note about this account"
+          className="flex-1"
+        />
+        <Button variant="primary" disabled={busy || !draft.trim()} onClick={add}>
+          Add
+        </Button>
+      </div>
+      {data?.map((note) => (
+        <div key={note.id} className="rounded-lg border border-rule bg-sunk px-3 py-2">
+          <p className="whitespace-pre-wrap text-sm text-ink">{note.body}</p>
+          <p className="mt-1 text-[11px] text-ink-faint">{when(note.created_at)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Detail({ id, onChanged }: { id: number; onChanged: () => void }) {
+  const { data, loading, reload } = useApi<Customer>(`/customers/${id}`);
+  const [tab, setTab] = useState<"history" | "notes">("history");
+  const [busy, setBusy] = useState(false);
+
+  if (loading && !data) return <Loading />;
+  if (!data) return null;
+
+  async function verify() {
+    setBusy(true);
+    try {
+      await api.post(`/customers/${id}/verify`);
+      reload();
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col">
+      <header className="border-b border-rule px-5 py-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <Avatar name={data.company || data.name} />
+            <div className="min-w-0">
+              <h2 className="truncate text-base font-semibold text-ink">
+                {data.company || data.name}
+              </h2>
+              <p className="truncate text-xs text-ink-faint">{data.email ?? "no email on file"}</p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Badge value={`TIER ${data.tier}`} dot={false} />
+            {!data.is_verified && (
+              <Button size="sm" variant="primary" disabled={busy} onClick={verify}>
+                Verify
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {!data.is_verified && (
+          <div className="mt-3">
+            <Banner tone="attention">
+              Built from an email signature and not yet confirmed. Until it is verified, the tier
+              adjustment is withheld from pricing.
+            </Banner>
+          </div>
+        )}
+      </header>
+
+      <div className="border-b border-rule px-5 py-3">
+        <dl className="grid gap-x-8 sm:grid-cols-2">
+          <Field label="Contact">{data.name}</Field>
+          <Field label="Phone">{data.phone ?? "—"}</Field>
+          <Field label="Code">{data.customer_code ?? "—"}</Field>
+          <Field label="Delivers to">{data.default_delivery_location ?? "—"}</Field>
+          <Field label="Payment terms">{data.payment_terms ?? "—"}</Field>
+          <Field label="Status">{data.status}</Field>
+        </dl>
+      </div>
+
+      <nav className="flex gap-1 border-b border-rule px-4">
+        {(["history", "notes"] as const).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium capitalize transition-colors ${
+              tab === t
+                ? "border-brand-soft text-brand-soft-ink"
+                : "border-transparent text-ink-faint hover:text-ink"
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </nav>
+
+      <div className="flex-1 overflow-y-auto px-5 py-4">
+        {tab === "history" ? <Timeline customerId={id} /> : <Notes customerId={id} />}
+      </div>
+    </div>
+  );
+}
 
 export default function Customers() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<number | null>(null);
 
-  const { data, error, loading } = useApi<Page<Customer>>(
+  const { data, error, loading, reload } = useApi<Page<Customer>>(
     `/customers${query({ search, limit: 200 })}`,
   );
-  const { data: detail } = useApi<Customer>(selected ? `/customers/${selected}` : null);
+
+  useEffect(() => {
+    if (selected === null && data?.items.length) setSelected(data.items[0].id);
+  }, [data, selected]);
 
   const unverified = (data?.items ?? []).filter((c) => !c.is_verified).length;
 
   return (
-    <div className="space-y-4 p-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
+    <div className="flex h-[calc(100vh-3rem)] flex-col">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-rule px-5 py-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink-900">Customers</h1>
-          <p className="text-sm text-ink-500">
+          <h1 className="text-lg font-semibold text-ink">Customers</h1>
+          <p className="text-sm text-ink-faint">
             {data ? `${data.total} on file` : "…"}
             {unverified > 0 && ` · ${unverified} unconfirmed`}
           </p>
         </div>
-        <input
+        <Input
           value={search}
-          onChange={(event) => setSearch(event.target.value)}
+          onChange={setSearch}
           placeholder="Search name, company or email"
-          className="w-72 rounded-lg border border-ink-300 bg-white px-3 py-1.5 text-sm"
+          className="w-64"
         />
       </header>
 
-      {error && <ErrorNote message={error} />}
+      {error && <div className="p-4"><ErrorNote message={error} /></div>}
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="overflow-hidden lg:col-span-2">
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[20rem_1fr]">
+        <Scroller className="min-h-0 overflow-y-auto border-r border-rule">
           {loading && !data ? (
             <Loading />
-          ) : !data || data.items.length === 0 ? (
-            <Empty
-              message={
-                search
-                  ? "No customers match."
-                  : "No customers yet — they appear here as enquiries arrive."
-              }
-            />
+          ) : data?.items.length ? (
+            data.items.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => setSelected(c.id)}
+                className={`flex w-full items-center gap-3 border-b border-rule px-3 py-2.5 text-left transition-colors ${
+                  selected === c.id ? "bg-brand-wash" : "hover:bg-sunk"
+                }`}
+              >
+                <Avatar name={c.company || c.name} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-medium text-ink">
+                    {c.company || c.name}
+                  </p>
+                  <p className="truncate text-xs text-ink-faint">{c.email ?? c.name}</p>
+                </div>
+                {!c.is_verified && (
+                  <span
+                    className="size-1.5 shrink-0 rounded-full bg-attention"
+                    title="Unconfirmed"
+                  />
+                )}
+              </button>
+            ))
           ) : (
-            <div className="-m-4 max-h-[70vh] overflow-auto">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 border-b border-ink-200 bg-ink-50 text-left text-xs uppercase tracking-wide text-ink-500">
-                  <tr>
-                    <th className="px-4 py-2 font-medium">Company</th>
-                    <th className="px-4 py-2 font-medium">Contact</th>
-                    <th className="px-4 py-2 font-medium">Location</th>
-                    <th className="px-4 py-2 font-medium">Tier</th>
-                    <th className="px-4 py-2 font-medium">Source</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-100">
-                  {data.items.map((customer) => (
-                    <tr
-                      key={customer.id}
-                      onClick={() => setSelected(customer.id)}
-                      className={`cursor-pointer hover:bg-ink-50 ${
-                        selected === customer.id ? "bg-ink-100" : ""
-                      }`}
-                    >
-                      <td className="px-4 py-2 font-medium">{customer.company ?? "—"}</td>
-                      <td className="px-4 py-2 text-ink-700">
-                        {customer.name}
-                        <span className="block text-xs text-ink-500">{customer.email}</span>
-                      </td>
-                      <td className="px-4 py-2">{customer.default_delivery_location ?? "—"}</td>
-                      <td className="px-4 py-2">{customer.tier}</td>
-                      <td className="px-4 py-2">
-                        {customer.is_verified ? (
-                          <span className="text-xs text-ink-500">Confirmed</span>
-                        ) : (
-                          <span className="inline-flex items-center rounded-md bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
-                            From email
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <Empty message="No customers match." />
           )}
-        </Card>
+        </Scroller>
 
-        <Card title={detail ? detail.company ?? detail.name : "Select a customer"}>
-          {!detail ? (
-            <p className="text-sm text-ink-500">
-              Pick a customer to see their contact details. A sender nobody has on file is
-              added here automatically on their first enquiry, marked{" "}
-              <span className="font-medium">From email</span> until someone confirms them.
-              Importing <span className="font-mono text-xs">customers.xlsx</span> marks a
-              record confirmed and fills in tier and payment terms.
-            </p>
+        <div className="min-h-0 overflow-hidden bg-surface">
+          {selected ? (
+            <Detail id={selected} onChanged={reload} />
           ) : (
-            <dl>
-              <Field label="Contact">{detail.name}</Field>
-              <Field label="Email">{detail.email ?? "—"}</Field>
-              <Field label="Phone">{detail.phone ?? "—"}</Field>
-              <Field label="Tier">{detail.tier}</Field>
-              <Field label="Payment terms">{detail.payment_terms ?? "—"}</Field>
-              <Field label="Default delivery">{detail.default_delivery_location ?? "—"}</Field>
-              <Field label="Record">
-                {detail.is_verified
-                  ? "Confirmed"
-                  : "Created from an email signature — tier and payment terms are defaults, not agreed figures."}
-              </Field>
-            </dl>
+            <Empty message="Select a customer." />
           )}
-        </Card>
+        </div>
       </div>
     </div>
   );

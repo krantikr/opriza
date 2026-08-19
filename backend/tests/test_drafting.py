@@ -24,8 +24,8 @@ Thank you for your enquiry. We are pleased to offer the following:
 
 1. IS 2062 E250 Plate 10 x 1500 x 6000 mm
    Quantity: 20 MT
-   Rate: Rs 59,200.00 per MT
-   Line total: Rs 11,84,000.00
+   Available: 28.26 MT
+   Suggested rate: Rs 61,000.00 per MT
 
 Terms:
 - Prices are valid for 3 days from the date of this quotation.
@@ -37,7 +37,7 @@ Regards,
 Sales Team
 """
 
-ROUNDED_BODY = GOOD_BODY.replace("59,200.00", "59,000.00")
+ROUNDED_BODY = GOOD_BODY.replace("61,000.00", "60,500.00")
 
 
 class ScriptedDrafter(OpenRouterClient):
@@ -124,10 +124,26 @@ def test_an_empty_draft_is_rejected():
 
 @pytest.mark.parametrize(
     "phrase",
-    ["Material is in stock", "ready for dispatch", "We offer a special discount", "price is negotiable"],
+    [
+        "We offer a special discount",
+        "price is negotiable",
+        "this is our best possible price",
+        "we guarantee the delivery date",
+        "this is our final price",
+        "we can offer immediate delivery",
+    ],
 )
 def test_unsupported_commitments_are_flagged(phrase):
     assert find_unsupported_claims(f"Dear Sir,\n\n{phrase}.\n\nRegards")
+
+
+@pytest.mark.parametrize("phrase", ["Material is in stock", "ready for dispatch"])
+def test_availability_statements_are_permitted(phrase):
+    """Availability is a checked fact in this flow, so the draft may state it.
+
+    It is the *unverified* commitments above that warn - see `ai/guards.py`.
+    """
+    assert find_unsupported_claims(f"Dear Sir,\n\n{phrase}.\n\nRegards") == []
 
 
 def test_a_plain_draft_raises_no_warnings():
@@ -137,42 +153,43 @@ def test_a_plain_draft_raises_no_warnings():
 # --- Context assembly ------------------------------------------------------
 
 
-def test_context_carries_every_figure_the_model_must_reproduce(db, priced_quotation):
-    context = build_draft_context(priced_quotation)
+def test_context_carries_every_figure_the_model_must_reproduce(db, quoted_quotation):
+    context = build_draft_context(quoted_quotation)
 
-    assert "59,200.00" in context.facts
-    assert "11,84,000.00" in context.facts
+    assert "61,000.00" in context.facts
+    assert "28.26" in context.facts
     assert "20 MT" in context.facts
-    assert "IS 2062 E250 Plate" in context.facts
-    assert context.priced_line_count == 1
+    assert "E250 Plate" in context.facts
+    assert context.matched_line_count == 1
     assert {f.label for f in context.required_facts} == {
         "Quantity on line 1",
-        "Rate on line 1",
-        "Line total on line 1",
+        "Available quantity on line 1",
+        "Suggested rate on line 1",
     }
 
 
-def test_context_includes_configured_terms_not_invented_ones(db, priced_quotation):
-    facts = build_draft_context(priced_quotation).facts
+def test_context_includes_configured_terms_not_invented_ones(db, quoted_quotation):
+    facts = build_draft_context(quoted_quotation).facts
     assert "Prices are valid for 3 days" in facts
     assert "GST extra as applicable." in facts
 
 
-def test_unpriced_lines_say_so_rather_than_guessing(db, priced_quotation):
-    priced_quotation.line_items[0].pricing.recommended_price = None
+def test_unmatched_lines_say_so_rather_than_guessing(db, quoted_quotation):
+    """A line with no stock check must read as unconfirmed, never as a figure."""
+    quoted_quotation.line_items[0].stock_availability = None
     db.commit()
 
-    context = build_draft_context(priced_quotation)
+    context = build_draft_context(quoted_quotation)
 
-    assert "Rate: to be confirmed" in context.facts
-    assert context.unpriced_line_count == 1
+    assert "Availability: to be confirmed" in context.facts
+    assert context.unmatched_line_count == 1
 
 
 # --- The service -----------------------------------------------------------
 
 
-def test_a_clean_draft_is_stored_as_version_one(db, priced_quotation):
-    result = DraftingService(db, client=ScriptedDrafter([GOOD_BODY])).generate(priced_quotation)
+def test_a_clean_draft_is_stored_as_version_one(db, quoted_quotation):
+    result = DraftingService(db, client=ScriptedDrafter([GOOD_BODY])).generate(quoted_quotation)
 
     assert result.ok
     assert result.violations == []
@@ -182,24 +199,24 @@ def test_a_clean_draft_is_stored_as_version_one(db, priced_quotation):
     assert result.draft.subject.startswith("Re:")
 
 
-def test_an_altered_price_triggers_one_regeneration(db, priced_quotation):
+def test_an_altered_price_triggers_one_regeneration(db, quoted_quotation):
     """First attempt rounds the rate; the retry is told exactly what it broke."""
     client = ScriptedDrafter([ROUNDED_BODY, GOOD_BODY])
 
-    result = DraftingService(db, client=client).generate(priced_quotation)
+    result = DraftingService(db, client=client).generate(quoted_quotation)
 
     assert result.regenerated is True
     assert result.violations == []
-    assert "59,200.00" in result.draft.body
+    assert "61,000.00" in result.draft.body
     # The retry prompt must name the specific figure that was altered.
     retry_prompt = client.prompts[-1][-1]["content"]
-    assert "Rate on line 1" in retry_prompt
+    assert "Suggested rate on line 1" in retry_prompt
 
 
-def test_a_draft_that_fails_twice_is_kept_but_flagged(db, priced_quotation):
+def test_a_draft_that_fails_twice_is_kept_but_flagged(db, quoted_quotation):
     """Never silently sent, never silently discarded - the reviewer decides."""
     result = DraftingService(db, client=ScriptedDrafter([ROUNDED_BODY, ROUNDED_BODY])).generate(
-        priced_quotation
+        quoted_quotation
     )
 
     assert result.ok is False
@@ -208,10 +225,10 @@ def test_a_draft_that_fails_twice_is_kept_but_flagged(db, priced_quotation):
     assert any("did not reproduce the calculated figures" in n for n in result.review_notes)
 
 
-def test_regenerating_supersedes_rather_than_overwrites(db, priced_quotation):
+def test_regenerating_supersedes_rather_than_overwrites(db, quoted_quotation):
     service = DraftingService(db, client=ScriptedDrafter([GOOD_BODY, GOOD_BODY]))
-    first = service.generate(priced_quotation)
-    second = service.generate(priced_quotation)
+    first = service.generate(quoted_quotation)
+    second = service.generate(quoted_quotation)
 
     db.refresh(first.draft)
     assert first.draft.is_current is False
@@ -221,14 +238,14 @@ def test_regenerating_supersedes_rather_than_overwrites(db, priced_quotation):
     assert db.query(QuotationDraft).count() == 2
 
 
-def test_generation_is_recorded_in_telemetry_and_audit(db, priced_quotation):
+def test_generation_is_recorded_in_telemetry_and_audit(db, quoted_quotation):
     from app.models import AuditLog, LLMCall
 
-    DraftingService(db, client=ScriptedDrafter([GOOD_BODY])).generate(priced_quotation)
+    DraftingService(db, client=ScriptedDrafter([GOOD_BODY])).generate(quoted_quotation)
 
     call = db.query(LLMCall).filter_by(task="draft").one()
     assert call.total_tokens == 1000
-    assert call.quotation_request_id == priced_quotation.id
+    assert call.quotation_request_id == quoted_quotation.id
 
     entry = db.query(AuditLog).filter_by(entity_type="quotation_draft").one()
     assert entry.action == "GENERATED"

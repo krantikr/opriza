@@ -28,7 +28,15 @@ from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
 from app.core.logging import get_logger
-from app.models import Customer, CustomerTier, ImportBatch, ImportEntity, ImportStatus, RecordStatus, StockItem
+from app.models import (
+    Customer,
+    CustomerTier,
+    ImportBatch,
+    ImportEntity,
+    ImportStatus,
+    RecordStatus,
+    StockItem,
+)
 from app.services.ingestion.column_map import ColumnSpec, build_mapping
 
 logger = get_logger(__name__)
@@ -167,8 +175,12 @@ class BaseImporter(ABC):
     def _read_frame(self, path: Path) -> pd.DataFrame:
         return pd.read_excel(path, sheet_name=self.sheet_name, header=self.header_row)
 
-    def _before_import(self, path: Path) -> None:
-        """Hook for subclasses that need to clear prior state before loading."""
+    def _before_import(self, path: Path) -> None:  # noqa: B027
+        """Hook for subclasses that need to clear prior state before loading.
+
+        Intentionally concrete and empty: most importers need no such step, so
+        making it abstract would force every subclass to write an empty body.
+        """
 
     def run(self, path: Path) -> ImportResult:
         if not path.exists():

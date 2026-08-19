@@ -8,7 +8,9 @@ the system refuses to do on the way.
 
 from __future__ import annotations
 
+import itertools
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -112,8 +114,9 @@ DRAFT = DraftEmail(
         "Dear Rajesh Kumar,\n\nThank you for your enquiry.\n\n"
         "1. IS 2062 E250 Plate 10 x 1500 x 6000 mm\n"
         "   Quantity: 20 MT\n"
-        "   Rate: Rs 59,200.00 per MT\n"
-        "   Line total: Rs 11,84,000.00\n\n"
+        "   Available: 28.26 MT\n"
+        "   Rate: Rs 61,000.00 per MT\n"
+        "   Line total: Rs 12,20,000.00\n\n"
         "- Prices are valid for 3 days from the date of this quotation.\n\n"
         "Regards,\nSales Team\n"
     ),
@@ -122,9 +125,11 @@ DRAFT = DraftEmail(
 
 @pytest.fixture()
 def inbound(db, customer):
+    counter = itertools.count(1)
+
     def _make(subject="Enquiry - plate", body="Please quote 20 MT of 10mm plate.", sender=None):
         email = Email(
-            message_id=f"local:{subject[:20]}-{id(subject)}",
+            message_id=f"local:{subject[:20]}-{next(counter)}",
             thread_id="local-thread:1",
             source=EmailSourceType.LOCAL,
             sender_email=sender if sender is not None else customer.email,
@@ -144,7 +149,7 @@ def inbound(db, customer):
 # --- The happy path --------------------------------------------------------
 
 
-def test_quotation_email_runs_the_full_pipeline(db, plate, customer, comparable_sales, inbound):
+def test_quotation_email_runs_the_full_pipeline(db, plate, customer, inbound):
     email = inbound()
     llm = FakeLLM(classify=[classified()], extract=[enquiry()], draft=[DRAFT])
 
@@ -161,12 +166,12 @@ def test_quotation_email_runs_the_full_pipeline(db, plate, customer, comparable_
 
     item = quotation.line_items[0]
     assert item.match_status is MatchStatus.MATCH_FOUND
-    assert item.matched_product_id == plate.id
-    assert item.pricing.recommended_price == pytest.approx(59200.00)
-    assert item.pricing.explanation
+    assert item.matched_stock_item_id == plate.id
+    assert item.stock_availability.suggested_rate == pytest.approx(Decimal("61000.00"))
+    assert item.stock_availability.explanation
 
     assert quotation.current_draft is not None
-    assert "59,200.00" in quotation.current_draft.body
+    assert "61,000.00" in quotation.current_draft.body
 
     db.refresh(email)
     assert email.processing_status is ProcessingStatus.PROCESSED
@@ -174,22 +179,31 @@ def test_quotation_email_runs_the_full_pipeline(db, plate, customer, comparable_
     assert email.processing_ms >= 0
 
 
-def test_pricing_evidence_is_persisted_for_later_explanation(
-    db, plate, customer, comparable_sales, inbound
-):
-    """Section 22: the recommendation must survive as evidence, not as a number."""
+def test_stock_evidence_is_persisted_for_later_explanation(db, plate, customer, inbound):
+    """Section 22: the check must survive as evidence, not as a bare number.
+
+    Every step records the reason it contributed, so "why did the system say
+    this?" stays answerable from the stored row alone, without re-running the
+    check against stock that may since have moved.
+    """
     email = inbound()
     llm = FakeLLM(classify=[classified()], extract=[enquiry()], draft=[DRAFT])
 
     result = QuotationWorkflow(db, client=llm).run(email.id)
-    pricing = db.get(QuotationRequest, result.quotation_id).line_items[0].pricing
+    availability = db.get(QuotationRequest, result.quotation_id).line_items[0].stock_availability
 
-    assert pricing.comparable_count == 5
-    assert pricing.recent_average_price == pytest.approx(58000.00)
-    assert pricing.base_price == pytest.approx(56500.00)
-    assert pricing.pricing_rule_version == "1.0"
-    assert [step["id"] for step in pricing.breakdown][0] == "base_price"
-    assert "Freight to Patna" in pricing.explanation
+    assert availability.lot_count == 1
+    assert availability.available_qty_mt == pytest.approx(Decimal("28.260"))
+    assert availability.rules_version == "1.0"
+
+    steps = [step["id"] for step in availability.breakdown]
+    assert steps[0] == "stock_lookup"
+    assert "suggested_rate" in steps
+
+    # 56.5/kg landed -> 56,500.00/MT, +8% markup -> 61,020.00, rounded to 61,000.00
+    assert availability.suggested_rate == pytest.approx(Decimal("61000.00"))
+    assert "landed cost" in availability.explanation
+    assert "not an approved price" in availability.explanation
 
 
 # --- Branches that must not produce a quotation ----------------------------
@@ -249,7 +263,7 @@ def test_classification_failure_is_recorded_as_failed(db, inbound):
 
 
 def test_missing_quantity_is_flagged_rather_than_invented(
-    db, plate, customer, comparable_sales, inbound
+    db, plate, customer, inbound
 ):
     email = inbound()
     incomplete = enquiry(
@@ -267,9 +281,12 @@ def test_missing_quantity_is_flagged_rather_than_invented(
     item = quotation.line_items[0]
     assert item.quantity is None
     assert item.quantity_mt is None
-    assert item.pricing.line_total is None
+    # Availability is still reported; only sufficiency is left unanswered,
+    # because there is no requested quantity to judge it against.
+    assert item.stock_availability.available_qty_mt is not None
+    assert item.stock_availability.sufficient is None
     # A rate is still offered - that is what the reviewer needs to finish by hand.
-    assert item.pricing.recommended_price is not None
+    assert item.stock_availability.suggested_rate is not None
 
 
 def test_ambiguous_product_produces_no_price_and_no_draft(
@@ -285,12 +302,12 @@ def test_ambiguous_product_produces_no_price_and_no_draft(
     item = quotation.line_items[0]
 
     assert item.match_status is MatchStatus.MULTIPLE_MATCHES
-    assert item.matched_product_id is None
-    assert item.pricing.recommended_price is None
+    assert item.matched_stock_item_id is None
+    assert item.stock_availability.suggested_rate is None
     assert quotation.current_draft is None
     assert "draft" not in llm.calls
     assert len(item.match_candidates) >= 2
-    assert "More than one product" in quotation.review_notes
+    assert "More than one stock spec" in quotation.review_notes
 
 
 def test_unstocked_material_is_never_priced(db, plate, customer, inbound):
@@ -312,11 +329,11 @@ def test_unstocked_material_is_never_priced(db, plate, customer, inbound):
     item = db.get(QuotationRequest, result.quotation_id).line_items[0]
 
     assert item.match_status is MatchStatus.NO_MATCH
-    assert item.pricing.recommended_price is None
+    assert item.stock_availability.suggested_rate is None
     assert "draft" not in llm.calls
 
 
-def test_unknown_sender_is_added_as_an_unverified_customer(db, plate, comparable_sales, inbound):
+def test_unknown_sender_is_added_as_an_unverified_customer(db, plate, inbound):
     """A new sender gets a record, but not the standing of a known account."""
     from app.models import Customer
 
@@ -343,16 +360,25 @@ def test_unknown_sender_is_added_as_an_unverified_customer(db, plate, comparable
     assert quotation.confidence is not ConfidenceLevel.HIGH
 
 
-def test_a_repeat_enquiry_reuses_the_auto_created_customer(db, plate, comparable_sales, inbound):
+def test_a_repeat_enquiry_reuses_the_auto_created_customer(db, plate, inbound):
     """The second email from a new sender must not create a duplicate."""
     from app.models import Customer
 
+    # `inbound` seeds the known customer, so the new sender is the *second*
+    # record; the point of the test is that the repeat does not make a third.
     before = db.query(Customer).count()
     for _ in range(2):
         email = inbound(sender="imran@newhorizonfab.co.in")
         llm = FakeLLM(
             classify=[classified()],
-            extract=[enquiry(customer_name="Imran Sheikh")],
+            extract=[
+                enquiry(
+                    customer_name="Imran Sheikh",
+                    # A different company, or `find_customer` resolves this to
+                    # the seeded account by name and never creates a record.
+                    customer_company="New Horizon Fabrication",
+                )
+            ],
             draft=[DRAFT],
         )
         QuotationWorkflow(db, client=llm).run(email.id)
@@ -360,7 +386,7 @@ def test_a_repeat_enquiry_reuses_the_auto_created_customer(db, plate, comparable
     assert db.query(Customer).count() == before + 1
 
 
-def test_a_known_company_resolves_even_from_a_new_address(db, plate, customer, comparable_sales, inbound):
+def test_a_known_company_resolves_even_from_a_new_address(db, plate, customer, inbound):
     """A colleague writing from a different mailbox is still the same account."""
     email = inbound(sender="purchase2@abcindustries.co.in")
     llm = FakeLLM(classify=[classified()], extract=[enquiry()], draft=[DRAFT])
@@ -373,7 +399,7 @@ def test_a_known_company_resolves_even_from_a_new_address(db, plate, customer, c
 # --- Multi-item enquiries --------------------------------------------------
 
 
-def test_multi_item_enquiry_prices_each_line(db, plate, wide_plate, customer, comparable_sales, inbound):
+def test_multi_item_enquiry_prices_each_line(db, plate, wide_plate, customer, inbound):
     email = inbound()
     multi = enquiry(
         line_items=[
@@ -393,12 +419,12 @@ def test_multi_item_enquiry_prices_each_line(db, plate, wide_plate, customer, co
 
     assert len(quotation.line_items) == 2
     assert [i.line_no for i in quotation.line_items] == [1, 2]
-    assert quotation.line_items[0].matched_product_id == plate.id
-    assert quotation.line_items[1].matched_product_id == wide_plate.id
-    assert all(i.pricing.recommended_price is not None for i in quotation.line_items)
+    assert quotation.line_items[0].matched_stock_item_id == plate.id
+    assert quotation.line_items[1].matched_stock_item_id == wide_plate.id
+    assert all(i.stock_availability.suggested_rate is not None for i in quotation.line_items)
 
 
-def test_quotation_confidence_is_the_weakest_line(db, plate, customer, comparable_sales, inbound):
+def test_quotation_confidence_is_the_weakest_line(db, plate, customer, inbound):
     """One shaky line drags the whole quotation down; it is one document."""
     email = inbound()
     mixed = enquiry(
@@ -418,7 +444,7 @@ def test_quotation_confidence_is_the_weakest_line(db, plate, customer, comparabl
 # --- Unit conversion through the pipeline ----------------------------------
 
 
-def test_a_piece_quantity_is_converted_before_pricing(db, plate, customer, comparable_sales, inbound):
+def test_a_piece_quantity_is_converted_before_pricing(db, plate, customer, inbound):
     """40 plates at 706.5 kg each = 28.26 MT, which lands in a different slab."""
     email = inbound()
     in_pieces = enquiry(
@@ -431,13 +457,13 @@ def test_a_piece_quantity_is_converted_before_pricing(db, plate, customer, compa
 
     assert float(item.quantity_mt) == pytest.approx(28.26, abs=0.01)
     assert "706.500 kg/pc" in item.conversion_basis
-    assert item.pricing.recommended_price is not None
+    assert item.stock_availability.suggested_rate is not None
 
 
 # --- Batch processing ------------------------------------------------------
 
 
-def test_batch_processing_handles_a_mixed_inbox(db, plate, customer, comparable_sales, inbound):
+def test_batch_processing_handles_a_mixed_inbox(db, plate, customer, inbound):
     inbound(subject="Enquiry one")
     inbound(subject="Order confirmation")
 
@@ -454,7 +480,7 @@ def test_batch_processing_handles_a_mixed_inbox(db, plate, customer, comparable_
     assert db.query(QuotationRequest).count() == 1
 
 
-def test_already_processed_emails_are_not_reprocessed(db, plate, customer, comparable_sales, inbound):
+def test_already_processed_emails_are_not_reprocessed(db, plate, customer, inbound):
     inbound(subject="Enquiry one")
     llm = FakeLLM(classify=[classified()], extract=[enquiry()], draft=[DRAFT])
 

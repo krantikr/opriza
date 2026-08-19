@@ -1,17 +1,23 @@
-"""Deterministic product matching.
+"""Deterministic stock-spec matching.
 
 The behaviour these tests protect is the refusal to guess. It is easy to write
 a matcher that always returns its best candidate; the value here is in the two
 cases where it returns nothing and asks a human instead.
+
+The matcher groups stock *lots* into distinct specs (grade + dimensions) and
+matches against those, so a spec is identified here by its `display_name`
+rather than by a product code - lots have no such code.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 
 import pytest
 
-from app.models import MatchStatus, Product, QuantityUnit
+from app.models import MatchStatus, StockItem
 from app.services.products.matcher import MatchSpec, ProductMatcher
 from app.services.products.normalizer import normalize_spec
 
@@ -29,110 +35,58 @@ class Line:
     diameter_mm: float | None = None
 
 
+def lot(**spec) -> StockItem:
+    """A stock lot with enough balance to be real, live stock."""
+    spec.setdefault("location", "NAGPUR")
+    spec.setdefault("balance_qty_kg", Decimal("10000.000"))
+    spec.setdefault("balance_nop", 10.0)
+    spec.setdefault("landed_cost_per_kg", 56.5)
+    spec.setdefault("ageing_days", 10)
+    spec.setdefault("stock_date", date.today())
+    return StockItem(**spec)
+
+
 @pytest.fixture()
-def catalogue(db, plate: Product, wide_plate: Product) -> dict[str, Product]:
-    """The reference plates plus a few products from other families."""
+def catalogue(db, plate: StockItem, wide_plate: StockItem) -> dict[str, StockItem]:
+    """The reference plates plus lots from other product families."""
     extras = [
-        Product(
-            product_code="PLT-E250-12X1500X6000",
-            product_type="Plate",
-            grade="E250",
-            standard="IS 2062",
-            thickness_mm=12.0,
-            width_mm=1500.0,
-            length_mm=6000.0,
-        ),
-        Product(
-            product_code="ANG-E250-75X75X6",
-            product_type="Angle",
-            grade="E250",
-            standard="IS 2062",
-            thickness_mm=6.0,
-            width_mm=75.0,
-            length_mm=6000.0,
-        ),
-        Product(
-            product_code="ANG-E250-75X75X8",
-            product_type="Angle",
-            grade="E250",
-            standard="IS 2062",
-            thickness_mm=8.0,
-            width_mm=75.0,
-            length_mm=6000.0,
-        ),
-        Product(
-            product_code="TMT-FE500-D16",
-            product_type="TMT Bar",
-            grade="Fe500",
-            standard="IS 1786",
-            diameter_mm=16.0,
-            length_mm=12000.0,
-        ),
-        Product(
-            product_code="TMT-FE500-D20",
-            product_type="TMT Bar",
-            grade="Fe500",
-            standard="IS 1786",
-            diameter_mm=20.0,
-            length_mm=12000.0,
-        ),
-        Product(
-            product_code="SHT-E250-3X1250X2500",
-            product_type="Sheet",
-            grade="E250",
-            standard="IS 2062",
-            thickness_mm=3.0,
-            width_mm=1250.0,
-            length_mm=2500.0,
-        ),
-        Product(
-            product_code="PIP-E250-OD50X3.2",
-            product_type="Pipe",
-            grade="E250",
-            standard="IS 1239",
-            diameter_mm=50.0,
-            thickness_mm=3.2,
-            length_mm=6000.0,
-        ),
-        Product(
-            product_code="PIP-E250-OD50X2.9",
-            product_type="Pipe",
-            grade="E250",
-            standard="IS 1239",
-            diameter_mm=50.0,
-            thickness_mm=2.9,
-            length_mm=6000.0,
-        ),
+        lot(product_type="Plate", grade="E250", thickness_mm=12.0, width_mm=1500.0, length_mm=6000.0),
+        lot(product_type="Angle", grade="E250", thickness_mm=6.0, width_mm=75.0, length_mm=6000.0),
+        lot(product_type="Angle", grade="E250", thickness_mm=8.0, width_mm=75.0, length_mm=6000.0),
+        lot(product_type="TMT Bar", grade="Fe500", diameter_mm=16.0, length_mm=12000.0),
+        lot(product_type="TMT Bar", grade="Fe500", diameter_mm=20.0, length_mm=12000.0),
+        lot(product_type="Sheet", grade="E250", thickness_mm=3.0, width_mm=1250.0, length_mm=2500.0),
+        lot(product_type="Pipe", grade="E250", diameter_mm=50.0, thickness_mm=3.2, length_mm=6000.0),
+        lot(product_type="Pipe", grade="E250", diameter_mm=50.0, thickness_mm=2.9, length_mm=6000.0),
     ]
-    for product in extras:
-        product.unit = QuantityUnit.MT
     db.add_all(extras)
     db.commit()
-    return {p.product_code: p for p in [plate, wide_plate, *extras]}
+    return {item.display_name: item for item in [plate, wide_plate, *extras]}
 
 
 # --- The confident path ----------------------------------------------------
 
 
-def test_fully_specified_enquiry_matches_exactly_one_product(db, catalogue):
+def test_fully_specified_enquiry_matches_exactly_one_spec(db, catalogue):
     """'IS 2062 E250 plate, 10mm x 1500 x 6000' - the textbook case."""
     outcome = ProductMatcher(db).match_line_item(
         Line("plate", "E250", "IS 2062", thickness_mm=10, width_mm=1500, length_mm=6000)
     )
 
     assert outcome.status is MatchStatus.MATCH_FOUND
-    assert outcome.product.product_code == "PLT-E250-10X1500X6000"
-    assert outcome.score == pytest.approx(100.0)
+    assert outcome.stock_item.display_name == "E250 Plate 10 x 1500 x 6000 mm"
+    assert outcome.lot_ids
+    # Not 100: a stock lot records no standard, so a stated "IS 2062" cannot be
+    # confirmed against it and does not earn its weight.
+    assert outcome.score == pytest.approx(95.56, abs=0.01)
 
 
 def test_section_designation_matches_on_diameter(db, catalogue):
     """'TMT bars Fe500, 16mm dia' - identified by diameter, not thickness."""
-    outcome = ProductMatcher(db).match_line_item(
-        Line("TMT bars", "Fe500", diameter_mm=16)
-    )
+    outcome = ProductMatcher(db).match_line_item(Line("TMT bars", "Fe500", diameter_mm=16))
 
     assert outcome.status is MatchStatus.MATCH_FOUND
-    assert outcome.product.product_code == "TMT-FE500-D16"
+    assert "OD 16mm" in outcome.stock_item.display_name
 
 
 def test_wall_thickness_separates_otherwise_identical_pipes(db, catalogue):
@@ -141,7 +95,7 @@ def test_wall_thickness_separates_otherwise_identical_pipes(db, catalogue):
     )
 
     assert outcome.status is MatchStatus.MATCH_FOUND
-    assert outcome.product.product_code == "PIP-E250-OD50X3.2"
+    assert outcome.stock_item.thickness_mm == pytest.approx(3.2)
 
 
 def test_thickness_is_held_exact_so_a_near_size_never_wins(db, catalogue):
@@ -150,9 +104,9 @@ def test_thickness_is_held_exact_so_a_near_size_never_wins(db, catalogue):
         Line("plate", "E250", thickness_mm=10, width_mm=1500, length_mm=6000)
     )
 
-    assert outcome.product.product_code == "PLT-E250-10X1500X6000"
-    scores = {c.product_code: c.score for c in outcome.candidates}
-    assert scores["PLT-E250-12X1500X6000"] < scores["PLT-E250-10X1500X6000"]
+    assert outcome.stock_item.thickness_mm == pytest.approx(10.0)
+    scores = {c.display_name: c.score for c in outcome.candidates}
+    assert scores["E250 Plate 12 x 1500 x 6000 mm"] < scores["E250 Plate 10 x 1500 x 6000 mm"]
 
 
 # --- The refusals ----------------------------------------------------------
@@ -163,19 +117,19 @@ def test_underspecified_enquiry_is_reported_as_ambiguous(db, catalogue):
     outcome = ProductMatcher(db).match_line_item(Line("MS plate", "MS", thickness_mm=10))
 
     assert outcome.status is MatchStatus.MULTIPLE_MATCHES
-    assert outcome.product is None
-    tied = [c.product_code for c in outcome.candidates[:2]]
-    assert "PLT-E250-10X1500X6000" in tied
-    assert "PLT-E250-10X2000X6300" in tied
+    assert outcome.stock_item is None
+    tied = [c.display_name for c in outcome.candidates[:2]]
+    assert "E250 Plate 10 x 1500 x 6000 mm" in tied
+    assert "E250 Plate 10 x 2000 x 6300 mm" in tied
     assert "not contain enough detail" in outcome.reason
 
 
-def test_material_absent_from_the_master_is_no_match(db, catalogue):
-    """SS 304 is not stocked. No price may be invented for it."""
+def test_material_absent_from_stock_is_no_match(db, catalogue):
+    """SS 304 is not stocked. No availability may be invented for it."""
     outcome = ProductMatcher(db).match_line_item(Line("sheet", "SS 304", thickness_mm=3))
 
     assert outcome.status is MatchStatus.NO_MATCH
-    assert outcome.product is None
+    assert outcome.stock_item is None
     assert "below the acceptance threshold" in outcome.reason
 
 
@@ -186,6 +140,7 @@ def test_ambiguous_outcome_still_reports_the_candidates(db, catalogue):
     assert len(outcome.candidates_as_json()) >= 2
     first = outcome.candidates_as_json()[0]
     assert "score" in first and "fields" in first
+    assert "stock_item_id" in first and "lot_count" in first
 
 
 def test_scoring_is_explained_field_by_field(db, catalogue):
@@ -202,18 +157,33 @@ def test_scoring_is_explained_field_by_field(db, catalogue):
 
 def test_unstated_fields_do_not_count_against_a_candidate(db, catalogue):
     """An enquiry omitting length is judged on less evidence, not penalised."""
-    outcome = ProductMatcher(db).match_line_item(
-        Line("Angle", "E250", thickness_mm=6, width_mm=75)
-    )
+    outcome = ProductMatcher(db).match_line_item(Line("Angle", "E250", thickness_mm=6, width_mm=75))
 
     assert outcome.status is MatchStatus.MATCH_FOUND
-    assert outcome.product.product_code == "ANG-E250-75X75X6"
+    assert outcome.stock_item.thickness_mm == pytest.approx(6.0)
     assert outcome.score == pytest.approx(100.0)
 
 
-def test_empty_master_yields_no_match_rather_than_an_error(db):
+def test_empty_stock_yields_no_match_rather_than_an_error(db):
     outcome = ProductMatcher(db).match(MatchSpec(product_type="Plate", thickness_mm=10))
     assert outcome.status is MatchStatus.NO_MATCH
+
+
+def test_a_fully_committed_lot_still_matches_its_spec(db, plate):
+    """Matching answers "which spec", not "is any of it left".
+
+    A zero balance is reported by the availability service as "not currently
+    in stock" - a fact the reviewer needs - rather than being hidden here as
+    though the spec were unknown.
+    """
+    plate.balance_qty_kg = Decimal("0")
+    plate.balance_nop = 0
+    db.commit()
+
+    outcome = ProductMatcher(db).match_line_item(
+        Line("plate", "E250", thickness_mm=10, width_mm=1500, length_mm=6000)
+    )
+    assert outcome.status is MatchStatus.MATCH_FOUND
 
 
 # --- Normalisation ---------------------------------------------------------

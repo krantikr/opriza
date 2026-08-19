@@ -2,8 +2,18 @@ import { useState } from "react";
 
 import { useApi } from "../api/client";
 import type { StockItem, StockSummary } from "../api/types";
-import { HBarChart, type BarDatum } from "../components/charts";
-import { Card, Empty, ErrorNote, Loading, num } from "../components/ui";
+import { DonutChart, HBarChart, type BarDatum } from "../components/charts";
+import {
+  Button,
+  Card,
+  Empty,
+  ErrorNote,
+  Input,
+  inrShort,
+  Kpi,
+  Loading,
+  num,
+} from "../components/ui";
 
 /** Top product types by balance tonnage - one consistent hue since this is a
  * single ranked series, not a comparison of distinct categorical series. */
@@ -17,6 +27,18 @@ function byProductType(rows: StockSummary[]): BarDatum[] {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 8)
     .map(([label, value]) => ({ label, value: Math.round(value), tone: "brand" as const }));
+}
+
+/** Ageing buckets. Deadstock is cash on the floor, so it is worth surfacing. */
+function byAgeing(rows: StockSummary[]): BarDatum[] {
+  const buckets = { "0-30 days": 0, "31-60 days": 0, "61-90 days": 0, "Over 90 days": 0 };
+  for (const row of rows) {
+    const age = row.ageing_max_days ?? 0;
+    const key =
+      age <= 30 ? "0-30 days" : age <= 60 ? "31-60 days" : age <= 90 ? "61-90 days" : "Over 90 days";
+    buckets[key as keyof typeof buckets] += Math.round(Number(row.balance_qty_mt));
+  }
+  return Object.entries(buckets).map(([label, value]) => ({ label, value }));
 }
 
 /** A spec key stable across reloads, so an expanded row stays expanded. */
@@ -41,9 +63,9 @@ function day(value: string | null): string {
  * stock list: location, mill, coil, pieces, weight, cost and purchase date. */
 function LotTable({ lots }: { lots: StockItem[] }) {
   return (
-    <div className="overflow-x-auto border-y border-ink-200 bg-ink-50/60 px-4 py-3">
+    <div className="overflow-x-auto border-y border-rule bg-sunk/60 px-4 py-3">
       <table className="w-full min-w-5xl text-xs">
-        <thead className="text-left uppercase tracking-wide text-ink-500">
+        <thead className="text-left uppercase tracking-wide text-ink-faint">
           <tr>
             <th className="py-1 pr-4 font-medium">Location</th>
             <th className="py-1 pr-4 font-medium">Make / mill</th>
@@ -58,16 +80,16 @@ function LotTable({ lots }: { lots: StockItem[] }) {
             <th className="py-1 text-right font-medium">Stock date</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-ink-200/70">
+        <tbody className="divide-y divide-rule/70">
           {lots.map((lot) => (
-            <tr key={lot.id} className="text-ink-700">
+            <tr key={lot.id} className="text-ink-soft">
               <td className="py-1.5 pr-4">{lot.location ?? "—"}</td>
               <td className="py-1.5 pr-4">{lot.make ?? "—"}</td>
               <td className="py-1.5 pr-4 font-mono">{lot.coil_no ?? "—"}</td>
               <td className="tabular py-1.5 pr-4 text-right">{num(lot.nop, 0)}</td>
               <td className="tabular py-1.5 pr-4 text-right">{num(lot.qty_kg, 0)}</td>
               <td className="tabular py-1.5 pr-4 text-right">{num(lot.balance_nop, 0)}</td>
-              <td className="tabular py-1.5 pr-4 text-right font-medium text-ink-900">
+              <td className="tabular py-1.5 pr-4 text-right font-medium text-ink">
                 {num(lot.balance_qty_kg, 0)}
               </td>
               <td className="tabular py-1.5 pr-4 text-right">{rate(lot.purchase_rate_per_kg)}</td>
@@ -75,7 +97,7 @@ function LotTable({ lots }: { lots: StockItem[] }) {
               <td className="tabular py-1.5 pr-4 text-right">
                 {lot.ageing_days === null ? "—" : `${lot.ageing_days}d`}
               </td>
-              <td className="tabular py-1.5 text-right text-ink-500">{day(lot.stock_date)}</td>
+              <td className="tabular py-1.5 text-right text-ink-faint">{day(lot.stock_date)}</td>
             </tr>
           ))}
         </tbody>
@@ -88,7 +110,7 @@ export default function Stock() {
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const { data, error, loading } = useApi<StockSummary[]>(`/stock/summary`);
+  const { data, error, loading, reload } = useApi<StockSummary[]>(`/stock/summary`);
 
   function toggle(key: string) {
     setExpanded((current) => {
@@ -117,42 +139,75 @@ export default function Stock() {
 
   const lotTotal = (data ?? []).reduce((sum, row) => sum + row.lot_count, 0);
 
+  const totalMt = (data ?? []).reduce((sum, r) => sum + Number(r.balance_qty_mt), 0);
+  const totalValue = (data ?? []).reduce(
+    (sum, r) => sum + Number(r.balance_qty_mt) * 1000 * (r.avg_landed_cost_per_kg ?? 0),
+    0,
+  );
+  const dead = (data ?? []).filter((r) => (r.ageing_max_days ?? 0) > 90);
+  const deadMt = dead.reduce((sum, r) => sum + Number(r.balance_qty_mt), 0);
+  const locations = new Set((data ?? []).flatMap((r) => r.locations)).size;
+
   return (
-    <div className="space-y-4 p-6">
+    <div className="flex flex-col gap-4 p-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink-900">Stock on hand</h1>
-          <p className="text-sm text-ink-500">
+          <h1 className="text-lg font-semibold text-ink">Stock on hand</h1>
+          <p className="text-sm text-ink-faint">
             {data ? `${data.length} spec${data.length === 1 ? "" : "s"}` : "…"} across{" "}
-            {data ? `${lotTotal} lot${lotTotal === 1 ? "" : "s"}` : "…"} · balance quantity after
-            existing orders. Expand a row for the individual lots.
+            {data ? `${lotTotal} lot${lotTotal === 1 ? "" : "s"}` : "…"} · balance after existing
+            orders. Expand a row for the individual lots.
           </p>
         </div>
-        <input
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search grade, type, location, mill or coil"
-          className="w-72 rounded-lg border border-ink-300 bg-white px-3 py-1.5 text-sm"
-        />
+        <div className="flex items-center gap-2">
+          <Input
+            value={search}
+            onChange={setSearch}
+            placeholder="Search grade, type, location, mill or coil"
+            className="w-72"
+          />
+          <Button onClick={reload}>Refresh</Button>
+        </div>
       </header>
 
       {error && <ErrorNote message={error} />}
 
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Kpi label="On hand" value={`${Math.round(totalMt).toLocaleString("en-IN")} MT`} hint={`${data?.length ?? 0} specs`} />
+        <Kpi label="Stock value" value={inrShort(totalValue)} hint="at landed cost" tone="brand" />
+        <Kpi
+          label="Over 90 days"
+          value={`${Math.round(deadMt).toLocaleString("en-IN")} MT`}
+          hint={`${dead.length} spec${dead.length === 1 ? "" : "s"} ageing`}
+          tone={deadMt > 0 ? "warn" : "default"}
+        />
+        <Kpi label="Locations" value={String(locations)} hint="holding stock" />
+      </div>
+
       {data && data.length > 0 && (
-        <Card title="Stock on hand by product type (MT)">
-          <HBarChart data={byProductType(data)} unit="MT" />
-        </Card>
+        <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
+          <Card title="By product type" subtitle="Balance tonnage">
+            <HBarChart data={byProductType(data)} unit="MT" />
+          </Card>
+          <Card title="By age" subtitle="Where the tonnage is sitting">
+            <DonutChart
+              data={byAgeing(data)}
+              centerValue={`${Math.round(totalMt).toLocaleString("en-IN")}`}
+              centerLabel="MT on hand"
+            />
+          </Card>
+        </div>
       )}
 
-      <Card className="overflow-hidden">
+      <Card padded={false}>
         {loading && !data ? (
           <Loading />
         ) : filtered.length === 0 ? (
           <Empty message="No stock matches." />
         ) : (
-          <div className="-m-4 max-h-[70vh] overflow-auto">
+          <div className="max-h-[70vh] overflow-auto">
             <table className="w-full text-sm">
-              <thead className="sticky top-0 z-10 border-b border-ink-200 bg-ink-50 text-left text-xs uppercase tracking-wide text-ink-500">
+              <thead className="sticky top-0 z-10 border-b border-rule bg-sunk text-left text-xs uppercase tracking-wide text-ink-faint">
                 <tr>
                   <th className="w-8 px-2 py-2" />
                   <th className="px-4 py-2 font-medium">Grade</th>
@@ -166,7 +221,7 @@ export default function Stock() {
                   <th className="px-4 py-2 text-right font-medium">Ageing</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-ink-100">
+              <tbody className="divide-y divide-sunk">
                 {filtered.map((row) => {
                   const key = specKey(row);
                   const open = expanded.has(key);
@@ -174,25 +229,25 @@ export default function Stock() {
                     <tr
                       key={key}
                       onClick={() => toggle(key)}
-                      className={`cursor-pointer hover:bg-ink-50 ${open ? "bg-ink-50" : ""}`}
+                      className={`cursor-pointer hover:bg-sunk ${open ? "bg-sunk" : ""}`}
                     >
                       <td className="px-2 py-2 text-center text-ink-400">{open ? "▾" : "▸"}</td>
                       <td className="px-4 py-2 font-mono text-xs">{row.grade ?? "—"}</td>
-                      <td className="px-4 py-2 text-ink-700">{row.product_type ?? "—"}</td>
-                      <td className="px-4 py-2 text-ink-700">{row.display_name}</td>
-                      <td className="px-4 py-2 text-ink-700">
+                      <td className="px-4 py-2 text-ink-soft">{row.product_type ?? "—"}</td>
+                      <td className="px-4 py-2 text-ink-soft">{row.display_name}</td>
+                      <td className="px-4 py-2 text-ink-soft">
                         {row.locations.join(", ") || "—"}
                       </td>
                       <td className="tabular px-4 py-2 text-right">
                         {num(row.balance_qty_mt)}
-                        <span className="ml-1 text-xs text-ink-500">MT</span>
+                        <span className="ml-1 text-xs text-ink-faint">MT</span>
                       </td>
                       <td className="tabular px-4 py-2 text-right">{num(row.balance_nop, 0)}</td>
                       <td className="tabular px-4 py-2 text-right">
                         {rate(row.avg_landed_cost_per_kg)}
                       </td>
                       <td className="tabular px-4 py-2 text-right">{row.lot_count}</td>
-                      <td className="tabular px-4 py-2 text-right text-ink-500">
+                      <td className="tabular px-4 py-2 text-right text-ink-faint">
                         {row.ageing_min_days === null
                           ? "—"
                           : row.ageing_min_days === row.ageing_max_days

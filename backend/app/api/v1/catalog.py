@@ -51,7 +51,8 @@ def list_stock(
         count_query = count_query.where(condition)
 
     total = db.scalar(count_query) or 0
-    rows = db.scalars(query.order_by(StockItem.grade, StockItem.thickness_mm).limit(limit).offset(offset)).all()
+    ordered = query.order_by(StockItem.grade, StockItem.thickness_mm)
+    rows = db.scalars(ordered.limit(limit).offset(offset)).all()
     return Page(items=[stock_item_out(r) for r in rows], total=total, limit=limit, offset=offset)
 
 

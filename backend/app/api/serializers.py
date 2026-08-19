@@ -19,6 +19,7 @@ from app.models import (
     StockItem,
 )
 from app.schemas.catalog import CustomerOut, StockItemOut
+from app.schemas.pricing import PricingOut
 from app.schemas.quotations import (
     ApprovalOut,
     AttachmentOut,
@@ -127,6 +128,7 @@ def line_item_out(item: QuotationLineItem) -> LineItemOut:
         matched_stock_item_name=stock_item.display_name if stock_item else None,
         match_candidates=item.match_candidates or [],
         stock_availability=stock_availability_out(item),
+        pricing=PricingOut.model_validate(item.pricing) if item.pricing else None,
     )
 
 

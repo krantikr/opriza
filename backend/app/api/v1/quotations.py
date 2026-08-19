@@ -10,8 +10,9 @@ from app.api.deps import current_user, get_quotation
 from app.api.serializers import quotation_detail_out, quotation_out
 from app.core.db import get_db
 from app.core.logging import get_logger
-from app.models import QuotationRequest, QuotationStatus, User
+from app.models import QuotationPricing, QuotationRequest, QuotationStatus, User
 from app.schemas.common import ActionResult, Page
+from app.schemas.pricing import OverrideIn, PricingOut
 from app.schemas.quotations import (
     ApproveIn,
     DraftUpdateIn,
@@ -20,6 +21,8 @@ from app.schemas.quotations import (
     QuotationOut,
     RejectIn,
 )
+from app.services import audit
+from app.services.pricing.service import PricingService
 from app.services.quotations.approval import ApprovalError, ApprovalService
 from app.services.quotations.drafting import DraftingService
 from app.services.quotations.followup import FollowUpError, FollowUpService
@@ -228,3 +231,94 @@ def reject_quotation(
         quotation_id=quotation.id,
         status=quotation.status.value,
     )
+
+
+# --- Pricing calculator ----------------------------------------------------
+
+
+@router.get("/{quotation_id}/pricing", response_model=list[PricingOut])
+def get_pricing(
+    quotation: QuotationRequest = Depends(get_quotation),
+) -> list[QuotationPricing]:
+    """The stored cost build-up for every line, as the calculator renders it."""
+    return [item.pricing for item in quotation.line_items if item.pricing is not None]
+
+
+@router.post("/{quotation_id}/lines/{line_id}/pricing/override", response_model=PricingOut)
+def override_component(
+    line_id: int,
+    payload: OverrideIn,
+    quotation: QuotationRequest = Depends(get_quotation),
+    db: Session = Depends(get_db),
+    user: User | None = Depends(current_user),
+) -> QuotationPricing:
+    """Substitute one component's figure for this quotation only.
+
+    The calculated value is kept beside the override, so the breakdown still
+    explains itself. Changing a figure marks any existing draft stale rather
+    than letting text written against the old number go out unchanged.
+    """
+    item = next((i for i in quotation.line_items if i.id == line_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Line item not found")
+
+    result = PricingService(db).set_override(
+        item,
+        component_code=payload.component_code,
+        amount=payload.amount,
+        user_id=user.id if user else None,
+        reason=payload.reason,
+    )
+
+    audit.record(
+        db,
+        entity_type="quotation_request",
+        entity_id=quotation.id,
+        action="PRICING_OVERRIDDEN",
+        user_id=user.id if user else None,
+        details={
+            "line_no": item.line_no,
+            "component": payload.component_code,
+            "amount": str(payload.amount),
+            "reason": payload.reason,
+        },
+    )
+    db.commit()
+    return result.record
+
+
+@router.delete("/{quotation_id}/lines/{line_id}/pricing/override/{component_code}", response_model=PricingOut)
+def clear_component_override(
+    line_id: int,
+    component_code: str,
+    quotation: QuotationRequest = Depends(get_quotation),
+    db: Session = Depends(get_db),
+) -> QuotationPricing:
+    """Put a component back to what the rules say."""
+    item = next((i for i in quotation.line_items if i.id == line_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Line item not found")
+    result = PricingService(db).clear_override(item, component_code)
+    db.commit()
+    return result.record
+
+
+@router.post("/{quotation_id}/pricing/recalculate", response_model=list[PricingOut])
+def recalculate(
+    quotation: QuotationRequest = Depends(get_quotation),
+    db: Session = Depends(get_db),
+    keep_overrides: bool = True,
+) -> list[QuotationPricing]:
+    """Re-run the current rules over every line.
+
+    Used after publishing new rules, or when stock has moved. Overrides are
+    kept by default: recomputing must not silently discard a figure a human
+    deliberately set.
+    """
+    service = PricingService(db)
+    records = [
+        service.price_line(item, quotation=quotation, keep_overrides=keep_overrides).record
+        for item in quotation.line_items
+    ]
+    db.commit()
+    return records

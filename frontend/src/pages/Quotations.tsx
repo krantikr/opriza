@@ -1,172 +1,213 @@
-import { useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { query, useApi } from "../api/client";
-import type { Page, Quotation, QuotationStatus } from "../api/types";
-import { Badge, Card, Empty, ErrorNote, Loading, inr, when } from "../components/ui";
+import type { Page, Quotation } from "../api/types";
+import QuotationDetailPanel from "../components/QuotationDetailPanel";
+import {
+  Badge,
+  Empty,
+  ErrorNote,
+  FilterButton,
+  inr,
+  Loading,
+  Pagination,
+  SearchInput,
+  StatCard,
+  Tabs,
+} from "../components/ui";
 
-function AvailabilityBadge({ value }: { value: string | null }) {
-  if (!value) return <span className="text-ink-500">—</span>;
-  const style = value.startsWith("Partial")
-    ? "bg-amber-100 text-amber-800 ring-amber-200"
-    : value === "Not available"
-      ? "bg-rose-100 text-rose-800 ring-rose-200"
-      : "bg-emerald-100 text-emerald-800 ring-emerald-200";
-  return (
-    <span
-      className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${style}`}
-    >
-      {value}
-    </span>
-  );
-}
+/* ---------------------------------------------------------------------------
+   Quotations: the list and the open one, side by side.
 
-const STATUSES: (QuotationStatus | "")[] = [
-  "",
-  "READY_FOR_REVIEW",
-  "NEEDS_INFORMATION",
-  "EDITED",
-  "APPROVED",
-  "SENT",
-  "CUSTOMER_ACCEPTED",
-  "CUSTOMER_DECLINED",
-  "REJECTED",
-  "FAILED",
+   A trader works a queue - open, judge, act, next - so the list stays on
+   screen while a quotation is being read. Selecting a row changes the URL, so
+   an individual quotation is still linkable and the back button behaves.
+   --------------------------------------------------------------------------- */
+
+const PAGE_SIZE = 8;
+
+const TABS = [
+  { key: "all", label: "All", statuses: [] as string[] },
+  {
+    key: "draft",
+    label: "Draft",
+    statuses: ["READY_FOR_REVIEW", "NEEDS_INFORMATION", "EDITED", "NEW", "PROCESSING"],
+  },
+  { key: "sent", label: "Sent", statuses: ["SENT", "APPROVED"] },
+  { key: "replied", label: "Replied", statuses: ["CUSTOMER_ACCEPTED", "CUSTOMER_DECLINED"] },
+  { key: "closed", label: "Closed", statuses: ["REJECTED", "FAILED"] },
 ];
 
 export default function Quotations() {
-  const [params, setParams] = useSearchParams();
-  const [search, setSearch] = useState(params.get("search") ?? "");
-  const status = params.get("status") ?? "";
+  const { id } = useParams();
+  const navigate = useNavigate();
 
-  const { data, error, loading } = useApi<Page<Quotation>>(
-    `/quotations${query({ status, search, limit: 100 })}`,
+  const [tab, setTab] = useState("all");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+
+  const { data, error, loading, reload } = useApi<Page<Quotation>>(
+    `/quotations${query({ search, limit: 200 })}`,
+    30_000,
   );
 
-  function apply(next: Record<string, string>) {
-    const merged = new URLSearchParams(params);
-    for (const [key, value] of Object.entries(next)) {
-      if (value) merged.set(key, value);
-      else merged.delete(key);
+  const all = useMemo(() => data?.items ?? [], [data]);
+
+  const countFor = (key: string) => {
+    const t = TABS.find((x) => x.key === key)!;
+    return t.statuses.length === 0
+      ? all.length
+      : all.filter((q) => t.statuses.includes(q.status)).length;
+  };
+
+  const active = TABS.find((t) => t.key === tab)!;
+  const filtered = useMemo(
+    () =>
+      active.statuses.length === 0
+        ? all
+        : all.filter((q) => active.statuses.includes(q.status)),
+    [all, active],
+  );
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const rows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // Keep a quotation open: the first on arrival, and a valid one after
+  // filtering, so the detail pane is never left showing something hidden.
+  const selectedId = id ? Number(id) : null;
+  useEffect(() => {
+    if (!rows.length) return;
+    if (selectedId === null || !filtered.some((q) => q.id === selectedId)) {
+      navigate(`/quotations/${rows[0].id}`, { replace: true });
     }
-    setParams(merged);
-  }
+  }, [rows, filtered, selectedId, navigate]);
+
+  useEffect(() => setPage(1), [tab, search]);
+
+  const stats = {
+    total: all.length,
+    draft: countFor("draft"),
+    sent: countFor("sent"),
+    replied: countFor("replied"),
+  };
 
   return (
-    <div className="space-y-4 p-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-ink-900">Quotations</h1>
-          <p className="text-sm text-ink-500">
-            {data ? `${data.total} total` : "…"}
-            {status && ` · filtered by ${status.replace(/_/g, " ")}`}
-          </p>
+    <div className="grid h-[calc(100vh-3.25rem)] grid-cols-1 xl:grid-cols-[minmax(0,32rem)_1fr]">
+      {/* --- List ---------------------------------------------------------- */}
+      <section className="flex min-h-0 flex-col border-r border-rule">
+        <header className="px-5 pb-3 pt-4">
+          <h1 className="text-lg font-semibold text-ink">Quotations</h1>
+          <p className="text-sm text-ink-faint">All generated replies and pricing</p>
+        </header>
+
+        <div className="grid grid-cols-2 gap-2.5 px-5 sm:grid-cols-4">
+          <StatCard label="Total" value={stats.total} />
+          <StatCard label="Draft" value={stats.draft} tone="attention" />
+          <StatCard label="Sent" value={stats.sent} tone="settled" />
+          <StatCard label="Replied" value={stats.replied} tone="info" />
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={status}
-            onChange={(event) => apply({ status: event.target.value })}
-            className="rounded-lg border border-ink-300 bg-white px-3 py-1.5 text-sm"
-          >
-            {STATUSES.map((value) => (
-              <option key={value} value={value}>
-                {value ? value.replace(/_/g, " ") : "All statuses"}
-              </option>
-            ))}
-          </select>
-
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              apply({ search });
-            }}
-          >
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search number or customer"
-              className="w-64 rounded-lg border border-ink-300 bg-white px-3 py-1.5 text-sm"
-            />
-          </form>
+        <div className="flex items-center gap-2 px-5 py-3">
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="Search quotations…"
+            className="flex-1"
+          />
+          <FilterButton />
         </div>
-      </header>
 
-      {error && <ErrorNote message={error} />}
+        <div className="px-5">
+          <Tabs
+            tabs={TABS.map((t) => ({ key: t.key, label: t.label, count: countFor(t.key) }))}
+            value={tab}
+            onChange={setTab}
+          />
+        </div>
 
-      <Card className="overflow-hidden">
-        {loading && !data ? (
-          <Loading />
-        ) : !data || data.items.length === 0 ? (
-          <Empty message="No quotations match this view." />
+        {error && <div className="p-4"><ErrorNote message={error} /></div>}
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {loading && !data ? (
+            <Loading label="Loading quotations" />
+          ) : rows.length === 0 ? (
+            <Empty message="Nothing here. New enquiries appear once processed." />
+          ) : (
+            <ul>
+              {rows.map((q) => {
+                const open = q.id === selectedId;
+                return (
+                  <li key={q.id}>
+                    <button
+                      type="button"
+                      onClick={() => navigate(`/quotations/${q.id}`)}
+                      className={`flex w-full items-start justify-between gap-3 border-b border-l-2 border-rule px-5 py-3 text-left transition-colors ${
+                        open
+                          ? "border-l-brand-soft bg-brand-wash"
+                          : "border-l-transparent hover:bg-sunk"
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-brand">{q.quotation_number}</span>
+                          {q.requires_manual_review && (
+                            <span
+                              className="size-1.5 shrink-0 rounded-full bg-attention"
+                              title="Flagged for review"
+                            />
+                          )}
+                        </div>
+                        <p className="mt-0.5 truncate text-xs text-ink-faint">
+                          {q.headline_product ?? "—"}
+                          {q.line_count > 1 && ` +${q.line_count - 1} more`}
+                        </p>
+                        <p className="mt-1 truncate text-xs text-ink-soft">
+                          {q.customer_company || q.customer_name || "—"}
+                          <span className="text-ink-faint">
+                            {" · "}
+                            {new Date(q.created_at).toLocaleDateString("en-IN", {
+                              day: "2-digit",
+                              month: "short",
+                            })}
+                          </span>
+                        </p>
+                      </div>
+
+                      <div className="flex shrink-0 flex-col items-end gap-1.5">
+                        <span className="tabular font-semibold text-ink">
+                          {q.total_suggested_value && Number(q.total_suggested_value) > 0
+                            ? inr(q.total_suggested_value)
+                            : "—"}
+                        </span>
+                        <Badge value={q.status} dot={false} />
+                      </div>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+
+        <div className="border-t border-rule">
+          <Pagination
+            page={page}
+            pageCount={pageCount}
+            onChange={setPage}
+            summary={`Showing ${rows.length} of ${filtered.length} quotations`}
+          />
+        </div>
+      </section>
+
+      {/* --- Detail --------------------------------------------------------- */}
+      <section className="min-h-0 overflow-y-auto bg-ground">
+        {selectedId ? (
+          <QuotationDetailPanel id={selectedId} onChanged={reload} />
         ) : (
-          <div className="-m-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="border-b border-ink-200 bg-ink-50 text-left text-xs uppercase tracking-wide text-ink-500">
-                <tr>
-                  <th className="px-4 py-2 font-medium">Number</th>
-                  <th className="px-4 py-2 font-medium">Customer</th>
-                  <th className="px-4 py-2 font-medium">Material</th>
-                  <th className="px-4 py-2 font-medium">Availability</th>
-                  <th className="px-4 py-2 text-right font-medium">Indicative value</th>
-                  <th className="px-4 py-2 font-medium">Confidence</th>
-                  <th className="px-4 py-2 font-medium">Status</th>
-                  <th className="px-4 py-2 font-medium">Received</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-100">
-                {data.items.map((quotation) => (
-                  <tr key={quotation.id} className="hover:bg-ink-50">
-                    <td className="px-4 py-2.5 font-medium">
-                      <Link
-                        to={`/quotations/${quotation.id}`}
-                        className="text-ink-900 hover:underline"
-                      >
-                        {quotation.quotation_number}
-                      </Link>
-                      {quotation.requires_manual_review && (
-                        <span
-                          className="ml-1.5 text-amber-600"
-                          title="Flagged for manual review"
-                        >
-                          ●
-                        </span>
-                      )}
-                    </td>
-                    <td className="max-w-48 truncate px-4 py-2.5">
-                      {quotation.customer_company || quotation.customer_name || "—"}
-                      {!quotation.customer_id && (
-                        <span className="ml-1 text-xs text-amber-600" title="Not in customer master">
-                          new
-                        </span>
-                      )}
-                    </td>
-                    <td className="max-w-64 truncate px-4 py-2.5 text-ink-700">
-                      {quotation.headline_product ?? "—"}
-                      {quotation.line_count > 1 && (
-                        <span className="text-ink-500"> +{quotation.line_count - 1} more</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <AvailabilityBadge value={quotation.headline_availability} />
-                    </td>
-                    <td className="tabular px-4 py-2.5 text-right">
-                      {inr(quotation.total_suggested_value)}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <Badge value={quotation.confidence} />
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <Badge value={quotation.status} />
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-ink-500">{when(quotation.created_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Empty message="Select a quotation to open it." />
         )}
-      </Card>
+      </section>
     </div>
   );
 }

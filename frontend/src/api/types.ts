@@ -68,6 +68,11 @@ export interface Email {
   attachments?: Attachment[];
 }
 
+export interface LineItemPricing {
+  /** Present once the line has been priced by the rule engine. */
+  pricing?: QuotationPricing | null;
+}
+
 export interface AvailabilityStep {
   id: string;
   label: string;
@@ -124,6 +129,7 @@ export interface LineItem {
   matched_stock_item_name: string | null;
   match_candidates: MatchCandidate[];
   stock_availability: StockAvailability | null;
+  pricing: QuotationPricing | null;
 }
 
 export interface Draft {
@@ -321,5 +327,230 @@ export interface AuditEntry {
   action: string;
   details: Record<string, unknown> | null;
   user_id: number | null;
+  created_at: string;
+}
+
+/* ---------------------------------------------------------------------------
+   Pricing
+   --------------------------------------------------------------------------- */
+
+export type PricingComponentKind =
+  | "BASE_PRICE"
+  | "TRANSPORTATION"
+  | "HANDLING"
+  | "FINANCING"
+  | "RISK_BUFFER"
+  | "INVOICE_ANCHOR"
+  | "QUANTITY_SLAB"
+  | "CUSTOMER_TIER"
+  | "ADJUSTMENT"
+  | "TARGET_MARGIN"
+  | "MARGIN_FLOOR"
+  | "ROUNDING";
+
+export type PricingBasis = "STOCK" | "MILL_OFFER" | "MANUAL" | "UNAVAILABLE";
+
+export interface PricingComponent {
+  code: string;
+  label: string;
+  kind: PricingComponentKind;
+  amount: string;
+  note: string;
+  applied: boolean;
+  overridden: boolean;
+  computed_amount: string | null;
+  subtotal: string | null;
+  meta: Record<string, unknown>;
+}
+
+export interface QuotationPricing {
+  id: number;
+  basis: PricingBasis;
+  basis_note: string | null;
+  base_rate: string | null;
+  total_cost: string | null;
+  margin_amount: string | null;
+  quote_rate: string | null;
+  line_total: string | null;
+  currency: string;
+  quantity_mt: string | null;
+  rules_version: number | null;
+  components: PricingComponent[];
+  explanation: string | null;
+  warnings: string[];
+  has_overrides: boolean;
+  draft_stale: boolean;
+}
+
+export interface PricingRule {
+  id?: number;
+  code: string;
+  label: string;
+  kind: PricingComponentKind;
+  priority: number;
+  is_active: boolean;
+  conditions: Record<string, unknown> | null;
+  config: Record<string, unknown>;
+  note_template?: string | null;
+}
+
+export interface PricingRuleSet {
+  id: number;
+  version: number;
+  label: string | null;
+  notes: string | null;
+  is_active: boolean;
+  published_at: string | null;
+  created_at: string;
+  rules: PricingRule[];
+}
+
+export interface PricingPreview {
+  basis: PricingBasis;
+  base_rate: string | null;
+  total_cost: string | null;
+  margin_amount: string | null;
+  quote_rate: string | null;
+  line_total: string | null;
+  currency: string;
+  rules_version: number | null;
+  components: PricingComponent[];
+  explanation: string | null;
+  warnings: string[];
+}
+
+export interface LocationDistance {
+  id: number;
+  origin: string;
+  destination: string;
+  distance_km: number;
+  typical_days: number | null;
+  notes: string | null;
+}
+
+export interface VehicleRate {
+  id: number;
+  name: string;
+  capacity_mt: string;
+  rate_per_day: string;
+  avg_km_per_day: number;
+  min_days: number;
+  status: string;
+}
+
+/* ---------------------------------------------------------------------------
+   Operations
+   --------------------------------------------------------------------------- */
+
+export interface FollowUpRule {
+  id: number;
+  label: string;
+  is_active: boolean;
+  first_after_days: number;
+  interval_days: number;
+  max_attempts: number;
+  stop_after_days: number | null;
+  auto_send: boolean;
+  mark_cold_when_exhausted: boolean;
+  conditions: Record<string, unknown> | null;
+  subject_template: string | null;
+  body_template: string | null;
+}
+
+export interface FollowUpSchedule {
+  id: number;
+  quotation_request_id: number;
+  attempt_no: number;
+  due_at: string;
+  status: string;
+  subject: string | null;
+  body: string | null;
+  resolution_note: string | null;
+}
+
+export interface NotificationRule {
+  id: number;
+  label: string;
+  kind: string;
+  channel: string;
+  is_active: boolean;
+  recipient_user_ids: number[] | null;
+  recipient_emails: string[] | null;
+  recipient_phones: string[] | null;
+  conditions: Record<string, unknown> | null;
+}
+
+export interface StockMovement {
+  id: number;
+  kind: string;
+  quantity_kg: string;
+  nop: number | null;
+  product_type: string | null;
+  grade: string | null;
+  thickness_mm: number | null;
+  location: string | null;
+  reference: string | null;
+  note: string | null;
+  movement_date: string | null;
+  is_open: boolean;
+  created_at: string;
+}
+
+export interface TimelineEntry {
+  at: string;
+  kind: string;
+  title: string;
+  detail: string | null;
+  link: string | null;
+}
+
+export interface ReportResult {
+  title: string;
+  period: string;
+  rows: Record<string, string | number>[];
+  totals: Record<string, unknown>;
+}
+
+export interface FunnelReport {
+  period: string;
+  stages: { stage: string; count: number; note: string }[];
+}
+
+/* ---------------------------------------------------------------------------
+   Trends
+   --------------------------------------------------------------------------- */
+
+export interface TrendPoint {
+  day: string;
+  enquiries: number;
+  quotations: number;
+  sent: number;
+  won: number;
+  value: string;
+}
+
+export interface TrendDelta {
+  key: string;
+  label: string;
+  current: number;
+  previous: number;
+  change_pct: number | null;
+  direction: "up" | "down" | "flat";
+  good: boolean | null;
+  unit: string;
+}
+
+export interface Trends {
+  days: number;
+  period_label: string;
+  previous_label: string;
+  series: TrendPoint[];
+  deltas: TrendDelta[];
+}
+
+export interface CustomerNote {
+  id: number;
+  body: string;
+  pinned: boolean;
   created_at: string;
 }

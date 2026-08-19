@@ -36,10 +36,10 @@ def client(db, default_user, sent_dir) -> TestClient:
 
 
 @pytest.fixture()
-def drafted(db, priced_quotation):
+def drafted(db, quoted_quotation):
     """A quotation with a draft ready for review."""
     draft = QuotationDraft(
-        quotation_request_id=priced_quotation.id,
+        quotation_request_id=quoted_quotation.id,
         version=1,
         is_current=True,
         subject="Re: Enquiry - IS 2062 E250 Plate 10mm",
@@ -49,8 +49,8 @@ def drafted(db, priced_quotation):
     )
     db.add(draft)
     db.commit()
-    db.refresh(priced_quotation)
-    return priced_quotation
+    db.refresh(quoted_quotation)
+    return quoted_quotation
 
 
 # --- Listings --------------------------------------------------------------
@@ -65,7 +65,8 @@ def test_quotation_list_returns_a_page(client, drafted):
 
     assert body["total"] == 1
     assert body["items"][0]["quotation_number"] == "Q-000001"
-    assert body["items"][0]["headline_price"] == "59200.00"
+    assert body["items"][0]["headline_product"]
+    assert body["items"][0]["total_suggested_value"] == "1220000.00000"
 
 
 def test_quotation_list_filters_by_status(client, drafted):
@@ -77,11 +78,12 @@ def test_quotation_detail_carries_the_whole_review_context(client, drafted):
     """Everything the reviewer needs on one screen (spec section 17)."""
     body = client.get(f"/api/v1/quotations/{drafted.id}").json()
 
-    assert body["email"]["body_text"].startswith("Dear Sir")
+    assert body["email"]["body_text"].startswith("Please quote 20 MT")
     line = body["line_items"][0]
-    assert line["matched_product_code"] == "PLT-E250-10X1500X6000"
-    assert line["pricing"]["recommended_price"] == "59200.00"
-    assert line["pricing"]["comparable_count"] == 5
+    assert line["matched_stock_item_name"].startswith("E250 Plate")
+    assert line["stock_availability"]["suggested_rate"] == "61000.00"
+    assert line["stock_availability"]["available_qty_mt"] == "28.260"
+    assert line["stock_availability"]["lot_count"] == 1
     assert body["current_draft"]["version"] == 1
 
 
@@ -89,33 +91,29 @@ def test_missing_quotation_is_a_404(client):
     assert client.get("/api/v1/quotations/9999").status_code == 404
 
 
-def test_products_listing_includes_the_current_price(client, plate):
-    body = client.get("/api/v1/products").json()
-    assert body["items"][0]["current_price"] == "56500.00"
-    assert body["items"][0]["display_name"].startswith("IS 2062 E250 Plate")
+def test_stock_listing_reports_the_lot_on_hand(client, plate):
+    body = client.get("/api/v1/stock").json()
+    assert body["items"][0]["display_name"].startswith("E250 Plate")
+    assert body["items"][0]["balance_qty_kg"] == "28260.000"
 
 
-def test_customer_detail_reports_purchase_history(client, customer, comparable_sales):
+def test_customer_detail_is_served(client, customer):
     body = client.get(f"/api/v1/customers/{customer.id}").json()
-    assert body["total_orders"] == 5
-    assert len(body["recent_sales"]) == 5
+    assert body["name"] == "Rajesh Kumar"
+    assert body["company"] == "ABC Industries Pvt Ltd"
 
 
-def test_ad_hoc_pricing_uses_the_same_engine(client, plate, customer, comparable_sales):
+def test_ad_hoc_stock_check_uses_the_same_service(client, plate, customer):
+    """The dashboard's manual check must not be a second implementation."""
     response = client.post(
-        "/api/v1/pricing/recommend",
-        json={
-            "product_id": plate.id,
-            "quantity_mt": "20",
-            "customer_id": customer.id,
-            "delivery_location": "Patna",
-        },
+        "/api/v1/stock/check",
+        json={"stock_item_id": plate.id, "quantity_mt": "20", "customer_id": customer.id},
     )
 
     body = response.json()
-    assert body["recommended_price"] == "59200.00"
-    assert body["breakdown"][0]["id"] == "base_price"
-    assert "Freight to Patna" in body["explanation"]
+    assert body["suggested_rate"] == "61000"
+    assert body["breakdown"][0]["id"] == "stock_lookup"
+    assert "landed cost" in body["explanation"]
 
 
 # --- Review actions --------------------------------------------------------
@@ -204,9 +202,9 @@ def test_a_rejected_quotation_cannot_then_be_approved(client, drafted):
     assert client.post(f"/api/v1/quotations/{drafted.id}/approve", json={}).status_code == 409
 
 
-def test_a_quotation_with_no_draft_cannot_be_approved(client, db, priced_quotation, sent_dir):
+def test_a_quotation_with_no_draft_cannot_be_approved(client, db, quoted_quotation, sent_dir):
     """Nothing to send is not the same as sending nothing."""
-    response = client.post(f"/api/v1/quotations/{priced_quotation.id}/approve", json={})
+    response = client.post(f"/api/v1/quotations/{quoted_quotation.id}/approve", json={})
 
     assert response.status_code == 409
     assert "no draft to act on" in response.json()["detail"]
@@ -250,12 +248,12 @@ def test_system_status_reports_what_is_configured(client, plate):
     body = client.get("/api/v1/system/status").json()
 
     assert body["auto_send_enabled"] is False
-    assert body["pricing_rule_version"] == "1.0"
-    assert body["products"] == 1
+    assert body["rules_version"] == "1.0"
+    assert body["stock_lots"] == 1
     assert "classify" in body["llm_models"]
 
 
 def test_business_rules_are_inspectable(client):
     body = client.get("/api/v1/system/rules").json()
-    assert body["pricing"]["margin_floor"]["minimum_margin_pct"] == 2.0
+    assert body["stock_pricing"]["markup_pct"] == 8.0
     assert body["matching"]["accept_score"] == 80.0

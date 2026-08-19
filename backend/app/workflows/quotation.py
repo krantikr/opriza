@@ -31,9 +31,8 @@ from dataclasses import dataclass
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
-from sqlalchemy.orm import Session
-
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from ai.classifier import classify_email
 from ai.extractor import extract_requirement
@@ -53,6 +52,8 @@ from app.models import (
     StockAvailability,
 )
 from app.services import audit, telemetry
+from app.services.notifications.service import NotificationService
+from app.services.pricing.service import PricingService
 from app.services.products.matcher import ProductMatcher
 from app.services.products.weights import Dimensions, convert_to_mt
 from app.services.quotations.assembly import create_quotation
@@ -354,7 +355,24 @@ class QuotationWorkflow:
             details={"quotation_number": quotation.quotation_number, "reason": state.get("reply_reason")},
         )
         self.db.commit()
+        self._stop_chasing(quotation, "The customer accepted.")
+        self._notify_reply(quotation, "accepted")
         return {"outcome": "CUSTOMER_ACCEPTED", "status": quotation.status.value}
+
+    def _stop_chasing(self, quotation: QuotationRequest, reason: str) -> None:
+        """A customer who has replied must never be chased again."""
+        from app.services.quotations.followup_rules import FollowUpScheduler
+
+        try:
+            FollowUpScheduler(self.db).cancel_for(quotation, reason)
+        except Exception:  # noqa: BLE001 - never break reply handling
+            logger.exception("Could not cancel follow-ups for %s", quotation.quotation_number)
+
+    def _notify_reply(self, quotation: QuotationRequest, intent: str) -> None:
+        try:
+            NotificationService(self.db).customer_replied(quotation, intent)
+        except Exception:  # noqa: BLE001 - reporting must not break processing
+            logger.exception("Could not raise a reply notification")
 
     def _handle_declined(self, state: WorkflowState) -> WorkflowState:
         """Customer said no. Draft a courtesy reply for a human to review and
@@ -384,6 +402,8 @@ class QuotationWorkflow:
             details={"quotation_number": quotation.quotation_number, "reason": state.get("reply_reason")},
         )
         self.db.commit()
+        self._stop_chasing(quotation, "The customer declined.")
+        self._notify_reply(quotation, "declined")
         return {"outcome": "CUSTOMER_DECLINED", "status": quotation.status.value, "notes": notes}
 
     def _handle_needs_review(self, state: WorkflowState) -> WorkflowState:
@@ -538,6 +558,20 @@ class QuotationWorkflow:
                 )
             )
 
+            # Price the line from the trader's published rules. Availability
+            # and price are separate questions: a line with no stock can still
+            # be quoted off a mill offer, and a line with stock still needs a
+            # rate before anything can be drafted.
+            self.db.flush()
+            pricing = PricingService(self.db).price_line(
+                item,
+                quotation=quotation,
+                lot_ids=lot_ids_by_line.get(item.id, []),
+            )
+            if pricing.outcome.warnings:
+                notes += [f"Line {item.line_no}: {w}" for w in pricing.outcome.warnings]
+                needs_review = True
+
             confidences.append(outcome.confidence)
             needs_review = needs_review or outcome.requires_manual_review
             if outcome.matched:
@@ -595,6 +629,7 @@ class QuotationWorkflow:
 
         self._finish_email(state["email_id"], ProcessingStatus.PROCESSED)
 
+        self._announce(quotation)
         return {
             "outcome": quotation.status.value,
             "status": quotation.status.value,
@@ -619,8 +654,16 @@ class QuotationWorkflow:
             details={"status": quotation.status.value, "reason": "no line could be stock-checked"},
         )
         self.db.commit()
+        self._announce(quotation)
 
         return {"outcome": quotation.status.value, "status": quotation.status.value}
+
+    def _announce(self, quotation: QuotationRequest) -> None:
+        """Tell the desk. A failed notification never fails the enquiry."""
+        try:
+            NotificationService(self.db).quotation_ready(quotation)
+        except Exception:  # noqa: BLE001 - reporting must not break processing
+            logger.exception("Could not raise a notification for %s", quotation.quotation_number)
 
     def _unsupported(self, state: WorkflowState) -> WorkflowState:
         """Recorded, shown, and not answered - spec section 11."""

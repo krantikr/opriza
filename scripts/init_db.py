@@ -29,6 +29,7 @@ from app.core.logging import get_logger
 from app.core.paths import SAMPLE_DIR
 from app.models import User, UserRole  # noqa: F401 - registers all tables
 from app.services.ingestion.excel_importer import ImportFailed, import_directory
+from app.services.pricing.defaults import seed_pricing_defaults
 
 logger = get_logger("init_db")
 
@@ -59,6 +60,47 @@ def seed_default_user() -> None:
         db.add(user)
         db.commit()
         logger.info("Seeded default user %s (id=%s)", user.email, user.id)
+
+
+def seed_defaults() -> None:
+    """Publish a starting rule set and the operational rules a desk needs.
+
+    Idempotent, so this is safe on every run. A new installation opens on a
+    calculator it recognises rather than an empty table it has to design.
+    """
+    from app.core.db import session_scope
+    from app.models import FollowUpRule, NotificationChannel, NotificationKind, NotificationRule
+
+    db = session_scope()
+    try:
+        rule_set = seed_pricing_defaults(db)
+        logger.info("Pricing rules: v%s active", rule_set.version)
+
+        if db.query(NotificationRule).count() == 0:
+            db.add(
+                NotificationRule(
+                    label="Quotation ready - dashboard",
+                    kind=NotificationKind.QUOTATION_READY,
+                    channel=NotificationChannel.IN_APP,
+                )
+            )
+            logger.info("Seeded the default notification rule")
+
+        if db.query(FollowUpRule).count() == 0:
+            db.add(
+                FollowUpRule(
+                    label="Standard chase",
+                    first_after_days=3,
+                    interval_days=5,
+                    max_attempts=2,
+                    stop_after_days=30,
+                    auto_send=False,
+                )
+            )
+            logger.info("Seeded the default follow-up rule (queues for approval)")
+        db.commit()
+    finally:
+        db.close()
 
 
 def import_master_data(data_dir: Path, stock_file: Path | None) -> bool:
@@ -104,6 +146,7 @@ def main() -> int:
     logger.info("Database: %s", settings.sqlalchemy_url)
     create_schema(reset=args.reset)
     seed_default_user()
+    seed_defaults()
 
     if args.no_import:
         logger.info("Skipping master data import (--no-import)")

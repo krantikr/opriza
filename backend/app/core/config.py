@@ -61,6 +61,25 @@ class Settings(BaseSettings):
     gmail_query: str = "in:inbox -in:chats newer_than:7d"
     gmail_max_results: int = 25
 
+    # --- Notifications ----------------------------------------------------
+    # "local" writes messages to data/notifications/ instead of sending them,
+    # so rules and the queue are exercisable before any provider account
+    # exists. Switch to "twilio" once the credentials below are filled in.
+    notification_provider: str = Field(default="local", pattern="^(local|twilio)$")
+    notifications_enabled: bool = True
+    notification_data_dir: str = "data"
+
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_whatsapp_from: str = ""
+    twilio_sms_from: str = ""
+
+    # --- Follow-ups -------------------------------------------------------
+    # The scheduler decides when a nudge is *due*; sending stays a human
+    # action unless a specific rule opts in. This flag only enables the
+    # scheduler that queues them.
+    follow_ups_enabled: bool = True
+
     # --- Polling ----------------------------------------------------------
     polling_enabled: bool = False
     polling_interval_seconds: int = 120
@@ -91,6 +110,10 @@ class Settings(BaseSettings):
             db_path.parent.mkdir(parents=True, exist_ok=True)
             return f"{prefix}{db_path.as_posix()}"
         return self.database_url
+
+    @property
+    def data_dir(self) -> Path:
+        return resolve(self.notification_data_dir)
 
     @property
     def is_sqlite(self) -> bool:

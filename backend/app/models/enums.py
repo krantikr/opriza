@@ -25,6 +25,14 @@ __all__ = [
     "DraftStatus",
     "ImportStatus",
     "ImportEntity",
+    "PricingComponentKind",
+    "PricingBasis",
+    "RuleScope",
+    "NotificationChannel",
+    "NotificationKind",
+    "NotificationStatus",
+    "FollowUpStatus",
+    "StockMovementKind",
 ]
 
 
@@ -136,3 +144,105 @@ class ImportStatus(StrEnum):
 class ImportEntity(StrEnum):
     STOCK = "STOCK"
     CUSTOMERS = "CUSTOMERS"
+
+
+class PricingComponentKind(StrEnum):
+    """The arithmetic a pricing rule performs.
+
+    Deliberately a closed set. A trader configures *which* rules apply, with
+    what figures and under what conditions; the operation each one performs is
+    written in `services/pricing/components.py` and reviewed like any other
+    code. An open expression language would let a loss-making rule be written
+    by accident, and the margins here do not leave room for that.
+    """
+
+    #: Landed cost of matched stock, or a mill offer when nothing is held.
+    BASE_PRICE = "BASE_PRICE"
+    #: Freight, derived from distance and vehicle economics or a flat rate.
+    TRANSPORTATION = "TRANSPORTATION"
+    #: Loading, unloading and other per-MT handling.
+    HANDLING = "HANDLING"
+    #: Cost of credit over the payment period.
+    FINANCING = "FINANCING"
+    #: Market and delivery risk allowance.
+    RISK_BUFFER = "RISK_BUFFER"
+    #: Blends recent comparable invoices toward the computed cost.
+    INVOICE_ANCHOR = "INVOICE_ANCHOR"
+    #: Volume adjustment by tonnage band.
+    QUANTITY_SLAB = "QUANTITY_SLAB"
+    #: A/B/C commercial adjustment.
+    CUSTOMER_TIER = "CUSTOMER_TIER"
+    #: Any other named per-MT or percentage adjustment.
+    ADJUSTMENT = "ADJUSTMENT"
+    #: The single margin applied to total cost. Runs after every cost line.
+    TARGET_MARGIN = "TARGET_MARGIN"
+    #: Clamps the quote up to a minimum margin, and flags that it happened.
+    MARGIN_FLOOR = "MARGIN_FLOOR"
+    #: Rounds to a quotable figure, never back down through the floor.
+    ROUNDING = "ROUNDING"
+
+
+class PricingBasis(StrEnum):
+    """Where the base price came from."""
+
+    STOCK = "STOCK"
+    MILL_OFFER = "MILL_OFFER"
+    MANUAL = "MANUAL"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class RuleScope(StrEnum):
+    """What a rule is allowed to apply to."""
+
+    ALL = "ALL"
+    CUSTOMER = "CUSTOMER"
+    PRODUCT = "PRODUCT"
+    LOCATION = "LOCATION"
+
+
+class NotificationChannel(StrEnum):
+    IN_APP = "IN_APP"
+    EMAIL = "EMAIL"
+    WHATSAPP = "WHATSAPP"
+    SMS = "SMS"
+
+
+class NotificationKind(StrEnum):
+    """Why someone is being told something."""
+
+    NEW_ENQUIRY = "NEW_ENQUIRY"
+    QUOTATION_READY = "QUOTATION_READY"
+    CUSTOMER_REPLIED = "CUSTOMER_REPLIED"
+    FOLLOW_UP_DUE = "FOLLOW_UP_DUE"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+    DIGEST = "DIGEST"
+
+
+class NotificationStatus(StrEnum):
+    PENDING = "PENDING"
+    SENT = "SENT"
+    FAILED = "FAILED"
+    READ = "READ"
+
+
+class FollowUpStatus(StrEnum):
+    """Lifecycle of a scheduled follow-up.
+
+    `DUE` is the important one: the rule decides when a nudge is owed, but it
+    is queued for a human rather than sent, so no code path mails a customer
+    unattended.
+    """
+
+    SCHEDULED = "SCHEDULED"
+    DUE = "DUE"
+    SENT = "SENT"
+    SKIPPED = "SKIPPED"
+    CANCELLED = "CANCELLED"
+
+
+class StockMovementKind(StrEnum):
+    RECEIPT = "RECEIPT"
+    ISSUE = "ISSUE"
+    RESERVATION = "RESERVATION"
+    RELEASE = "RELEASE"
+    ADJUSTMENT = "ADJUSTMENT"

@@ -37,6 +37,7 @@ from app.schemas.dashboard import (
 from app.schemas.quotations import AuditLogOut
 from app.services.email.factory import get_email_source
 from app.services.telemetry import usage_summary
+from app.services.trends import TrendService
 
 router = APIRouter(tags=["dashboard"])
 
@@ -224,6 +225,19 @@ def system_status(db: Session = Depends(get_db)) -> SystemStatus:
         stock_specs=_distinct_spec_count(db),
         customers=db.scalar(select(func.count()).select_from(Customer)) or 0,
     )
+
+
+@router.get("/dashboard/trends", tags=["dashboard"])
+def dashboard_trends(
+    days: int = Query(30, ge=7, le=365), db: Session = Depends(get_db)
+) -> dict:
+    """A daily series plus the same window immediately preceding it.
+
+    The comparison is like for like - 30 days against 30 days - because
+    measuring a partial period against a whole one either flatters or damns
+    the desk for no reason.
+    """
+    return TrendService(db).build(days).to_dict()
 
 
 @router.get("/system/rules", tags=["system"])

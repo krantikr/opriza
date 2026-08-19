@@ -229,6 +229,7 @@ class ApprovalService:
             quotation.sent_at = utcnow()
             quotation.sent_message_id = result.message_id
             quotation.send_error = None
+            self._schedule_follow_up(quotation)
         else:
             # Approval stands - the human did approve it - but the send failed
             # and must be visible and retryable rather than silently lost.
@@ -287,3 +288,17 @@ class ApprovalService:
             details={"quotation_number": quotation.quotation_number},
         )
         self.db.commit()
+
+    def _schedule_follow_up(self, quotation) -> None:
+        """Queue the first nudge, if a follow-up rule covers this quotation.
+
+        Scheduling only: the nudge is drafted and queued for a human when it
+        falls due. Nothing here sends anything, and a scheduling failure must
+        not undo a send that already succeeded.
+        """
+        from app.services.quotations.followup_rules import FollowUpScheduler
+
+        try:
+            FollowUpScheduler(self.db).schedule_for(quotation)
+        except Exception:  # noqa: BLE001 - the quotation has already gone out
+            logger.exception("Could not schedule a follow-up for %s", quotation.quotation_number)
