@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 /* ---------------------------------------------------------------------------
@@ -25,9 +25,17 @@ export interface Toast {
 
 interface ToastApi {
   push: (toast: Omit<Toast, "id">) => void;
+  /** Shorthands for the two cases that make up most calls, so a confirmation
+   *  or a failure does not need the tone spelled out at every site. */
+  success: (message: string) => void;
+  error: (message: string) => void;
 }
 
-const ToastContext = createContext<ToastApi>({ push: () => undefined });
+const ToastContext = createContext<ToastApi>({
+  push: () => undefined,
+  success: () => undefined,
+  error: () => undefined,
+});
 
 export function useToast(): ToastApi {
   return useContext(ToastContext);
@@ -153,12 +161,21 @@ export function ToastProvider({
     });
   }, []);
 
+  const api = useMemo<ToastApi>(
+    () => ({
+      push,
+      success: (message: string) => push({ tone: "settled", title: message }),
+      error: (message: string) => push({ tone: "danger", title: message }),
+    }),
+    [push],
+  );
+
   const dismiss = useCallback((id: number) => {
     setToasts((current) => current.filter((t) => t.id !== id));
   }, []);
 
   return (
-    <ToastContext.Provider value={{ push }}>
+    <ToastContext.Provider value={api}>
       {children}
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">
         {toasts.map((toast) => (

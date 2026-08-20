@@ -2,24 +2,62 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import selectinload
 
+from app.api.deps import TenantDb
 from app.api.serializers import email_detail_out, email_out
-from app.core.db import get_db, utcnow
+from app.core.db import utcnow
 from app.models import Email, EmailCategory, ProcessingStatus
 from app.schemas.common import Page
-from app.schemas.quotations import EmailDetailOut, EmailOut
+from app.schemas.quotations import (
+    EmailDetailOut,
+    EmailOut,
+    ThreadMessageOut,
+    ThreadOut,
+)
 from app.services import audit
 from app.services.pipeline_state import resolve_state
 
 router = APIRouter(prefix="/emails", tags=["emails"])
 
 
+@router.get("/{email_id}/thread", response_model=ThreadOut)
+def email_thread(email_id: int, db: TenantDb) -> ThreadOut:
+    """The whole conversation this message belongs to.
+
+    The mailbox is a view over conversations, not over individual messages -
+    a reply shown on its own, detached from what it answers, is the thing this
+    replaces.
+    """
+    from dataclasses import asdict
+
+    from app.services.threads import thread_for_email, thread_state
+
+    email = db.get(Email, email_id)
+    if email is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    quotation = email.quotation_request or email.replied_to_quotation
+    messages = thread_for_email(db, email)
+
+    return ThreadOut(
+        quotation_id=quotation.id if quotation else 0,
+        quotation_number=quotation.quotation_number if quotation else "",
+        state=(
+            thread_state(db, quotation) if quotation else resolve_state(email).value
+        ),
+        status=quotation.status.value if quotation else "",
+        customer_name=email.sender_name,
+        customer_email=email.sender_email,
+        messages=[ThreadMessageOut(**asdict(m)) for m in messages],
+    )
+
+
 @router.get("", response_model=Page[EmailOut])
 def list_emails(
-    db: Session = Depends(get_db),
+    db: TenantDb,
     processing_status: ProcessingStatus | None = None,
     category: EmailCategory | None = None,
     awaiting_us: bool | None = Query(
@@ -76,7 +114,7 @@ def list_emails(
 
 
 @router.get("/{email_id}", response_model=EmailDetailOut)
-def get_email(email_id: int, db: Session = Depends(get_db)) -> EmailDetailOut:
+def get_email(email_id: int, db: TenantDb) -> EmailDetailOut:
     email = db.scalars(
         select(Email)
         .where(Email.id == email_id)
@@ -88,7 +126,7 @@ def get_email(email_id: int, db: Session = Depends(get_db)) -> EmailDetailOut:
 
 
 @router.post("/{email_id}/answered", response_model=EmailDetailOut)
-def mark_answered(email_id: int, db: Session = Depends(get_db)) -> EmailDetailOut:
+def mark_answered(email_id: int, db: TenantDb) -> EmailDetailOut:
     """Clear a message from "needs reply".
 
     Sending a quotation or a follow-up clears this automatically; this is for
@@ -113,7 +151,7 @@ def mark_answered(email_id: int, db: Session = Depends(get_db)) -> EmailDetailOu
 
 
 @router.post("/{email_id}/needs-reply", response_model=EmailDetailOut)
-def mark_needs_reply(email_id: int, db: Session = Depends(get_db)) -> EmailDetailOut:
+def mark_needs_reply(email_id: int, db: TenantDb) -> EmailDetailOut:
     """Put a message back into "needs reply" - the classifier missed one."""
     email = db.get(Email, email_id)
     if email is None:

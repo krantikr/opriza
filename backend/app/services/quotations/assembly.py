@@ -16,6 +16,7 @@ Two decisions here are worth stating explicitly:
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from app.models import (
     Customer,
     Email,
     MatchStatus,
+    Organisation,
     QuantityUnit,
     QuotationLineItem,
     QuotationRequest,
@@ -121,10 +123,88 @@ def resolve_customer(db: Session, email: Email, extracted: ExtractedEnquiry) -> 
     return customer
 
 
-def next_quotation_number(db: Session) -> str:
-    """Sequential reference, assigned after the row has an id."""
-    highest = db.scalar(select(func.max(QuotationRequest.id))) or 0
-    return f"Q-{highest + 1:06d}"
+#: A quotation reference as this system writes them: two-to-four letters, a
+#: hyphen, then digits. Deliberately not anchored to one desk's prefix, so a
+#: customer quoting any reference is matched and row-level security decides
+#: whether it belongs to the reader.
+QUOTATION_REFERENCE = re.compile(r"\b([A-Z]{1,4}-\d{4,8})\b", re.IGNORECASE)
+
+
+def quotation_numbers_in(text: str | None) -> list[str]:
+    """Every quotation reference mentioned in a piece of text.
+
+    Customers frequently answer a quotation by starting a *new* email that
+    quotes the reference - "Response to Quotation KK-000004" - which shares no
+    mail thread with anything. The number is the only reliable link back, and
+    it is one we wrote ourselves, so matching on it is deterministic rather
+    than a guess.
+    """
+    if not text:
+        return []
+    seen: list[str] = []
+    for match in QUOTATION_REFERENCE.finditer(text):
+        value = match.group(1).upper()
+        if value not in seen:
+            seen.append(value)
+    return seen
+
+
+def quotation_prefix(organisation: Organisation | None) -> str:
+    """The desk's own letters, taken from its name: "KK Traders" -> "KK".
+
+    Each desk numbers its own quotations, so a trader's references run 1, 2, 3
+    from the day they start rather than continuing somebody else's count. The
+    prefix keeps two desks' references visibly distinct in a support
+    conversation.
+
+    Falls back to "Q" when a name yields no letters at all, because a
+    quotation must always get a reference.
+    """
+    if organisation is None:
+        return "Q"
+    letters = [c for c in (organisation.name or "") if c.isalpha()]
+    return "".join(letters[:2]).upper() or "Q"
+
+
+def next_quotation_number(db: Session, organisation_id: int | None = None) -> str:
+    """The next reference for this desk: KK-000001, KK-000002, ...
+
+    Counted from the desk's own highest number rather than from a row id.
+    Row ids are shared across every organisation, so numbering from them
+    would start a new customer at whatever the platform total happened to be
+    and leak how many quotations other desks have written.
+    """
+    organisation = (
+        db.get(Organisation, organisation_id) if organisation_id is not None else None
+    )
+    prefix = quotation_prefix(organisation)
+
+    # Scoped by row-level security, so this counts only this desk's numbers.
+    # The LIKE narrows it further for a desk whose prefix has changed - the
+    # old series keeps its numbers and the new one starts its own.
+    highest = db.scalar(
+        select(func.max(QuotationRequest.quotation_number)).where(
+            QuotationRequest.quotation_number.like(f"{prefix}-%")
+        )
+    )
+
+    nextval = 1
+    if highest:
+        try:
+            nextval = int(highest.rsplit("-", 1)[1]) + 1
+        except (IndexError, ValueError):
+            # A reference that does not parse should not stop a quotation
+            # being written; fall back to counting rows for this prefix.
+            nextval = (
+                db.scalar(
+                    select(func.count()).select_from(QuotationRequest).where(
+                        QuotationRequest.quotation_number.like(f"{prefix}-%")
+                    )
+                )
+                or 0
+            ) + 1
+
+    return f"{prefix}-{nextval:06d}"
 
 
 def _to_decimal(value: float | int | None) -> Decimal | None:
@@ -185,9 +265,11 @@ def create_quotation(
         missing_information=missing,
     )
     db.add(quotation)
+    # Flushed first because `organisation_id` is stamped by the tenancy hook
+    # at flush time, and the reference is derived from it.
     db.flush()
 
-    quotation.quotation_number = f"Q-{quotation.id:06d}"
+    quotation.quotation_number = next_quotation_number(db, quotation.organisation_id)
 
     for index, item in enumerate(extracted.line_items, start=1):
         line = _line_item(item, index)

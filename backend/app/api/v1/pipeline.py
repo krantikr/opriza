@@ -7,12 +7,12 @@ send an email, press the button, watch it appear.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 
+from app.api.deps import TenantDb
 from app.core.config import settings
-from app.core.db import get_db, session_scope
+from app.core.db import session_scope
 from app.core.logging import get_logger
 from app.services.email.factory import get_email_source
 from app.services.email.ingestion import EmailIngestionService
@@ -42,7 +42,7 @@ class ProcessResult(BaseModel):
 
 @router.post("/ingest", response_model=IngestResult)
 def ingest(
-    db: Session = Depends(get_db),
+    db: TenantDb,
     source: str | None = Query(default=None, pattern="^(local|gmail)$"),
     limit: int = Query(default=25, ge=1, le=100),
 ) -> IngestResult:
@@ -61,7 +61,7 @@ def ingest(
 
 @router.post("/process", response_model=ProcessResult)
 def process(
-    db: Session = Depends(get_db),
+    db: TenantDb,
     limit: int = Query(default=25, ge=1, le=100),
 ) -> ProcessResult:
     """Run the quotation workflow over every pending email."""

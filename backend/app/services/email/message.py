@@ -49,7 +49,7 @@ class RawAttachment:
 
 @dataclass(frozen=True, slots=True)
 class RawEmail:
-    """One inbound message as fetched, before any interpretation."""
+    """One message as fetched, before any interpretation."""
 
     # Stable, source-assigned identity. This is the deduplication key and is
     # enforced UNIQUE in the database.
@@ -67,6 +67,10 @@ class RawEmail:
     body_text: str | None = None
     snippet: str | None = None
     received_at: datetime | None = None
+    #: True when this is our own sent mail rather than something that
+    #: arrived. Taken from the source rather than guessed from the sender,
+    #: which would break for a desk with several addresses or an alias.
+    outbound: bool = False
     attachments: list[RawAttachment] = field(default_factory=list)
 
     @property

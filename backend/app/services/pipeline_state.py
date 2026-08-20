@@ -10,7 +10,8 @@ The mailbox is a queue of work, not a filing cabinet. Every message resolves to
        |      ...they reply asking something
     NEEDS_REPLY  they asked; nobody has answered
        |      ...we answer
-    DELIVERY  they confirmed the order and are waiting for the goods
+    DELIVERY  they confirmed the order and are waiting for the goods, or
+       |      they are asking where it is
        |      ...someone marks it despatched, or we reply
     COMPLAINT they complained; nobody has answered
        |      ...we answer
@@ -83,20 +84,31 @@ def resolve_state(email: Email) -> PipelineState:
 
     quotation = _quotation_for(email)
 
-    # 2. The customer asked something and is waiting on us.
+    # 2. A question about a despatch belongs with the other despatch work,
+    #    not in the general reply queue - a trader chasing lorries wants them
+    #    in one place. Checked before NEEDS_REPLY, which would otherwise
+    #    swallow it.
+    if (
+        email.category is EmailCategory.DELIVERY_QUERY
+        and email.awaiting_us
+        and not answered
+    ):
+        return PipelineState.DELIVERY
+
+    # 3. The customer asked something and is waiting on us.
     if email.awaiting_us and not answered:
         return PipelineState.NEEDS_REPLY
 
     if quotation is not None:
-        # 3. They accepted and are waiting for the goods.
+        # 4. They accepted and are waiting for the goods.
         if quotation.status is QuotationStatus.CUSTOMER_ACCEPTED and not quotation.despatched_at:
             return PipelineState.DELIVERY
 
-        # 4. Nothing has gone out yet, so the enquiry is still ours to answer.
+        # 5. Nothing has gone out yet, so the enquiry is still ours to answer.
         if quotation.status in UNSENT:
             return PipelineState.ENQUIRY
 
-        # 5. It went out and nobody has replied. Owed a chase now, or waiting
+        # 6. It went out and nobody has replied. Owed a chase now, or waiting
         #    on the clock - either way it is the trader's to keep an eye on.
         if quotation.status in IN_FLIGHT and _awaiting_reply(quotation):
             return PipelineState.FOLLOW_UP

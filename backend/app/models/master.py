@@ -19,11 +19,11 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
 from app.models.enums import CustomerTier, RecordStatus
-from app.models.mixins import TimestampMixin, enum_col
+from app.models.mixins import TenantMixin, TimestampMixin, enum_col
 from app.models.types import Quantity
 
 
-class Customer(Base, TimestampMixin):
+class Customer(Base, TimestampMixin, TenantMixin):
     __tablename__ = "customers"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -52,7 +52,7 @@ class Customer(Base, TimestampMixin):
         return f"<Customer {self.id} {self.name!r}>"
 
 
-class StockItem(Base, TimestampMixin):
+class StockItem(Base, TimestampMixin, TenantMixin):
     """One lot of physical stock, as reported in the client's stock list.
 
     A lot is a row of the source spreadsheet - one purchase, at one location,

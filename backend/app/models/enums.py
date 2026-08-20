@@ -38,16 +38,50 @@ __all__ = [
 
 
 class UserRole(StrEnum):
-    """Roles exist in the schema from day one so the audit trail is stable.
+    """What a person may do inside their own organisation.
 
-    The MVP has no login; every action is attributed to the seeded default
-    user. Adding authentication later is a login endpoint plus a dependency -
-    not a migration across every approval and audit row.
+    Scoped to one desk: a role says nothing about other organisations, because
+    a user only ever belongs to one. Crossing that line is `is_super_admin`,
+    which is a separate flag rather than a role, so no permission check can
+    accidentally promote a trader by comparing role strings.
     """
 
-    ADMIN = "ADMIN"
-    APPROVER = "APPROVER"
+    #: Full control of the desk: team, billing, mailbox, pricing rules.
+    OWNER = "OWNER"
+    #: Day-to-day trading: quote, send, chase, adjust stock.
+    MEMBER = "MEMBER"
+    #: Read-only. For an accountant or a principal who wants the numbers.
     VIEWER = "VIEWER"
+
+
+class OrgStatus(StrEnum):
+    """Whether a desk may sign in and whether its mail keeps being crawled."""
+
+    ACTIVE = "ACTIVE"
+    #: Suspended by the super admin. Sign-in refused, crawling stopped, data
+    #: retained - non-payment should not destroy a customer's records.
+    SUSPENDED = "SUSPENDED"
+
+
+class MailboxStatus(StrEnum):
+    """Health of a connected mailbox.
+
+    `NEEDS_RECONNECT` is the one that matters: Google expires refresh tokens,
+    and a mailbox that has quietly stopped polling looks exactly like a week
+    with no enquiries. It is surfaced, not just logged.
+    """
+
+    DISCONNECTED = "DISCONNECTED"
+    CONNECTED = "CONNECTED"
+    NEEDS_RECONNECT = "NEEDS_RECONNECT"
+    ERROR = "ERROR"
+
+
+class InviteStatus(StrEnum):
+    PENDING = "PENDING"
+    ACCEPTED = "ACCEPTED"
+    REVOKED = "REVOKED"
+    EXPIRED = "EXPIRED"
 
 
 class RecordStatus(StrEnum):
@@ -61,6 +95,19 @@ class CustomerTier(StrEnum):
     A = "A"
     B = "B"
     C = "C"
+
+
+class MailDirection(StrEnum):
+    """Whether a message came in or went out.
+
+    Needed once the mailbox is read as a whole conversation rather than as an
+    inbox. Our own sent mail must be stored - a trader who replies in Gmail
+    has still replied, and a system that cannot see that will chase a customer
+    who is already waiting on nothing.
+    """
+
+    INBOUND = "INBOUND"
+    OUTBOUND = "OUTBOUND"
 
 
 class EmailSourceType(StrEnum):

@@ -4,7 +4,8 @@ from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import Mapped, declared_attr, mapped_column
 
 from app.core.db import utcnow
 
@@ -40,3 +41,28 @@ class CreatedAtMixin:
     """For append-only tables that are never updated in place."""
 
     created_at: Mapped[datetime] = mapped_column(default=utcnow, nullable=False, index=True)
+
+
+class TenantMixin:
+    """`organisation_id` plus the index every scoped query relies on.
+
+    Applied to every table holding a desk's business data. Two things make
+    this safe rather than merely conventional:
+
+    * The column is **not nullable**. A row with no owner is a row that RLS
+      cannot protect, so the schema refuses to create one.
+    * `ondelete="CASCADE"` - removing an organisation removes its data rather
+      than orphaning rows that no policy will ever match again.
+
+    The column alone does not isolate anything. `scripts/rls.py` generates the
+    matching PostgreSQL policy for each table carrying this mixin, and
+    `tests/test_tenancy.py` fails if a table has the column but no policy.
+    """
+
+    @declared_attr
+    def organisation_id(cls) -> Mapped[int]:  # noqa: N805
+        return mapped_column(
+            ForeignKey("organisations.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )

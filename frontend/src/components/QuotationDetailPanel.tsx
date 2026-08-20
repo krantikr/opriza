@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { api, useApi } from "../api/client";
 import type { ActionResult, LineItem, QuotationDetail as Detail } from "../api/types";
 import PricingCalculator from "./PricingCalculator";
+import ThreadView, { type Thread } from "./Thread";
 import {
   ago,
   Badge,
@@ -40,83 +41,6 @@ function SendIcon() {
   );
 }
 
-/** One message in the thread, inbound or outbound. */
-function Message({
-  from,
-  address,
-  at,
-  subject,
-  body,
-  outbound = false,
-  label,
-  action,
-}: {
-  from: string;
-  address?: string | null;
-  at: string | null;
-  subject?: string | null;
-  body?: string | null;
-  outbound?: boolean;
-  label?: React.ReactNode;
-  action?: React.ReactNode;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const text = body ?? "";
-  const long = text.length > 420;
-  const shown = expanded || !long ? text : `${text.slice(0, 420)}…`;
-
-  let hash = 0;
-  for (const ch of from) hash = (hash * 31 + ch.charCodeAt(0)) % 360;
-
-  return (
-    <article
-      className={`overflow-hidden rounded-card border shadow-card ${
-        outbound ? "border-brand/25 bg-brand-wash/40" : "border-rule bg-surface"
-      }`}
-    >
-      <header className="flex flex-wrap items-start justify-between gap-2 px-4 py-3">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <span
-            className="grid size-8 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white"
-            style={{ background: outbound ? "var(--color-brand)" : `oklch(0.58 0.1 ${hash})` }}
-            aria-hidden="true"
-          >
-            {from.slice(0, 2).toUpperCase()}
-          </span>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-[13px] font-semibold text-ink">{from}</span>
-              {label}
-            </div>
-            {address && <p className="truncate text-[11px] text-ink-faint">{address}</p>}
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {action}
-          <span className="text-[11px] text-ink-faint">{when(at)}</span>
-        </div>
-      </header>
-
-      <div className="border-t border-rule/70 px-4 py-3">
-        {subject && <p className="mb-1.5 text-sm font-medium text-ink">{subject}</p>}
-        <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-ink-soft">
-          {shown || "(no content)"}
-        </pre>
-        {long && (
-          <button
-            type="button"
-            onClick={() => setExpanded((v) => !v)}
-            className="mt-1.5 text-xs font-medium text-brand hover:underline"
-          >
-            {expanded ? "Show less" : "Show full message"}
-          </button>
-        )}
-      </div>
-    </article>
-  );
-}
-
-/** The commercial terms a reviewer completes when the enquiry did not state them. */
 function EnquiryTerms({
   quotation,
   onSaved,
@@ -318,6 +242,10 @@ export default function QuotationDetailPanel({
   onBack?: () => void;
 }) {
   const { data, error, loading, reload } = useApi<Detail>(`/quotations/${id}`);
+  // The conversation, from the endpoint that assembles it. Fetched separately
+  // so a slow thread never delays the pricing and line items a trader is
+  // usually here for.
+  const [thread, setThread] = useState<Thread | null>(null);
   const [params, setParams] = useSearchParams();
   const tab = (params.get("tab") as TabKey) || "overview";
   const setTab = (next: TabKey) =>
@@ -336,6 +264,21 @@ export default function QuotationDetailPanel({
   }, [draftId]);
 
   useEffect(() => setNote(null), [id]);
+
+  // Reloaded whenever the quotation changes underneath - sending, approving
+  // or recording a reply all add a message, and a stale thread would show a
+  // conversation that is one step behind what the trader just did.
+  useEffect(() => {
+    let current = true;
+    setThread(null);
+    api
+      .get<Thread>(`/quotations/${id}/thread`)
+      .then((t) => current && setThread(t))
+      .catch(() => current && setThread(null));
+    return () => {
+      current = false;
+    };
+  }, [id, data?.status, data?.sent_at]);
 
   if (loading && !data) return <Loading label="Loading quotation" />;
   if (error) return <div className="p-5"><ErrorNote message={error} /></div>;
@@ -493,66 +436,43 @@ export default function QuotationDetailPanel({
                 in or corrects, and they gate everything downstream. */}
             <EnquiryTerms quotation={data} onSaved={() => { reload(); onChanged(); }} />
 
-            {/* Then the conversation, in the order it happened. */}
+            {/* Then the conversation, in the order it happened.
+
+                Assembled by the backend rather than stitched together here:
+                a customer who replies directly to our mail creates rows the
+                frontend has no way to correlate, and the thread and the
+                pipeline state must come from the same place or they drift. */}
             <div className="flex flex-col gap-2">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
                 Conversation
               </p>
 
-              {data.email && (
-                <Message
-                  from={data.email.sender_name || data.email.sender_email || "Customer"}
-                  address={data.email.sender_email}
-                  at={data.email.received_at}
-                  subject={data.email.subject}
-                  body={data.email.body_text}
-                  label={data.email.category ? <Badge value={data.email.category} dot={false} /> : null}
-                />
+              {thread ? (
+                <ThreadView thread={thread} />
+              ) : (
+                <p className="py-4 text-sm text-ink-faint">Loading the conversation…</p>
               )}
 
-              {data.replies?.map((r) => (
-                <Message
-                  key={r.id}
-                  from={r.sender_name || r.sender_email || "Customer"}
-                  address={r.sender_email}
-                  at={r.received_at}
-                  body={r.body_text}
-                  label={r.reply_intent ? <Badge value={r.reply_intent} dot={false} /> : null}
-                />
-              ))}
-
-              {data.follow_ups?.map((f) => (
-                <Message
-                  key={`f-${f.id}`}
-                  from="You"
-                  at={f.created_at}
-                  subject={f.subject}
-                  body={f.body}
-                  outbound
-                  label={<Badge value={f.sent ? "SENT" : "FAILED"} dot={false} />}
-                />
-              ))}
-
-              {/* The reply being composed sits at the end of the thread, where
-                  the next message in a mail client would be. */}
-              {draft && (
-                <Message
-                  from="You"
-                  at={data.sent_at}
-                  subject={subject}
-                  body={body}
-                  outbound
-                  label={
-                    <Badge value={data.sent_at ? "SENT" : `DRAFT V${draft.version}`} dot={false} />
-                  }
-                  action={
-                    !data.sent_at && (
-                      <Button onClick={() => setTab("content")}>
+              {/* The reply being composed sits after the thread, where the
+                  next message would go. */}
+              {draft && !data.sent_at && (
+                <div className="mt-2 rounded-xl border border-dashed border-rule bg-sunk px-3.5 py-3">
+                  <div className="mb-1.5 flex flex-wrap items-baseline gap-2">
+                    <span className="text-[13px] font-medium text-ink">You</span>
+                    <Badge value={`DRAFT V${draft.version}`} dot={false} />
+                    <span className="ml-auto">
+                      <Button compact onClick={() => setTab("content")}>
                         Edit reply
                       </Button>
-                    )
-                  }
-                />
+                    </span>
+                  </div>
+                  {subject && (
+                    <p className="mb-1 text-[13px] font-semibold text-ink">{subject}</p>
+                  )}
+                  <p className="line-clamp-6 whitespace-pre-wrap text-[13px] leading-relaxed text-ink-soft">
+                    {body}
+                  </p>
+                </div>
               )}
             </div>
 

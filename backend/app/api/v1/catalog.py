@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
 
+from app.api.deps import TenantDb
 from app.api.serializers import customer_out, stock_item_out
-from app.core.db import get_db
 from app.models import Customer, StockItem
 from app.schemas.catalog import CustomerOut, StockCheckRequest, StockItemOut, StockSummaryOut
 from app.schemas.common import Page
@@ -24,7 +23,7 @@ router = APIRouter(tags=["catalog"])
 
 @router.get("/stock", response_model=Page[StockItemOut])
 def list_stock(
-    db: Session = Depends(get_db),
+    db: TenantDb,
     product_type: str | None = None,
     grade: str | None = None,
     location: str | None = None,
@@ -57,7 +56,7 @@ def list_stock(
 
 
 @router.get("/stock/summary", response_model=list[StockSummaryOut])
-def stock_summary(db: Session = Depends(get_db)) -> list[StockSummaryOut]:
+def stock_summary(db: TenantDb) -> list[StockSummaryOut]:
     """Lots grouped by distinct spec - what the Stock dashboard page shows."""
     rows = list(db.scalars(select(StockItem)))
     groups: dict[tuple, list[StockItem]] = {}
@@ -107,7 +106,7 @@ def stock_summary(db: Session = Depends(get_db)) -> list[StockSummaryOut]:
 
 
 @router.get("/stock/{stock_item_id}", response_model=StockItemOut)
-def get_stock_item(stock_item_id: int, db: Session = Depends(get_db)) -> StockItemOut:
+def get_stock_item(stock_item_id: int, db: TenantDb) -> StockItemOut:
     item = db.get(StockItem, stock_item_id)
     if item is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Stock item {stock_item_id} not found")
@@ -115,7 +114,7 @@ def get_stock_item(stock_item_id: int, db: Session = Depends(get_db)) -> StockIt
 
 
 @router.post("/stock/check", response_model=StockAvailabilityOut, tags=["stock"])
-def check_stock(payload: StockCheckRequest, db: Session = Depends(get_db)) -> StockAvailabilityOut:
+def check_stock(payload: StockCheckRequest, db: TenantDb) -> StockAvailabilityOut:
     """Check availability for one stock spec directly.
 
     Runs the same service the workflow uses, so a figure checked here is the
@@ -170,7 +169,7 @@ def check_stock(payload: StockCheckRequest, db: Session = Depends(get_db)) -> St
 
 @router.get("/customers", response_model=Page[CustomerOut])
 def list_customers(
-    db: Session = Depends(get_db),
+    db: TenantDb,
     search: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -194,7 +193,7 @@ def list_customers(
 
 
 @router.get("/customers/{customer_id}", response_model=CustomerOut)
-def get_customer(customer_id: int, db: Session = Depends(get_db)) -> CustomerOut:
+def get_customer(customer_id: int, db: TenantDb) -> CustomerOut:
     customer = db.get(Customer, customer_id)
     if customer is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Customer {customer_id} not found")

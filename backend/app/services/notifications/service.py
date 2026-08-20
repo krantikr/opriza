@@ -24,7 +24,6 @@ from app.models import (
     NotificationRule,
     NotificationStatus,
     QuotationRequest,
-    RecordStatus,
     User,
 )
 from app.services.notifications.channels import get_channel
@@ -253,9 +252,13 @@ class NotificationService:
 
         Resolving "everyone" at send time means a new joiner is covered without
         anyone having to remember to edit each rule.
+
+        Scoped to the caller's desk by row-level security rather than by a
+        filter here, so a notification can never reach another organisation's
+        team even if a rule names their user ids.
         """
         ids = rule.recipient_user_ids or []
-        query = select(User).where(User.status == RecordStatus.ACTIVE)
+        query = select(User).where(User.is_active.is_(True))
         if ids:
             query = query.where(User.id.in_(ids))
         return list(self.db.scalars(query))

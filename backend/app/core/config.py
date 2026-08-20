@@ -37,7 +37,23 @@ class Settings(BaseSettings):
     company_signatory: str = "Sales Team"
 
     # --- Database ---------------------------------------------------------
-    database_url: str = "sqlite:///data/app.db"
+    # PostgreSQL, not by preference but by requirement: tenant isolation is
+    # enforced by row-level security, which SQLite has no equivalent of.
+    database_url: str = "postgresql+psycopg://steeldesk_app:steeldesk_dev@localhost:5432/steeldesk"
+
+    # --- Security ---------------------------------------------------------
+    #: Signs session tokens. A change invalidates every live session, which is
+    #: the intended lever for "sign everyone out now".
+    jwt_secret: str = "dev-only-change-me"
+    jwt_algorithm: str = "HS256"
+    access_token_minutes: int = 60 * 12
+    #: Encrypts mailbox refresh tokens at rest, so a database backup is not a
+    #: set of live Gmail credentials for every customer.
+    credential_key: str = ""
+    #: Seeded on first boot so there is somebody who can onboard the first
+    #: desk. Change the password immediately in any real deployment.
+    super_admin_email: str = "admin@steeldesk.io"
+    super_admin_password: str = "change-me-now"
 
     # --- LLM (OpenRouter) -------------------------------------------------
     openrouter_api_key: str = ""
@@ -58,7 +74,11 @@ class Settings(BaseSettings):
 
     gmail_credentials_file: str = "data/secrets/gmail_credentials.json"
     gmail_token_file: str = "data/secrets/gmail_token.json"
-    gmail_query: str = "in:inbox -in:chats newer_than:7d"
+    # The whole conversation, not just what arrived. A trader who replies in
+    # Gmail has still replied, and a system that only reads the inbox cannot
+    # see that - it would show the enquiry as unanswered and chase a customer
+    # who is waiting on nothing.
+    gmail_query: str = "(in:inbox OR in:sent) -in:chats newer_than:7d"
     gmail_max_results: int = 25
 
     # --- Notifications ----------------------------------------------------
@@ -83,6 +103,10 @@ class Settings(BaseSettings):
     # --- Polling ----------------------------------------------------------
     polling_enabled: bool = False
     polling_interval_seconds: int = 120
+    #: How often the poller wakes to *consider* each desk. Whether any given
+    #: desk is checked is decided from its own crawl window, so this only
+    #: bounds how precisely those windows are honoured.
+    poll_tick_seconds: int = 60
 
     # --- Safety -----------------------------------------------------------
     # Spec Rule 4: the MVP never sends without a recorded human approval.

@@ -8,9 +8,23 @@ as an id and the request 422s.
 
 from fastapi import APIRouter
 
-from app.api.v1 import catalog, dashboard, emails, ops, pipeline, pricing, quotations
+from app.api.v1 import (
+    admin,
+    auth,
+    catalog,
+    dashboard,
+    emails,
+    ops,
+    pipeline,
+    pricing,
+    quotations,
+)
 
 api_router = APIRouter(prefix="/api/v1")
+# Auth first: it is the only router with unauthenticated routes, and the only
+# one that must work before a tenant is known.
+api_router.include_router(auth.router)
+api_router.include_router(admin.router)
 api_router.include_router(emails.router)
 api_router.include_router(quotations.router)
 api_router.include_router(pricing.router)

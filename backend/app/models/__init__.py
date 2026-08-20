@@ -17,10 +17,14 @@ from app.models.enums import (
     FollowUpTrigger,
     ImportEntity,
     ImportStatus,
+    InviteStatus,
+    MailboxStatus,
+    MailDirection,
     MatchStatus,
     NotificationChannel,
     NotificationKind,
     NotificationStatus,
+    OrgStatus,
     PricingBasis,
     PricingComponentKind,
     ProcessingStatus,
@@ -59,10 +63,20 @@ from app.models.quotation import (
     QuotationRequest,
     StockAvailability,
 )
-from app.models.system import AuditLog, ImportBatch, LLMCall, User
+from app.models.system import AuditLog, ImportBatch, LLMCall
+from app.models.tenancy import Invite, Mailbox, Organisation, User
 
 __all__ = [
     "Base",
+    # tenancy
+    "Organisation",
+    "User",
+    "Mailbox",
+    "Invite",
+    "OrgStatus",
+    "MailboxStatus",
+    "InviteStatus",
+    "MailDirection",
     # master data
     "Customer",
     "StockItem",

@@ -177,6 +177,37 @@ class QuotationOut(ORMModel):
     sent_at: datetime | None = None
 
 
+class ThreadMessageOut(BaseModel):
+    """One message in the conversation with a customer."""
+
+    id: str
+    direction: str
+    kind: str
+    at: datetime | None = None
+    sender_name: str | None = None
+    sender_email: str | None = None
+    subject: str | None = None
+    body: str | None = None
+    sent: bool = True
+    outcome: str | None = None
+    email_id: int | None = None
+    has_attachments: bool = False
+
+
+class ThreadOut(BaseModel):
+    """The whole correspondence, with where it stands now."""
+
+    quotation_id: int
+    quotation_number: str
+    #: The pipeline stage this conversation is waiting at, so the thread and
+    #: the mailbox tabs can never disagree about what is outstanding.
+    state: str
+    status: str
+    customer_name: str | None = None
+    customer_email: str | None = None
+    messages: list[ThreadMessageOut] = Field(default_factory=list)
+
+
 class QuotationDetailOut(QuotationOut):
     required_delivery_date: str | None = None
     payment_terms: str | None = None

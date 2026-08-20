@@ -347,17 +347,22 @@ export function Select({
   onChange,
   options,
   className = "",
+  disabled = false,
 }: {
   value: string;
   onChange: (value: string) => void;
   options: { value: string; label: string }[];
   className?: string;
+  /** A read-only viewer sees the setting and its value, but cannot change it -
+   *  more useful than hiding the control and leaving them wondering. */
+  disabled?: boolean;
 }) {
   return (
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className={`rounded-lg border border-rule bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none ${className}`}
+      disabled={disabled}
+      className={`rounded-lg border border-rule bg-surface px-3 py-2 text-sm text-ink focus:border-brand focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>

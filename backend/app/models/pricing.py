@@ -47,11 +47,11 @@ from app.models.enums import (
     RecordStatus,
     RuleScope,
 )
-from app.models.mixins import CreatedAtMixin, TimestampMixin, enum_col
+from app.models.mixins import CreatedAtMixin, TenantMixin, TimestampMixin, enum_col
 from app.models.types import Money, Quantity
 
 
-class PricingRuleSet(Base, CreatedAtMixin):
+class PricingRuleSet(Base, CreatedAtMixin, TenantMixin):
     """An immutable, numbered snapshot of every rule in force at one moment.
 
     Editing a rule does not mutate history: it writes a new draft set, and
@@ -69,7 +69,7 @@ class PricingRuleSet(Base, CreatedAtMixin):
     # because publishing is a two-step swap.
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     published_at: Mapped[datetime | None] = mapped_column()
-    published_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    published_by_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id"))
 
     rules: Mapped[list["PricingRule"]] = relationship(
         back_populates="rule_set",
@@ -81,7 +81,7 @@ class PricingRuleSet(Base, CreatedAtMixin):
         return f"<PricingRuleSet v{self.version} active={self.is_active}>"
 
 
-class PricingRule(Base, TimestampMixin):
+class PricingRule(Base, TimestampMixin, TenantMixin):
     """One line of the cost build-up, as configured by a trader.
 
     `kind` selects the arithmetic (see `services/pricing/components.py`);
@@ -128,7 +128,7 @@ class PricingRule(Base, TimestampMixin):
         return f"<PricingRule {self.code} {self.kind} p{self.priority}>"
 
 
-class QuotationPricing(Base, TimestampMixin):
+class QuotationPricing(Base, TimestampMixin, TenantMixin):
     """The stored cost build-up for one quotation line.
 
     `components` is the ordered list of what each rule contributed, with the
@@ -182,7 +182,7 @@ class QuotationPricing(Base, TimestampMixin):
         return f"<QuotationPricing line={self.quotation_line_item_id} {self.quote_rate}>"
 
 
-class PricingOverride(Base, CreatedAtMixin):
+class PricingOverride(Base, CreatedAtMixin, TenantMixin):
     """A human's change to one component of one quotation's build-up.
 
     The computed figure is kept alongside the override. Without it the stored
@@ -196,7 +196,7 @@ class PricingOverride(Base, CreatedAtMixin):
     quotation_pricing_id: Mapped[int] = mapped_column(
         ForeignKey("quotation_pricing.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id"))
 
     component_code: Mapped[str] = mapped_column(String(60), nullable=False)
     computed_amount: Mapped[Decimal | None] = mapped_column(Money)
@@ -215,7 +215,7 @@ class PricingOverride(Base, CreatedAtMixin):
 # ---------------------------------------------------------------------------
 
 
-class LocationDistance(Base, TimestampMixin):
+class LocationDistance(Base, TimestampMixin, TenantMixin):
     """Road distance between two places, maintained by the trader.
 
     Deliberately not a geocoding API call: a price calculation must not depend
@@ -239,7 +239,7 @@ class LocationDistance(Base, TimestampMixin):
         return f"<LocationDistance {self.origin}->{self.destination} {self.distance_km}km>"
 
 
-class VehicleRate(Base, TimestampMixin):
+class VehicleRate(Base, TimestampMixin, TenantMixin):
     """Hire economics for one class of vehicle.
 
     Freight per MT is derived from these rather than stored as a flat rate, so
@@ -263,7 +263,7 @@ class VehicleRate(Base, TimestampMixin):
         return f"<VehicleRate {self.name} {self.capacity_mt}MT>"
 
 
-class MillOffer(Base, TimestampMixin):
+class MillOffer(Base, TimestampMixin, TenantMixin):
     """A supplier's current offer for material the business does not hold.
 
     The fallback base price when nothing in stock matches: the trader quotes
@@ -297,7 +297,7 @@ class MillOffer(Base, TimestampMixin):
         return f"<MillOffer {self.grade} {self.product_type} {self.rate_per_mt}>"
 
 
-class SalesInvoice(Base, TimestampMixin):
+class SalesInvoice(Base, TimestampMixin, TenantMixin):
     """A past sale, used as evidence by the invoice-history rule.
 
     Reintroduced deliberately: pricing off what comparable material actually

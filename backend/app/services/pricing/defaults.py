@@ -126,15 +126,38 @@ DEFAULT_VEHICLES: list[dict] = [
 ]
 
 
-def seed_pricing_defaults(db: Session, *, origin: str = "Nagpur") -> PricingRuleSet:
+def seed_pricing_defaults(
+    db: Session,
+    *,
+    origin: str = "Nagpur",
+    organisation_id: int | None = None,
+    commit: bool = True,
+) -> PricingRuleSet:
     """Create and publish version 1, if no rule set exists yet.
 
     Idempotent: an installation that already has rules is left untouched, so
     this is safe to call from `init_db.py` on every run.
+
+    `organisation_id` is passed explicitly when seeding on behalf of a desk the
+    caller does not belong to - onboarding runs on a super-admin session, where
+    there is no binding for `_stamp_new_rows` to copy from and the not-null
+    column would otherwise be left empty. When it is None the session's own
+    binding supplies it, which is the case for `init_db.py` and the tests.
+
+    `commit=False` lets this compose inside a larger transaction, so onboarding
+    stays atomic: a desk is never created with half its defaults in place.
     """
-    existing = db.scalar(select(PricingRuleSet).limit(1))
+    scoped = (
+        (lambda stmt: stmt.where(PricingRuleSet.organisation_id == organisation_id))
+        if organisation_id is not None
+        else (lambda stmt: stmt)
+    )
+
+    existing = db.scalar(scoped(select(PricingRuleSet)).limit(1))
     if existing is not None:
         return existing
+
+    owner = {"organisation_id": organisation_id} if organisation_id is not None else {}
 
     rule_set = PricingRuleSet(
         version=1,
@@ -145,6 +168,7 @@ def seed_pricing_defaults(db: Session, *, origin: str = "Nagpur") -> PricingRule
         ),
         is_active=True,
         published_at=utcnow(),
+        **owner,
     )
     db.add(rule_set)
     db.flush()
@@ -159,14 +183,21 @@ def seed_pricing_defaults(db: Session, *, origin: str = "Nagpur") -> PricingRule
                 priority=spec["priority"],
                 is_active=spec.get("is_active", True),
                 config=spec["config"],
+                **owner,
             )
         )
 
-    if db.scalar(select(func.count()).select_from(VehicleRate)) == 0:
-        for vehicle in DEFAULT_VEHICLES:
-            db.add(VehicleRate(**vehicle))
+    def _count(model) -> int:
+        stmt = select(func.count()).select_from(model)
+        if organisation_id is not None:
+            stmt = stmt.where(model.organisation_id == organisation_id)
+        return db.scalar(stmt) or 0
 
-    if db.scalar(select(func.count()).select_from(LocationDistance)) == 0:
+    if _count(VehicleRate) == 0:
+        for vehicle in DEFAULT_VEHICLES:
+            db.add(VehicleRate(**vehicle, **owner))
+
+    if _count(LocationDistance) == 0:
         for destination, km, days in (
             ("Patna", 1050, 3),
             ("Raipur", 290, 1),
@@ -181,10 +212,14 @@ def seed_pricing_defaults(db: Session, *, origin: str = "Nagpur") -> PricingRule
                     distance_km=km,
                     typical_days=days,
                     notes="Seeded example - replace with your own figures.",
+                    **owner,
                 )
             )
 
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     logger.info("Seeded pricing rule set v1 with %d rules", len(DEFAULT_RULES) + len(OPTIONAL_RULES))
     return rule_set
 

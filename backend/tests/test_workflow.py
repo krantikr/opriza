@@ -159,7 +159,9 @@ def test_quotation_email_runs_the_full_pipeline(db, plate, customer, inbound):
     assert llm.calls == ["classify", "extract", "draft"]
 
     quotation = db.get(QuotationRequest, result.quotation_id)
-    assert quotation.quotation_number == "Q-000001"
+    # Prefixed with the desk's own initials ("Test Desk"), and numbered from
+    # one within that desk rather than from a shared row id.
+    assert quotation.quotation_number == "TE-000001"
     assert quotation.status is QuotationStatus.READY_FOR_REVIEW
     assert quotation.confidence is ConfidenceLevel.HIGH
     assert quotation.customer_id == customer.id
@@ -486,3 +488,47 @@ def test_already_processed_emails_are_not_reprocessed(db, plate, customer, inbou
 
     assert len(process_pending_emails(db, client=llm)) == 1
     assert process_pending_emails(db, client=llm) == []
+
+
+# --- Matching a reply that is not in the same thread ------------------------
+
+
+def test_a_quotation_reference_is_found_in_a_customers_words():
+    """Customers answer a quotation by starting a fresh email that quotes the
+    reference. It shares no mail thread, so the number is the only link."""
+    from app.services.quotations.assembly import quotation_numbers_in
+
+    assert quotation_numbers_in("Response to Quotation KK-000004") == ["KK-000004"]
+    assert quotation_numbers_in("Re: al-000013 revised") == ["AL-000013"]
+    assert quotation_numbers_in("Please quote for 20 MT plate") == []
+    assert quotation_numbers_in(None) == []
+
+
+def test_every_reference_in_a_message_is_found():
+    """A customer consolidating two quotations mentions both."""
+    from app.services.quotations.assembly import quotation_numbers_in
+
+    found = quotation_numbers_in("Regarding KK-000001 and KK-000002, please revise")
+    assert found == ["KK-000001", "KK-000002"]
+
+
+def test_naming_the_reference_matches_more_widely_than_sharing_a_thread():
+    """The two matchers carry different weight, deliberately.
+
+    Quoting a number we wrote is strong evidence, so it matches a quotation a
+    trader may have sent by hand while the record still says review. Merely
+    sharing a mail thread is weak - a second enquiry on the same thread is a
+    new enquiry, not a reply to something never sent.
+    """
+    from app.models import QuotationStatus
+    from app.workflows.quotation import REPLIABLE_STATUSES, SENT_STATUSES
+
+    assert QuotationStatus.NEEDS_INFORMATION in REPLIABLE_STATUSES
+    assert QuotationStatus.NEEDS_INFORMATION not in SENT_STATUSES
+
+    # Still being assembled: no reference exists for anybody to quote.
+    assert QuotationStatus.NEW not in REPLIABLE_STATUSES
+    assert QuotationStatus.PROCESSING not in REPLIABLE_STATUSES
+
+    # Everything the thread matcher accepts, the reference matcher does too.
+    assert set(SENT_STATUSES) <= set(REPLIABLE_STATUSES)

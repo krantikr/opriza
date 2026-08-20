@@ -10,9 +10,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from app.api.deps import current_user, get_db
+from app.api.deps import TenantDb, current_user
 from app.core.db import utcnow
 from app.models import (
     Customer,
@@ -47,7 +46,7 @@ router = APIRouter(tags=["pricing"])
 
 
 @router.get("/pricing/rules", response_model=RuleSetOut)
-def get_active_rules(db: Session = Depends(get_db)) -> PricingRuleSet:
+def get_active_rules(db: TenantDb) -> PricingRuleSet:
     """The rule set currently pricing every enquiry."""
     rule_set = active_rule_set(db)
     if rule_set is None:
@@ -59,9 +58,7 @@ def get_active_rules(db: Session = Depends(get_db)) -> PricingRuleSet:
 
 
 @router.get("/pricing/rules/history", response_model=list[RuleSetOut])
-def list_rule_versions(
-    limit: int = Query(20, ge=1, le=100), db: Session = Depends(get_db)
-) -> list[PricingRuleSet]:
+def list_rule_versions(db: TenantDb, limit: int = Query(20, ge=1, le=100)) -> list[PricingRuleSet]:
     """Every published version, newest first - the audit trail for pricing."""
     return list(
         db.scalars(select(PricingRuleSet).order_by(PricingRuleSet.version.desc()).limit(limit))
@@ -71,7 +68,7 @@ def list_rule_versions(
 @router.put("/pricing/rules", response_model=RuleSetOut, status_code=status.HTTP_201_CREATED)
 def publish_rules(
     payload: RuleSetIn,
-    db: Session = Depends(get_db),
+    db: TenantDb,
     user: User | None = Depends(current_user),
 ) -> PricingRuleSet:
     """Publish a new version and make it active.
@@ -131,7 +128,7 @@ def publish_rules(
 @router.post("/pricing/rules/{version}/restore", response_model=RuleSetOut)
 def restore_version(
     version: int,
-    db: Session = Depends(get_db),
+    db: TenantDb,
     user: User | None = Depends(current_user),
 ) -> PricingRuleSet:
     """Republish an earlier version's rules as a new version.
@@ -192,7 +189,7 @@ def restore_version(
 
 
 @router.post("/pricing/preview", response_model=PreviewOut)
-def preview(payload: PreviewIn, db: Session = Depends(get_db)) -> PreviewOut:
+def preview(payload: PreviewIn, db: TenantDb) -> PreviewOut:
     """Run a scenario through a rule set without saving anything.
 
     This is what makes self-service pricing safe: a trader sees the whole
@@ -259,12 +256,12 @@ def preview(payload: PreviewIn, db: Session = Depends(get_db)) -> PreviewOut:
 
 
 @router.get("/pricing/distances", response_model=list[DistanceOut])
-def list_distances(db: Session = Depends(get_db)) -> list[LocationDistance]:
+def list_distances(db: TenantDb) -> list[LocationDistance]:
     return list(db.scalars(select(LocationDistance).order_by(LocationDistance.destination)))
 
 
 @router.post("/pricing/distances", response_model=DistanceOut, status_code=status.HTTP_201_CREATED)
-def upsert_distance(payload: DistanceIn, db: Session = Depends(get_db)) -> LocationDistance:
+def upsert_distance(payload: DistanceIn, db: TenantDb) -> LocationDistance:
     existing = db.scalar(
         select(LocationDistance).where(
             LocationDistance.origin == payload.origin,
@@ -283,7 +280,7 @@ def upsert_distance(payload: DistanceIn, db: Session = Depends(get_db)) -> Locat
 
 
 @router.delete("/pricing/distances/{distance_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_distance(distance_id: int, db: Session = Depends(get_db)) -> None:
+def delete_distance(distance_id: int, db: TenantDb) -> None:
     row = db.get(LocationDistance, distance_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Distance not found")
@@ -295,12 +292,12 @@ def delete_distance(distance_id: int, db: Session = Depends(get_db)) -> None:
 
 
 @router.get("/pricing/vehicles", response_model=list[VehicleOut])
-def list_vehicles(db: Session = Depends(get_db)) -> list[VehicleRate]:
+def list_vehicles(db: TenantDb) -> list[VehicleRate]:
     return list(db.scalars(select(VehicleRate).order_by(VehicleRate.capacity_mt.desc())))
 
 
 @router.post("/pricing/vehicles", response_model=VehicleOut, status_code=status.HTTP_201_CREATED)
-def upsert_vehicle(payload: VehicleIn, db: Session = Depends(get_db)) -> VehicleRate:
+def upsert_vehicle(payload: VehicleIn, db: TenantDb) -> VehicleRate:
     existing = db.scalar(select(VehicleRate).where(VehicleRate.name == payload.name))
     row = existing or VehicleRate(name=payload.name)
     row.capacity_mt = payload.capacity_mt
@@ -316,7 +313,7 @@ def upsert_vehicle(payload: VehicleIn, db: Session = Depends(get_db)) -> Vehicle
 
 
 @router.delete("/pricing/vehicles/{vehicle_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_vehicle(vehicle_id: int, db: Session = Depends(get_db)) -> None:
+def delete_vehicle(vehicle_id: int, db: TenantDb) -> None:
     row = db.get(VehicleRate, vehicle_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Vehicle not found")
@@ -329,12 +326,12 @@ def delete_vehicle(vehicle_id: int, db: Session = Depends(get_db)) -> None:
 
 
 @router.get("/pricing/mill-offers", response_model=list[MillOfferOut])
-def list_mill_offers(db: Session = Depends(get_db)) -> list[MillOffer]:
+def list_mill_offers(db: TenantDb) -> list[MillOffer]:
     return list(db.scalars(select(MillOffer).order_by(MillOffer.created_at.desc())))
 
 
 @router.post("/pricing/mill-offers", response_model=MillOfferOut, status_code=status.HTTP_201_CREATED)
-def create_mill_offer(payload: MillOfferIn, db: Session = Depends(get_db)) -> MillOffer:
+def create_mill_offer(payload: MillOfferIn, db: TenantDb) -> MillOffer:
     row = MillOffer(**payload.model_dump())
     db.add(row)
     db.commit()
@@ -343,7 +340,7 @@ def create_mill_offer(payload: MillOfferIn, db: Session = Depends(get_db)) -> Mi
 
 
 @router.delete("/pricing/mill-offers/{offer_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_mill_offer(offer_id: int, db: Session = Depends(get_db)) -> None:
+def delete_mill_offer(offer_id: int, db: TenantDb) -> None:
     row = db.get(MillOffer, offer_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Offer not found")

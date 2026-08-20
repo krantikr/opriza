@@ -2,6 +2,29 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 const BASE = "/api/v1";
 
+/* ---------------------------------------------------------------------------
+   The session token.
+
+   Held in localStorage so a refresh does not sign the trader out, and read
+   through a function rather than captured once - a token issued after this
+   module loaded must be the one that gets sent.
+   --------------------------------------------------------------------------- */
+
+const TOKEN_KEY = "steeldesk.token";
+
+export const token = {
+  get: () => localStorage.getItem(TOKEN_KEY),
+  set: (value: string) => localStorage.setItem(TOKEN_KEY, value),
+  clear: () => localStorage.removeItem(TOKEN_KEY),
+};
+
+/** Called when the server says a session is over, so the app can react once
+ *  rather than every failing request handling it separately. */
+let onSessionExpired: (() => void) | null = null;
+export function setSessionExpiredHandler(handler: () => void) {
+  onSessionExpired = handler;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -12,10 +35,23 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const auth = token.get();
   const response = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
+
+  if (response.status === 401) {
+    // The token is gone, expired, or was invalidated by a password change.
+    // Clearing it here means no later request retries with a token the
+    // server has already rejected.
+    token.clear();
+    onSessionExpired?.();
+  }
 
   if (!response.ok) {
     // FastAPI puts the useful message in `detail`; surface it rather than
@@ -39,6 +75,8 @@ export const api = {
     request<T>(path, { method: "POST", body: JSON.stringify(body ?? {}) }),
   put: <T,>(path: string, body?: unknown) =>
     request<T>(path, { method: "PUT", body: JSON.stringify(body ?? {}) }),
+  patch: <T,>(path: string, body?: unknown) =>
+    request<T>(path, { method: "PATCH", body: JSON.stringify(body ?? {}) }),
   del: <T,>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 

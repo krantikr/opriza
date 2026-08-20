@@ -13,9 +13,8 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from app.api.deps import current_user, get_db
+from app.api.deps import TenantDb, current_user
 from app.core.db import utcnow
 from app.models import (
     Customer,
@@ -66,10 +65,13 @@ router = APIRouter()
 
 @router.get("/notifications", response_model=Page[NotificationOut], tags=["notifications"])
 def list_notifications(
+    db: TenantDb,
     unread_only: bool = False,
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
+    limit: int = Query(50,
+    ge=1,
+    le=200),
+    offset: int = Query(0,
+    ge=0),
 ) -> Page[NotificationOut]:
     from sqlalchemy import func
 
@@ -92,12 +94,12 @@ def list_notifications(
 
 
 @router.get("/notifications/unread-count", tags=["notifications"])
-def unread_count(db: Session = Depends(get_db)) -> dict[str, int]:
+def unread_count(db: TenantDb) -> dict[str, int]:
     return {"unread": NotificationService(db).unread_count()}
 
 
 @router.post("/notifications/{notification_id}/read", tags=["notifications"])
-def mark_read(notification_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
+def mark_read(notification_id: int, db: TenantDb) -> dict[str, bool]:
     row = NotificationService(db).mark_read(notification_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Notification not found")
@@ -105,12 +107,12 @@ def mark_read(notification_id: int, db: Session = Depends(get_db)) -> dict[str, 
 
 
 @router.post("/notifications/read-all", tags=["notifications"])
-def mark_all_read(db: Session = Depends(get_db)) -> dict[str, int]:
+def mark_all_read(db: TenantDb) -> dict[str, int]:
     return {"marked": NotificationService(db).mark_all_read()}
 
 
 @router.get("/notification-rules", response_model=list[NotificationRuleOut], tags=["notifications"])
-def list_notification_rules(db: Session = Depends(get_db)) -> list[NotificationRule]:
+def list_notification_rules(db: TenantDb) -> list[NotificationRule]:
     return list(db.scalars(select(NotificationRule).order_by(NotificationRule.id)))
 
 
@@ -121,7 +123,7 @@ def list_notification_rules(db: Session = Depends(get_db)) -> list[NotificationR
     tags=["notifications"],
 )
 def create_notification_rule(
-    payload: NotificationRuleIn, db: Session = Depends(get_db)
+    payload: NotificationRuleIn, db: TenantDb
 ) -> NotificationRule:
     rule = NotificationRule(**payload.model_dump())
     db.add(rule)
@@ -134,7 +136,7 @@ def create_notification_rule(
     "/notification-rules/{rule_id}", response_model=NotificationRuleOut, tags=["notifications"]
 )
 def update_notification_rule(
-    rule_id: int, payload: NotificationRuleIn, db: Session = Depends(get_db)
+    rule_id: int, payload: NotificationRuleIn, db: TenantDb
 ) -> NotificationRule:
     rule = db.get(NotificationRule, rule_id)
     if rule is None:
@@ -151,7 +153,7 @@ def update_notification_rule(
     status_code=status.HTTP_204_NO_CONTENT,
     tags=["notifications"],
 )
-def delete_notification_rule(rule_id: int, db: Session = Depends(get_db)) -> None:
+def delete_notification_rule(rule_id: int, db: TenantDb) -> None:
     rule = db.get(NotificationRule, rule_id)
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -165,7 +167,7 @@ def delete_notification_rule(rule_id: int, db: Session = Depends(get_db)) -> Non
 
 
 @router.get("/follow-up-rules", response_model=list[FollowUpRuleOut], tags=["follow-ups"])
-def list_follow_up_rules(db: Session = Depends(get_db)) -> list[FollowUpRule]:
+def list_follow_up_rules(db: TenantDb) -> list[FollowUpRule]:
     return list(db.scalars(select(FollowUpRule).order_by(FollowUpRule.id)))
 
 
@@ -175,7 +177,7 @@ def list_follow_up_rules(db: Session = Depends(get_db)) -> list[FollowUpRule]:
     status_code=status.HTTP_201_CREATED,
     tags=["follow-ups"],
 )
-def create_follow_up_rule(payload: FollowUpRuleIn, db: Session = Depends(get_db)) -> FollowUpRule:
+def create_follow_up_rule(payload: FollowUpRuleIn, db: TenantDb) -> FollowUpRule:
     rule = FollowUpRule(**payload.model_dump())
     db.add(rule)
     db.commit()
@@ -185,7 +187,7 @@ def create_follow_up_rule(payload: FollowUpRuleIn, db: Session = Depends(get_db)
 
 @router.put("/follow-up-rules/{rule_id}", response_model=FollowUpRuleOut, tags=["follow-ups"])
 def update_follow_up_rule(
-    rule_id: int, payload: FollowUpRuleIn, db: Session = Depends(get_db)
+    rule_id: int, payload: FollowUpRuleIn, db: TenantDb
 ) -> FollowUpRule:
     rule = db.get(FollowUpRule, rule_id)
     if rule is None:
@@ -200,7 +202,7 @@ def update_follow_up_rule(
 @router.delete(
     "/follow-up-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["follow-ups"]
 )
-def delete_follow_up_rule(rule_id: int, db: Session = Depends(get_db)) -> None:
+def delete_follow_up_rule(rule_id: int, db: TenantDb) -> None:
     rule = db.get(FollowUpRule, rule_id)
     if rule is None:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -209,7 +211,7 @@ def delete_follow_up_rule(rule_id: int, db: Session = Depends(get_db)) -> None:
 
 
 @router.get("/follow-ups/queue", response_model=list[FollowUpScheduleOut], tags=["follow-ups"])
-def follow_up_queue(db: Session = Depends(get_db)) -> list[FollowUpSchedule]:
+def follow_up_queue(db: TenantDb) -> list[FollowUpSchedule]:
     """Nudges a rule says are owed, waiting for a human to send them."""
     return list(
         db.scalars(
@@ -221,7 +223,7 @@ def follow_up_queue(db: Session = Depends(get_db)) -> list[FollowUpSchedule]:
 
 
 @router.post("/follow-ups/run", tags=["follow-ups"])
-def run_scheduler(db: Session = Depends(get_db)) -> dict[str, int]:
+def run_scheduler(db: TenantDb) -> dict[str, int]:
     """Evaluate the rules now rather than waiting for the timer."""
     result = FollowUpScheduler(db).run()
     return {
@@ -235,7 +237,7 @@ def run_scheduler(db: Session = Depends(get_db)) -> dict[str, int]:
 @router.post("/follow-ups/{schedule_id}/send", response_model=ActionResult, tags=["follow-ups"])
 def send_follow_up(
     schedule_id: int,
-    db: Session = Depends(get_db),
+    db: TenantDb,
     user: User | None = Depends(current_user),
 ) -> ActionResult:
     """Send a queued nudge. The human step the scheduler deliberately leaves."""
@@ -274,7 +276,7 @@ def send_follow_up(
 
 @router.post("/follow-ups/{schedule_id}/skip", response_model=ActionResult, tags=["follow-ups"])
 def skip_follow_up(
-    schedule_id: int, db: Session = Depends(get_db)
+    schedule_id: int, db: TenantDb
 ) -> ActionResult:
     schedule = db.get(FollowUpSchedule, schedule_id)
     if schedule is None:
@@ -294,9 +296,7 @@ def skip_follow_up(
 
 
 @router.get("/stock/movements", response_model=list[StockMovementOut], tags=["stock"])
-def list_movements(
-    limit: int = Query(100, ge=1, le=500), db: Session = Depends(get_db)
-) -> list[StockMovement]:
+def list_movements(db: TenantDb, limit: int = Query(100, ge=1, le=500)) -> list[StockMovement]:
     return StockMovementService(db).history(limit=limit)
 
 
@@ -308,7 +308,7 @@ def list_movements(
 )
 def create_movement(
     payload: StockMovementIn,
-    db: Session = Depends(get_db),
+    db: TenantDb,
     user: User | None = Depends(current_user),
 ) -> StockMovement:
     lot = db.get(StockItem, payload.stock_item_id) if payload.stock_item_id else None
@@ -330,7 +330,7 @@ def create_movement(
 
 
 @router.get("/stock/holds", response_model=list[StockMovementOut], tags=["stock"])
-def list_holds(db: Session = Depends(get_db)) -> list[StockMovement]:
+def list_holds(db: TenantDb) -> list[StockMovement]:
     """Open blocks and reservations - everything held back from quoting."""
     return list(
         db.scalars(
@@ -347,7 +347,7 @@ def list_holds(db: Session = Depends(get_db)) -> list[StockMovement]:
 
 
 @router.post("/stock/holds/{movement_id}/lift", tags=["stock"])
-def lift_hold(movement_id: int, db: Session = Depends(get_db)) -> dict[str, bool]:
+def lift_hold(movement_id: int, db: TenantDb) -> dict[str, bool]:
     """Release a hold, putting the tonnage back on offer."""
     lifted = StockMovementService(db).lift_hold(movement_id)
     if not lifted:
@@ -356,7 +356,7 @@ def lift_hold(movement_id: int, db: Session = Depends(get_db)) -> dict[str, bool
 
 
 @router.get("/stock/{stock_item_id}/balance", response_model=BalanceOut, tags=["stock"])
-def stock_balance(stock_item_id: int, db: Session = Depends(get_db)) -> BalanceOut:
+def stock_balance(stock_item_id: int, db: TenantDb) -> BalanceOut:
     """Imported balance plus movements - what is actually free to sell."""
     lot = db.get(StockItem, stock_item_id)
     if lot is None:
@@ -377,7 +377,7 @@ def stock_balance(stock_item_id: int, db: Session = Depends(get_db)) -> BalanceO
 @router.post(
     "/customers", response_model=dict, status_code=status.HTTP_201_CREATED, tags=["customers"]
 )
-def create_customer(payload: CustomerIn, db: Session = Depends(get_db)) -> dict:
+def create_customer(payload: CustomerIn, db: TenantDb) -> dict:
     data = payload.model_dump()
     data["tier"] = CustomerTier(data["tier"])
     customer = Customer(**data, status=RecordStatus.ACTIVE)
@@ -389,7 +389,7 @@ def create_customer(payload: CustomerIn, db: Session = Depends(get_db)) -> dict:
 
 @router.put("/customers/{customer_id}", response_model=dict, tags=["customers"])
 def update_customer(
-    customer_id: int, payload: CustomerIn, db: Session = Depends(get_db)
+    customer_id: int, payload: CustomerIn, db: TenantDb
 ) -> dict:
     customer = db.get(Customer, customer_id)
     if customer is None:
@@ -403,7 +403,7 @@ def update_customer(
 
 
 @router.post("/customers/{customer_id}/verify", response_model=dict, tags=["customers"])
-def verify_customer(customer_id: int, db: Session = Depends(get_db)) -> dict:
+def verify_customer(customer_id: int, db: TenantDb) -> dict:
     """Confirm a record built from an email signature.
 
     Until this happens the tier adjustment is withheld from pricing, so this
@@ -420,7 +420,7 @@ def verify_customer(customer_id: int, db: Session = Depends(get_db)) -> dict:
 @router.get(
     "/customers/{customer_id}/notes", response_model=list[CustomerNoteOut], tags=["customers"]
 )
-def list_customer_notes(customer_id: int, db: Session = Depends(get_db)) -> list[CustomerNote]:
+def list_customer_notes(customer_id: int, db: TenantDb) -> list[CustomerNote]:
     return list(
         db.scalars(
             select(CustomerNote)
@@ -442,7 +442,7 @@ def list_customer_notes(customer_id: int, db: Session = Depends(get_db)) -> list
 def add_customer_note(
     customer_id: int,
     payload: CustomerNoteIn,
-    db: Session = Depends(get_db),
+    db: TenantDb,
     user: User | None = Depends(current_user),
 ) -> CustomerNote:
     if db.get(Customer, customer_id) is None:
@@ -462,7 +462,7 @@ def add_customer_note(
 @router.get(
     "/customers/{customer_id}/timeline", response_model=list[TimelineEntry], tags=["customers"]
 )
-def customer_timeline(customer_id: int, db: Session = Depends(get_db)) -> list[TimelineEntry]:
+def customer_timeline(customer_id: int, db: TenantDb) -> list[TimelineEntry]:
     """Every interaction with this customer, newest first."""
     customer = db.get(Customer, customer_id)
     if customer is None:
@@ -518,19 +518,19 @@ def _period(days: int, start: date | None, end: date | None) -> DateRange:
 
 
 @router.get("/reports/insights", tags=["reports"])
-def insights(
-    days: int = Query(30, ge=7, le=365), db: Session = Depends(get_db)
-) -> dict:
+def insights(db: TenantDb, days: int = Query(30, ge=7, le=365)) -> dict:
     """Headline metrics against the preceding window, plus what needs a person."""
     return InsightService(db).build(days).to_dict()
 
 
 @router.get("/reports/funnel", tags=["reports"])
 def funnel_report(
-    days: int = Query(30, ge=1, le=730),
+    db: TenantDb,
+    days: int = Query(30,
+    ge=1,
+    le=730),
     start: date | None = None,
     end: date | None = None,
-    db: Session = Depends(get_db),
 ) -> dict:
     period = _period(days, start, end)
     stages = ReportService(db).funnel(period)
@@ -543,11 +543,14 @@ def funnel_report(
 @router.get("/reports/{name}", tags=["reports"], response_model=None)
 def report(
     name: str,
-    days: int = Query(30, ge=1, le=730),
+    db: TenantDb,
+    days: int = Query(30,
+    ge=1,
+    le=730),
     start: date | None = None,
     end: date | None = None,
-    fmt: str = Query("json", pattern="^(json|csv)$"),
-    db: Session = Depends(get_db),
+    fmt: str = Query("json",
+    pattern="^(json|csv)$"),
 ) -> Response | dict:
     """One of: win-loss, margin, stock-ageing, customers, products."""
     period = _period(days, start, end)

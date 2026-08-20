@@ -16,6 +16,77 @@ loss-making order. So no model is ever asked for a number that matters.
 
 ---
 
+## Running it
+
+Steel Desk is multi-tenant: one deployment serves many trading desks, each
+seeing only its own data.
+
+```bash
+# 1. PostgreSQL. Required, not preferred - tenant isolation is enforced by
+#    row-level security, which SQLite has no equivalent of.
+brew services start postgresql@15
+createdb steeldesk && createdb steeldesk_test
+psql -d steeldesk -c "CREATE ROLE steeldesk_app LOGIN PASSWORD 'steeldesk_dev' \
+    NOSUPERUSER NOBYPASSRLS;"
+psql -d steeldesk -c "ALTER DATABASE steeldesk OWNER TO steeldesk_app;"
+psql -d steeldesk_test -c "ALTER DATABASE steeldesk_test OWNER TO steeldesk_app;"
+
+# 2. Schema and policies. The migration applies both in one transaction.
+uv run alembic upgrade head
+
+# 3. Somebody who can onboard the first desk.
+uv run python scripts/seed_platform.py
+
+# 4. Run.
+uv run uvicorn app.main:app --reload    # backend
+npm --prefix frontend run dev           # frontend
+```
+
+The app **must** connect as a `NOSUPERUSER NOBYPASSRLS` role. PostgreSQL
+exempts superusers from every policy, so connecting as one disables tenant
+isolation while every test still passes; the app refuses to start if it
+detects this.
+
+### Connecting Gmail accounts
+
+Each desk connects its own enquiry mailbox from **Mail checking → Connect your
+Google account**. Steel Desk requests only `gmail.readonly` and `gmail.send` —
+never permission to modify or delete a customer's mail.
+
+This needs a one-time setup in Google Cloud Console, done once for the whole
+platform rather than per desk:
+
+1. Create a project and enable the **Gmail API**.
+2. Create OAuth credentials of type **Web application** — not "Desktop app",
+   which cannot accept a redirect back to a server.
+3. Under **Authorised redirect URIs**, add the callback for each environment
+   you run:
+
+   ```
+   http://localhost:8000/api/v1/organisation/mailbox/callback
+   https://your-domain/api/v1/organisation/mailbox/callback
+   ```
+
+4. Download the JSON to `data/secrets/gmail_credentials.json`.
+5. On the OAuth consent screen, add the two scopes above. While the app is in
+   *Testing*, only accounts listed as test users can connect; publishing
+   requires Google's verification review, which takes time — start it before
+   you need it.
+
+If the callback is not registered, the Connect button is disabled and the page
+states the exact URI to add, rather than sending the trader to a Google error
+page they cannot act on.
+
+### Onboarding a desk
+
+Sign in as the platform operator, create the desk, and send its owner the
+invitation link. The operator never sets a customer's password, so they
+cannot sign in as one.
+
+Each desk sets its own mail-checking window in its own timezone - by default
+every 10 minutes between 08:00 and 22:00, and hourly overnight.
+
+
 ## What it does
 
 ```

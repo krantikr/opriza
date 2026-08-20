@@ -57,14 +57,47 @@ from app.services.notifications.service import NotificationService
 from app.services.pricing.service import PricingService
 from app.services.products.matcher import ProductMatcher
 from app.services.products.weights import Dimensions, convert_to_mt
-from app.services.quotations.assembly import create_quotation
+from app.services.quotations.assembly import create_quotation, quotation_numbers_in
 from app.services.quotations.draft_context import build_draft_context
 from app.services.quotations.drafting import DraftingService
 from app.services.stock.availability import StockAvailabilityService
 
 # A quotation on this thread already went out, so a new inbound message on
 # the same thread is a reply to it, not a fresh enquiry.
+#: Categories that are not quotation requests but still need somebody. Setting
+#: `awaiting_us` is what puts them in a pending tab rather than leaving them
+#: recorded and unseen.
+NEEDS_A_PERSON = (
+    EmailCategory.DELIVERY_QUERY,
+    EmailCategory.PAYMENT_QUERY,
+    EmailCategory.COMPLAINT,
+    EmailCategory.ORDER,
+    EmailCategory.PRICE_NEGOTIATION,
+)
+
+#: Quotations this system knows reached the customer. Used for *thread*
+#: matching, where sharing a conversation is weak evidence on its own: a
+#: second enquiry on the same thread is a new enquiry, not a reply to
+#: something never sent.
+SENT_STATUSES = (
+    QuotationStatus.SENT,
+    QuotationStatus.CUSTOMER_ACCEPTED,
+    QuotationStatus.CUSTOMER_DECLINED,
+)
+
+#: Quotations a message may be a reply to when it *names the reference*.
+#:
+#: Wider, because quoting a number is strong evidence on its own - the number
+#: appears nowhere unless we wrote it. A trader may have sent a quotation by
+#: hand or read it out on the phone while the record still says review, and a
+#: reply arriving before our own record catches up is exactly the message a
+#: desk must not lose. `NEW` and `PROCESSING` are excluded: a quotation still
+#: being assembled has no reference anybody could quote.
 REPLIABLE_STATUSES = (
+    QuotationStatus.NEEDS_INFORMATION,
+    QuotationStatus.READY_FOR_REVIEW,
+    QuotationStatus.EDITED,
+    QuotationStatus.APPROVED,
     QuotationStatus.SENT,
     QuotationStatus.CUSTOMER_ACCEPTED,
     QuotationStatus.CUSTOMER_DECLINED,
@@ -227,12 +260,40 @@ class QuotationWorkflow:
     # --- Nodes ------------------------------------------------------------
 
     def _find_replied_quotation(self, email: Email) -> QuotationRequest | None:
-        """Is this email a reply on a thread we already sent a quotation on?
+        """Which quotation, if any, this email is a response to.
 
-        Deterministic by design: Gmail's `thread_id` is ground truth for "same
-        conversation", so this is a lookup, not a guess an LLM would have to
-        make. `Email.id != email.id` excludes the enquiry email itself, which
-        naturally shares its own thread_id with the row being checked.
+        Two matchers, tried strongest first:
+
+        1. **Same Gmail thread.** Ground truth for "same conversation", so it
+           is a lookup rather than a guess. This is what happens when somebody
+           presses Reply.
+
+        2. **The quotation number in the text.** Customers routinely start a
+           fresh email quoting the reference - "Response to Quotation
+           KK-000004" - which shares no thread with anything. Matching on a
+           reference the customer wrote is still deterministic: the number
+           appears nowhere unless we put it there.
+
+        Sender is *not* used as a matcher on its own. One customer with three
+        open quotations would have their reply attached to an arbitrary one,
+        and a reply filed against the wrong quotation is worse than one left
+        unattached, because nobody goes looking for it.
+        """
+        threaded = self._match_by_thread(email)
+        if threaded is not None:
+            return threaded
+        return self._match_by_reference(email)
+
+    def _match_by_thread(self, email: Email) -> QuotationRequest | None:
+        """A reply in the same conversation.
+
+        Restricted to quotations that actually reached the customer. Sharing a
+        thread with a quotation still in review does not make a message a
+        reply to it - a customer sending a second enquiry on the same thread
+        is enquiring again, not responding to something they never received.
+
+        `Email.id != email.id` excludes the enquiry itself, which shares its
+        own thread_id with the row being checked.
         """
         if not email.thread_id:
             return None
@@ -242,9 +303,28 @@ class QuotationWorkflow:
             .where(
                 Email.thread_id == email.thread_id,
                 Email.id != email.id,
-                QuotationRequest.status.in_(REPLIABLE_STATUSES),
+                QuotationRequest.status.in_(SENT_STATUSES),
             )
             .order_by(QuotationRequest.sent_at.desc())
+            .limit(1)
+        ).first()
+
+    def _match_by_reference(self, email: Email) -> QuotationRequest | None:
+        """A quotation number quoted in the subject or body.
+
+        Scoped by row-level security, so a reference belonging to another
+        desk cannot be matched even if a customer quotes one.
+        """
+        numbers = quotation_numbers_in(f"{email.subject or ''}\n{email.full_text or ''}")
+        if not numbers:
+            return None
+        return self.db.scalars(
+            select(QuotationRequest)
+            .where(
+                QuotationRequest.quotation_number.in_(numbers),
+                QuotationRequest.status.in_(REPLIABLE_STATUSES),
+            )
+            .order_by(QuotationRequest.sent_at.desc().nullslast())
             .limit(1)
         ).first()
 
@@ -679,8 +759,21 @@ class QuotationWorkflow:
             logger.exception("Could not raise a notification for %s", quotation.quotation_number)
 
     def _unsupported(self, state: WorkflowState) -> WorkflowState:
-        """Recorded, shown, and not answered - spec section 11."""
+        """Recorded and shown, but not answered automatically.
+
+        `SKIPPED` means "this system will not draft a reply", not "nobody
+        needs to look at it". A delivery query or a complaint is real work for
+        a person, so `awaiting_us` is set and the mailbox routes it to the
+        right tab - previously these were recorded and then invisible, which
+        is the worst of both.
+        """
         category = state.get("category") or "UNKNOWN"
+
+        email = self.db.get(Email, state["email_id"])
+        if email is not None and email.category in NEEDS_A_PERSON:
+            email.awaiting_us = True
+            self.db.commit()
+
         self._finish_email(state["email_id"], ProcessingStatus.SKIPPED)
 
         audit.record(

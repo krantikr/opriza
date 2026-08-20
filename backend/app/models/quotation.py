@@ -22,11 +22,11 @@ from app.models.enums import (
     QuantityUnit,
     QuotationStatus,
 )
-from app.models.mixins import CreatedAtMixin, TimestampMixin, enum_col
+from app.models.mixins import CreatedAtMixin, TenantMixin, TimestampMixin, enum_col
 from app.models.types import Money, Quantity
 
 
-class QuotationRequest(Base, TimestampMixin):
+class QuotationRequest(Base, TimestampMixin, TenantMixin):
     """Header record for one enquiry email that the MVP will act on."""
 
     __tablename__ = "quotation_requests"
@@ -106,7 +106,7 @@ class QuotationRequest(Base, TimestampMixin):
         return f"<QuotationRequest {self.quotation_number} {self.status}>"
 
 
-class QuotationLineItem(Base, TimestampMixin):
+class QuotationLineItem(Base, TimestampMixin, TenantMixin):
     """One requested material, with its extraction and matching outcome."""
 
     __tablename__ = "quotation_line_items"
@@ -164,7 +164,7 @@ class QuotationLineItem(Base, TimestampMixin):
         return f"<QuotationLineItem q={self.quotation_request_id} #{self.line_no}>"
 
 
-class StockAvailability(Base, CreatedAtMixin):
+class StockAvailability(Base, CreatedAtMixin, TenantMixin):
     """Output of the deterministic stock-availability check for one line item.
 
     `breakdown` holds the ordered list of steps with the figure and reason
@@ -217,7 +217,7 @@ class StockAvailability(Base, CreatedAtMixin):
         return f"<StockAvailability line={self.quotation_line_item_id} {self.available_qty_mt}MT>"
 
 
-class QuotationDraft(Base, TimestampMixin):
+class QuotationDraft(Base, TimestampMixin, TenantMixin):
     """A generated reply. Versioned, because regeneration must not destroy
     the previous text a reviewer may have been reading."""
 
@@ -250,7 +250,7 @@ class QuotationDraft(Base, TimestampMixin):
         return f"<QuotationDraft q={self.quotation_request_id} v{self.version}>"
 
 
-class FollowUp(Base, CreatedAtMixin):
+class FollowUp(Base, CreatedAtMixin, TenantMixin):
     """A nudge sent after a quotation went out, chasing a reply.
 
     Only reachable once a quotation has actually been sent - see
@@ -265,7 +265,7 @@ class FollowUp(Base, CreatedAtMixin):
     quotation_request_id: Mapped[int] = mapped_column(
         ForeignKey("quotation_requests.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id"))
 
     subject: Mapped[str | None] = mapped_column(String(500))
     body: Mapped[str | None] = mapped_column(Text)
@@ -280,7 +280,7 @@ class FollowUp(Base, CreatedAtMixin):
         return f"<FollowUp q={self.quotation_request_id} sent={self.sent}>"
 
 
-class Approval(Base, CreatedAtMixin):
+class Approval(Base, CreatedAtMixin, TenantMixin):
     """A recorded human decision.
 
     Both the original AI text and the final text are stored. The difference
@@ -295,7 +295,7 @@ class Approval(Base, CreatedAtMixin):
     quotation_draft_id: Mapped[int] = mapped_column(
         ForeignKey("quotation_drafts.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id"))
     action: Mapped[ApprovalAction] = mapped_column(enum_col(ApprovalAction), nullable=False)
     comments: Mapped[str | None] = mapped_column(Text)
 

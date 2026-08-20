@@ -634,11 +634,16 @@ def test_a_24_hour_rule_is_not_due_after_20_hours(db, sent_quotation, default_us
 
 
 def test_a_promised_date_rule_fires_on_the_customers_own_day(db, sent_quotation, default_user):
-    """Calling on the day they named is following up; an interval is chasing."""
+    """Calling on the day they named is following up; an interval is chasing.
+
+    Dated to yesterday rather than today. The rule fires at 9am on the named
+    day, so "today" is only due after 9am - a test written that way passes in
+    the afternoon and fails overnight, which says nothing about the code.
+    """
     from app.models import FollowUpTrigger
 
     # Anchored on UTC, because that is the clock the scheduler runs on.
-    sent_quotation.promised_date = utcnow().date()
+    sent_quotation.promised_date = utcnow().date() - timedelta(days=1)
     db.add(
         FollowUpRule(
             label="Follow up on the customer's date",

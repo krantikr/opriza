@@ -288,3 +288,41 @@ def test_every_message_resolves_to_exactly_one_state(db, inbound, quoted_quotati
         assert isinstance(state, PipelineState)
         # Resolution is deterministic: asking twice gives the same answer.
         assert resolve_state(email) is state
+
+
+# --- Mail that is not a quotation request ----------------------------------
+
+
+def test_a_delivery_query_reaches_the_delivery_tab(db, inbound):
+    """"Where is my material" belongs with the other despatch work.
+
+    These were classified, recorded, and then invisible: the workflow marked
+    anything that was not a quotation request as SKIPPED without setting
+    `awaiting_us`, so the mailbox had nothing to route on and the message sat
+    in no tab at all.
+    """
+    email = inbound(category=EmailCategory.DELIVERY_QUERY, awaiting_us=True)
+    assert resolve_state(email) is PipelineState.DELIVERY
+
+
+def test_a_delivery_query_outranks_the_general_reply_queue(db, inbound):
+    """A trader chasing lorries wants them in one place, not scattered
+    through Needs reply."""
+    email = inbound(category=EmailCategory.DELIVERY_QUERY, awaiting_us=True)
+    assert resolve_state(email) is not PipelineState.NEEDS_REPLY
+
+
+def test_answering_a_delivery_query_clears_it(db, inbound):
+    email = inbound(category=EmailCategory.DELIVERY_QUERY, awaiting_us=True)
+    assert resolve_state(email) is PipelineState.DELIVERY
+
+    email.answered_at = utcnow()
+    db.commit()
+
+    assert resolve_state(email) is PipelineState.DONE
+
+
+def test_a_complaint_still_outranks_a_delivery_query(db, inbound):
+    """Urgency ordering is unchanged by the new route."""
+    email = inbound(category=EmailCategory.COMPLAINT, awaiting_us=True)
+    assert resolve_state(email) is PipelineState.COMPLAINT

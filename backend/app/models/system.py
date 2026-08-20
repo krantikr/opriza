@@ -1,4 +1,8 @@
-"""Cross-cutting system tables: users, audit trail, LLM telemetry, imports."""
+"""Cross-cutting system tables: audit trail, LLM telemetry, imports.
+
+Users live in `app.models.tenancy` - identity is a tenancy concern now that
+one deployment serves many desks.
+"""
 
 from datetime import datetime
 
@@ -6,35 +10,11 @@ from sqlalchemy import JSON, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
-from app.models.enums import ImportEntity, ImportStatus, RecordStatus, UserRole
-from app.models.mixins import CreatedAtMixin, TimestampMixin, enum_col
+from app.models.enums import ImportEntity, ImportStatus
+from app.models.mixins import CreatedAtMixin, TenantMixin, enum_col
 
 
-class User(Base, TimestampMixin):
-    """Actors in the system.
-
-    The MVP ships with a single seeded user and no login screen. The table and
-    its foreign keys exist anyway so approvals and audit entries carry a real
-    identity from the first row written.
-    """
-
-    __tablename__ = "users"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(120), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    role: Mapped[UserRole] = mapped_column(
-        enum_col(UserRole), default=UserRole.ADMIN, nullable=False
-    )
-    status: Mapped[RecordStatus] = mapped_column(
-        enum_col(RecordStatus), default=RecordStatus.ACTIVE, nullable=False
-    )
-
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return f"<User {self.email}>"
-
-
-class AuditLog(Base, CreatedAtMixin):
+class AuditLog(Base, CreatedAtMixin, TenantMixin):
     """Append-only record of every meaningful state change.
 
     Written from the beginning rather than bolted on, because in a trading
@@ -55,7 +35,7 @@ class AuditLog(Base, CreatedAtMixin):
         return f"<AuditLog {self.entity_type}#{self.entity_id} {self.action}>"
 
 
-class LLMCall(Base, CreatedAtMixin):
+class LLMCall(Base, CreatedAtMixin, TenantMixin):
     """Per-call LLM telemetry (spec section 22).
 
     Recorded for every call including failures, so latency, token spend and
@@ -88,7 +68,7 @@ class LLMCall(Base, CreatedAtMixin):
         return f"<LLMCall {self.task} {self.model} {self.total_tokens}tok>"
 
 
-class ImportBatch(Base, CreatedAtMixin):
+class ImportBatch(Base, CreatedAtMixin, TenantMixin):
     """One Excel import run (spec section 30).
 
     Keeps the file name, a content hash, row counts and validation errors so an

@@ -17,35 +17,28 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.core.db import Base, engine, session_scope
+from app.core.db import session_scope
 from app.core.logging import configure_logging, get_logger
 from app.core.rules import get_rules
+from app.core.tenancy import assert_rls_enforced
 from app.models import Email  # noqa: F401 - registers the ORM metadata
 from app.services.email.factory import get_email_source
-from app.services.email.ingestion import EmailIngestionService
-from app.workflows.quotation import process_pending_emails
+from app.services.poller import poll_all_organisations
 
 logger = get_logger(__name__)
 _scheduler: BackgroundScheduler | None = None
 
 
 def poll_cycle() -> None:
-    """One scheduled ingest-and-process pass."""
-    db = session_scope()
+    """One scheduled tick across every active organisation.
+
+    The tick is frequent; whether a given desk is actually checked is decided
+    per organisation from its own crawl window. See `app.services.poller`.
+    """
     try:
-        source = get_email_source()
-        if not source.is_available():
-            logger.warning("Poll skipped: %s is not available.", source.describe())
-            return
-        EmailIngestionService(db, source).ingest(limit=settings.gmail_max_results)
-        if settings.llm_configured:
-            process_pending_emails(db, limit=settings.gmail_max_results)
-        else:
-            logger.warning("Poll ingested only: OPENROUTER_API_KEY is not set.")
+        poll_all_organisations()
     except Exception:  # noqa: BLE001 - a failed poll must not kill the scheduler
         logger.exception("Scheduled poll failed")
-    finally:
-        db.close()
 
 
 @asynccontextmanager
@@ -53,9 +46,17 @@ async def lifespan(app: FastAPI):
     global _scheduler
     configure_logging()
 
-    # Create any missing tables so a fresh checkout can boot. Seeding and
-    # imports stay in scripts/init_db.py, which is explicit about what it does.
-    Base.metadata.create_all(bind=engine)
+    # Schema changes go through Alembic now ("uv run alembic upgrade head").
+    # `create_all` is deliberately gone: it silently diverges from the
+    # migration history, which is how five sessions of hand-written ALTER
+    # TABLE happened in the first place.
+    # Refuse to serve traffic if the database connection can bypass row-level
+    # security - see app.core.tenancy for why this is fatal, not a warning.
+    db = session_scope()
+    try:
+        assert_rls_enforced(db)
+    finally:
+        db.close()
 
     rules = get_rules()
     logger.info("%s starting (%s)", settings.app_name, settings.app_env)
@@ -71,13 +72,17 @@ async def lifespan(app: FastAPI):
         _scheduler.add_job(
             poll_cycle,
             "interval",
-            seconds=settings.polling_interval_seconds,
+            seconds=settings.poll_tick_seconds,
             id="email_poll",
             max_instances=1,  # never let two polls overlap on one SQLite file
             coalesce=True,
         )
         _scheduler.start()
-        logger.info("Poller started (every %ss)", settings.polling_interval_seconds)
+        logger.info(
+            "Poller started: ticking every %ss, each desk checked on its own "
+            "crawl window.",
+            settings.poll_tick_seconds,
+        )
     else:
         logger.info("Poller disabled. Use POST /api/v1/pipeline/run to trigger a cycle.")
 

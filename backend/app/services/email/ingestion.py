@@ -17,7 +17,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
-from app.models import Email, EmailAttachment, ProcessingStatus
+from app.models import (
+    Email,
+    EmailAttachment,
+    EmailCategory,
+    MailDirection,
+    ProcessingStatus,
+)
 from app.services import audit
 from app.services.email.attachments import extract_text
 from app.services.email.message import RawEmail
@@ -85,6 +91,50 @@ class EmailIngestionService:
 
     # --- Persistence ------------------------------------------------------
 
+    def _record_manual_reply(self, email: Email) -> None:
+        """A reply the trader sent from Gmail rather than through Steel Desk.
+
+        They have still answered the customer, so the quotation is genuinely
+        out and the desk is owed a reply - it belongs in Follow up, not in
+        Enquiries. Without this the system shows work that is already done and
+        chases a customer who is waiting on nothing, which is the fastest way
+        to make an automated desk look broken.
+
+        The draft is left alone: what went out was composed in Gmail and this
+        system never saw it, so recording a draft it did not write would be
+        inventing a record.
+        """
+        from app.core.db import utcnow
+        from app.models import QuotationStatus
+        from app.services.quotations.followup_rules import FollowUpScheduler
+
+        quotation = _quotation_in_thread(self.db, email)
+        if quotation is None or quotation.sent_at is not None:
+            return
+
+        quotation.status = QuotationStatus.SENT
+        quotation.sent_at = email.received_at or utcnow()
+        quotation.review_notes = "\n".join(
+            filter(
+                None,
+                [quotation.review_notes, "Answered directly from the mailbox."],
+            )
+        )
+        # The original enquiry is answered, so it leaves the pending queue.
+        if quotation.email is not None:
+            quotation.email.answered_at = quotation.sent_at
+        self.db.flush()
+
+        # Chasing starts from when the reply actually went out.
+        try:
+            FollowUpScheduler(self.db).schedule_for(quotation)
+        except Exception:  # noqa: BLE001 - a missing nudge must not lose the mail
+            logger.exception("Could not schedule follow-up for %s", quotation.quotation_number)
+
+        logger.info(
+            "Recorded a reply sent outside Steel Desk for %s", quotation.quotation_number
+        )
+
     def _persist(self, raw: RawEmail) -> Email | None:
         """Insert one message, or return None if it is already stored."""
         existing = self.db.scalar(select(Email.id).where(Email.message_id == raw.message_id))
@@ -104,10 +154,20 @@ class EmailIngestionService:
             snippet=raw.snippet,
             received_at=raw.received_at,
             has_attachments=raw.has_attachments,
-            processing_status=ProcessingStatus.PENDING,
+            direction=MailDirection.OUTBOUND if raw.outbound else MailDirection.INBOUND,
+            # Our own sent mail is stored for the thread and to prove a reply
+            # happened, but there is nothing for the AI to classify or answer
+            # in a message we wrote ourselves.
+            processing_status=(
+                ProcessingStatus.SKIPPED if raw.outbound else ProcessingStatus.PENDING
+            ),
+            category=EmailCategory.GENERAL if raw.outbound else None,
         )
         self.db.add(email)
         self.db.flush()  # assigns email.id and trips the UNIQUE constraint early
+
+        if raw.outbound:
+            self._record_manual_reply(email)
 
         for raw_attachment in raw.attachments:
             outcome = extract_text(
@@ -146,3 +206,20 @@ class EmailIngestionService:
 
         self.db.commit()
         return email
+
+
+def _quotation_in_thread(db, email: Email):
+    """The quotation this outbound message belongs to, by mail thread."""
+    from sqlalchemy import select
+
+    from app.models import QuotationRequest
+
+    if not email.thread_id:
+        return None
+    return db.scalars(
+        select(QuotationRequest)
+        .join(Email, QuotationRequest.email_id == Email.id)
+        .where(Email.thread_id == email.thread_id, Email.id != email.id)
+        .order_by(QuotationRequest.id.desc())
+        .limit(1)
+    ).first()

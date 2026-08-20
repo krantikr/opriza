@@ -14,6 +14,7 @@ import {
   systemNotify,
   takeUnseen,
 } from "../lib/notifications";
+import { useAuth } from "../lib/auth";
 import { useToast } from "./Toasts";
 import { ago, Badge, Button } from "./ui";
 
@@ -120,6 +121,11 @@ export const Icons = {
       <path d="M12 7v5l3 2" />
     </Icon>
   ),
+  chevronLeft: (p: IconProps) => (
+    <Icon {...p}>
+      <path d="M15 5l-7 7 7 7" />
+    </Icon>
+  ),
 };
 
 const NAV = [
@@ -132,7 +138,17 @@ const NAV = [
   { to: "/pricing", label: "Pricing", icon: Icons.pricing },
   { to: "/reports", label: "Reports", icon: Icons.reports },
   { to: "/activity", label: "Activity", icon: Icons.activity },
+  { to: "/team", label: "Team", icon: Icons.customers },
   { to: "/settings", label: "Settings", icon: Icons.settings },
+];
+
+/* The rail reads as three jobs rather than one list of eleven: the work that
+   arrives, the reference data behind a quote, and the desk itself. Dividers
+   cost nothing vertically and stop the eye from counting. */
+const RAIL_GROUPS: { items: typeof NAV }[] = [
+  { items: NAV.slice(0, 4) },   // Home, Inbox, Quotes, Chase
+  { items: NAV.slice(4, 8) },   // Stock, Clients, Pricing, Reports
+  { items: NAV.slice(8) },      // Activity, Team, Settings
 ];
 
 /* ---------------------------------------------------------------------------
@@ -154,6 +170,25 @@ function useTheme() {
   }, [theme]);
 
   return { theme, setTheme };
+}
+
+/* ---------------------------------------------------------------------------
+   Rail collapse
+   --------------------------------------------------------------------------- */
+
+/** Collapsed is the default: the desk screens are wide tables, and the eleven
+    destinations are learned in a day. The choice is remembered per browser so
+    anyone who wants the labels back only asks once. */
+function useRailCollapsed() {
+  const [collapsed, setCollapsed] = useState(
+    () => (localStorage.getItem("rail") ?? "collapsed") === "collapsed",
+  );
+
+  useEffect(() => {
+    localStorage.setItem("rail", collapsed ? "collapsed" : "expanded");
+  }, [collapsed]);
+
+  return [collapsed, setCollapsed] as const;
 }
 
 function ThemeToggle() {
@@ -425,7 +460,7 @@ function StatusDot({ ok, label }: { ok: boolean; label: string }) {
   return (
     <span
       title={label}
-      className={`size-2 rounded-full ${ok ? "bg-settled" : "bg-attention"}`}
+      className={`size-1.5 shrink-0 rounded-full ${ok ? "bg-settled" : "bg-attention"}`}
     />
   );
 }
@@ -435,69 +470,249 @@ const MOBILE_NAV = NAV.filter((n) =>
   ["/", "/inbox", "/quotations", "/stock", "/customers"].includes(n.to),
 );
 
+/** Who is signed in, and the way out.
+
+    On a shared trading-desk machine "whose account is this" has to be
+    answerable at a glance, so the name is in the header rather than behind a
+    menu, and signing out is one click from anywhere. */
+function UserMenu() {
+  const { user, signOut } = useAuth();
+  const [open, setOpen] = useState(false);
+  if (!user) return null;
+
+  const initials = user.name
+    .split(" ")
+    .map((part) => part[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-label="Your account"
+        className="grid size-7 place-items-center rounded-full bg-brand-wash text-[11px] font-semibold text-brand"
+      >
+        {initials}
+      </button>
+
+      {open && (
+        <>
+          {/* Click anywhere to dismiss, without trapping focus. */}
+          <button
+            type="button"
+            aria-hidden
+            tabIndex={-1}
+            className="fixed inset-0 z-40 cursor-default"
+            onClick={() => setOpen(false)}
+          />
+          <div className="absolute right-0 z-50 mt-1.5 w-56 rounded-lg border border-rule bg-surface p-1 shadow-lg">
+            <div className="border-b border-rule px-3 py-2">
+              <p className="truncate text-sm font-medium text-ink">{user.name}</p>
+              <p className="truncate text-xs text-ink-faint">{user.email}</p>
+            </div>
+            <NavLink
+              to="/account"
+              onClick={() => setOpen(false)}
+              className="block rounded px-3 py-2 text-sm text-ink hover:bg-sunk"
+            >
+              Your account
+            </NavLink>
+            <NavLink
+              to="/mail-schedule"
+              onClick={() => setOpen(false)}
+              className="block rounded px-3 py-2 text-sm text-ink hover:bg-sunk"
+            >
+              Mail checking
+            </NavLink>
+            <NavLink
+              to="/team"
+              onClick={() => setOpen(false)}
+              className="block rounded px-3 py-2 text-sm text-ink hover:bg-sunk"
+            >
+              Team
+            </NavLink>
+            <button
+              type="button"
+              onClick={signOut}
+              className="block w-full rounded px-3 py-2 text-left text-sm text-ink hover:bg-sunk"
+            >
+              Sign out
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+
 export default function Shell({ children }: { children: React.ReactNode }) {
+  const { organisation } = useAuth();
   const { data: status } = useApi<SystemStatus>("/system/status", 60_000);
   const { data: queue } = useApi<{ id: number }[]>("/follow-ups/queue", 60_000);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [collapsed, setCollapsed] = useRailCollapsed();
 
   const dueCount = queue?.length ?? 0;
 
   return (
-    <div className="flex min-h-full w-full overflow-x-hidden">
-      {/* --- Rail: desktop only ------------------------------------------- */}
-      <aside className="sticky top-0 hidden h-screen w-20 shrink-0 flex-col items-center bg-rail py-3 md:flex">
-        <span className="mb-4 grid size-10 shrink-0 place-items-center rounded-xl bg-brand text-base font-bold text-white shadow-raised">
-          S
-        </span>
+    <div className="flex h-full w-full overflow-hidden">
+      {/* --- Rail: desktop only -------------------------------------------
 
-        <nav className="flex flex-1 flex-col items-center gap-1 overflow-y-auto">
-          {NAV.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              title={item.label}
-              className={({ isActive }) =>
-                `group relative flex w-16 flex-col items-center gap-1 rounded-xl px-1 py-2 transition-colors ${
-                  isActive
-                    ? "bg-brand-soft/15 text-brand-soft"
-                    : "text-rail-ink hover:bg-rail-hover hover:text-rail-ink-strong"
-                }`
+          Fixed to the viewport height and never its own scroll container:
+          eleven destinations have to fit, so the items are single-line rows
+          rather than stacked icon-over-label tiles. Collapsed it is a 4rem
+          icon strip; expanded it shows the labels and the health readout. */}
+      <aside
+        className={`hidden h-full shrink-0 flex-col bg-rail transition-[width] duration-200 md:flex ${
+          collapsed ? "w-16" : "w-56"
+        }`}
+      >
+        <div
+          className={`flex h-14 shrink-0 items-center ${
+            collapsed ? "justify-center px-2" : "gap-2.5 px-4"
+          }`}
+        >
+          <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-brand text-sm font-bold text-white">
+            S
+          </span>
+          {!collapsed && (
+            <span className="truncate text-sm font-semibold text-rail-ink-strong">Steel Desk</span>
+          )}
+        </div>
+
+        <nav className={`flex min-h-0 flex-1 flex-col gap-0.5 pb-2 ${collapsed ? "px-2" : "px-2.5"}`}>
+          {RAIL_GROUPS.map((group, i) => (
+            <div
+              key={i}
+              className={
+                i > 0 ? "mt-1.5 flex flex-col gap-0.5 border-t border-white/8 pt-1.5" : "flex flex-col gap-0.5"
               }
             >
-              <item.icon className="size-[18px] shrink-0" />
-              <span className="w-full truncate text-center text-[10px] font-medium leading-tight">
-                {item.label}
-              </span>
-              {item.to === "/follow-ups" && dueCount > 0 && (
-                <span className="absolute right-1.5 top-1 grid size-4 place-items-center rounded-full bg-attention text-[9px] font-bold text-white">
-                  {dueCount}
-                </span>
-              )}
-            </NavLink>
+              {group.items.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.end}
+                  /* Collapsed, the label is gone - the native tooltip is the
+                     only thing naming the destination, so it is not optional. */
+                  title={collapsed ? item.label : undefined}
+                  className={({ isActive }) =>
+                    `group relative flex items-center rounded-lg py-1.5 text-[13px] font-medium transition-colors ${
+                      collapsed ? "justify-center px-0" : "gap-2.5 px-2.5"
+                    } ${
+                      isActive
+                        ? "bg-brand-soft/15 text-rail-ink-strong"
+                        : "text-rail-ink hover:bg-rail-hover hover:text-rail-ink-strong"
+                    }`
+                  }
+                >
+                  {({ isActive }) => (
+                    <>
+                      {/* The active marker is a bar on the edge, not a fill:
+                          it says "you are here" without competing with the
+                          blue that means "this is an action". */}
+                      <span
+                        className={`absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-r-full bg-brand-soft transition-opacity ${
+                          isActive ? "opacity-100" : "opacity-0"
+                        }`}
+                      />
+                      <span className="relative shrink-0">
+                        <item.icon className="size-[17px]" />
+                        {/* Collapsed there is no room for a count, but the
+                            queue still has to announce itself - so it becomes
+                            a dot on the icon. */}
+                        {collapsed && item.to === "/follow-ups" && dueCount > 0 && (
+                          <span className="absolute -right-1 -top-1 size-2 rounded-full bg-attention ring-2 ring-rail" />
+                        )}
+                      </span>
+                      {!collapsed && (
+                        <>
+                          <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                          {item.to === "/follow-ups" && dueCount > 0 && (
+                            <span className="grid h-4 min-w-4 shrink-0 place-items-center rounded-full bg-attention px-1 text-[10px] font-bold text-white">
+                              {dueCount}
+                            </span>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
 
         {status && (
-          <div className="flex flex-col items-center gap-2 pt-3">
-            <StatusDot ok={status.email_source_available} label={status.email_source} />
-            <StatusDot
-              ok={status.llm_configured}
-              label={status.llm_configured ? "LLM configured" : "No API key"}
-            />
-            <StatusDot ok={!status.auto_send_enabled} label="Approval required to send" />
+          <div
+            className={`shrink-0 border-t border-white/8 py-2.5 ${collapsed ? "px-2" : "px-4"}`}
+          >
+            {/* Collapsed the labels go but the dots stay, laid out in a row -
+                a red dot has to be visible whichever width the rail is at. */}
+            <ul className={`flex ${collapsed ? "justify-center gap-1.5" : "flex-col gap-1.5"}`}>
+              <li className="flex items-center gap-2 text-[11px] text-rail-ink">
+                <StatusDot ok={status.email_source_available} label={status.email_source} />
+                {!collapsed && <span className="truncate">{status.email_source}</span>}
+              </li>
+              <li className="flex items-center gap-2 text-[11px] text-rail-ink">
+                <StatusDot
+                  ok={status.llm_configured}
+                  label={status.llm_configured ? "LLM configured" : "No API key"}
+                />
+                {!collapsed && (
+                  <span className="truncate">{status.llm_configured ? "AI ready" : "No API key"}</span>
+                )}
+              </li>
+              <li className="flex items-center gap-2 text-[11px] text-rail-ink">
+                <StatusDot ok={!status.auto_send_enabled} label="Approval required to send" />
+                {!collapsed && (
+                  <span className="truncate">
+                    {status.auto_send_enabled ? "Auto-send on" : "Approval to send"}
+                  </span>
+                )}
+              </li>
+            </ul>
           </div>
         )}
+
+        <div className={`shrink-0 border-t border-white/8 py-1.5 ${collapsed ? "px-2" : "px-2.5"}`}>
+          <button
+            type="button"
+            onClick={() => setCollapsed((v) => !v)}
+            title={collapsed ? "Expand menu" : "Collapse menu"}
+            aria-label={collapsed ? "Expand menu" : "Collapse menu"}
+            aria-expanded={!collapsed}
+            className={`flex w-full items-center rounded-lg py-1.5 text-[13px] font-medium text-rail-ink transition-colors hover:bg-rail-hover hover:text-rail-ink-strong ${
+              collapsed ? "justify-center px-0" : "gap-2.5 px-2.5"
+            }`}
+          >
+            <Icons.chevronLeft
+              className={`size-[17px] shrink-0 transition-transform duration-200 ${
+                collapsed ? "rotate-180" : ""
+              }`}
+            />
+            {!collapsed && <span className="truncate">Collapse</span>}
+          </button>
+        </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-rule bg-surface px-4 py-2.5 md:px-5">
+      <div className="flex h-full min-w-0 flex-1 flex-col">
+        {/* Matches the rail's 3.5rem masthead so the two line up across the
+            seam, and sits outside the scroll region rather than relying on
+            sticky - `main` is the only thing that scrolls now. */}
+        <header className="z-20 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-rule bg-surface px-4 md:px-5">
           <div className="flex min-w-0 items-center gap-2">
             <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-brand text-xs font-bold text-white md:hidden">
               S
             </span>
             <div className="flex min-w-0 items-baseline gap-2">
-              <span className="truncate text-sm font-semibold text-ink">Steel Desk</span>
+              <span className="truncate text-sm font-semibold text-ink">
+                {organisation?.name ?? "Steel Desk"}
+              </span>
               <span className="hidden text-[11px] text-ink-faint sm:inline">
                 pricing rules v{status?.rules_version ?? "—"}
               </span>
@@ -506,6 +721,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           <div className="flex shrink-0 items-center gap-1">
             <NotificationBell />
             <ThemeToggle />
+            <UserMenu />
             {/* Everything not in the bottom bar lives behind this. */}
             <button
               type="button"
@@ -521,7 +737,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
         </header>
 
         {menuOpen && (
-          <nav className="grid grid-cols-3 gap-1 border-b border-rule bg-surface p-3 md:hidden">
+          <nav className="grid shrink-0 grid-cols-3 gap-1 border-b border-rule bg-surface p-3 md:hidden">
             {NAV.map((item) => (
               <NavLink
                 key={item.to}
@@ -541,8 +757,12 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           </nav>
         )}
 
-        {/* Padded for the bottom bar so the last row is never covered. */}
-        <main className="min-w-0 flex-1 overflow-x-hidden pb-16 md:pb-0">{children}</main>
+        {/* The one scroll container in the app, which is what keeps the rail
+            and the header fixed. Padded for the bottom bar on phones so the
+            last row is never covered. */}
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pb-16 md:pb-0">
+          {children}
+        </main>
       </div>
 
       {/* --- Bottom bar: phones only --------------------------------------- */}

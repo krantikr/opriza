@@ -30,7 +30,7 @@ from app.models.enums import (
     RecordStatus,
     StockMovementKind,
 )
-from app.models.mixins import CreatedAtMixin, TimestampMixin, enum_col
+from app.models.mixins import CreatedAtMixin, TenantMixin, TimestampMixin, enum_col
 from app.models.types import Money, Quantity
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ from app.models.types import Money, Quantity
 # ---------------------------------------------------------------------------
 
 
-class NotificationRule(Base, TimestampMixin):
+class NotificationRule(Base, TimestampMixin, TenantMixin):
     """Who gets told about what, on which channel.
 
     Kept as data rather than settings so a trading desk can route its own
@@ -70,7 +70,7 @@ class NotificationRule(Base, TimestampMixin):
         return f"<NotificationRule {self.kind}/{self.channel}>"
 
 
-class Notification(Base, CreatedAtMixin):
+class Notification(Base, CreatedAtMixin, TenantMixin):
     """One message raised for one person on one channel.
 
     Written even when delivery fails, because a notification nobody received is
@@ -85,7 +85,7 @@ class Notification(Base, CreatedAtMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     rule_id: Mapped[int | None] = mapped_column(ForeignKey("notification_rules.id"))
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id"), index=True)
 
     kind: Mapped[NotificationKind] = mapped_column(enum_col(NotificationKind), nullable=False)
     channel: Mapped[NotificationChannel] = mapped_column(
@@ -120,7 +120,7 @@ class Notification(Base, CreatedAtMixin):
 # ---------------------------------------------------------------------------
 
 
-class FollowUpRule(Base, TimestampMixin):
+class FollowUpRule(Base, TimestampMixin, TenantMixin):
     """When to chase a quotation that has gone quiet.
 
     Two shapes of rule, because a desk needs both:
@@ -173,7 +173,7 @@ class FollowUpRule(Base, TimestampMixin):
         return f"<FollowUpRule {self.label} +{self.first_after_days}d x{self.max_attempts}>"
 
 
-class FollowUpSchedule(Base, TimestampMixin):
+class FollowUpSchedule(Base, TimestampMixin, TenantMixin):
     """A nudge a rule says is owed, waiting for a human to send it."""
 
     __tablename__ = "follow_up_schedules"
@@ -212,7 +212,7 @@ class FollowUpSchedule(Base, TimestampMixin):
 # ---------------------------------------------------------------------------
 
 
-class StockMovement(Base, CreatedAtMixin):
+class StockMovement(Base, CreatedAtMixin, TenantMixin):
     """A change in stock that did not come from re-importing the sheet.
 
     The stock import replaces the table wholesale, because the file is a full
@@ -230,7 +230,7 @@ class StockMovement(Base, CreatedAtMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     stock_item_id: Mapped[int | None] = mapped_column(ForeignKey("stock_items.id"))
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id"))
 
     kind: Mapped[StockMovementKind] = mapped_column(enum_col(StockMovementKind), nullable=False)
     # Signed: positive adds to balance, negative removes. Stored in kg to match
@@ -263,7 +263,7 @@ class StockMovement(Base, CreatedAtMixin):
         return f"<StockMovement {self.kind} {self.quantity_kg}kg>"
 
 
-class CustomerNote(Base, TimestampMixin):
+class CustomerNote(Base, TimestampMixin, TenantMixin):
     """A dated note against a customer - the interaction timeline."""
 
     __tablename__ = "customer_notes"
@@ -272,7 +272,7 @@ class CustomerNote(Base, TimestampMixin):
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id"))
     body: Mapped[str] = mapped_column(Text, nullable=False)
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     status: Mapped[RecordStatus] = mapped_column(

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import selectinload
 
-from app.api.deps import current_user, get_quotation
+from app.api.deps import TenantDb, current_user, get_quotation
 from app.api.serializers import quotation_detail_out, quotation_out
-from app.core.db import get_db, utcnow
+from app.core.db import utcnow
 from app.core.logging import get_logger
 from app.models import QuotationPricing, QuotationRequest, QuotationStatus, User
 from app.schemas.common import ActionResult, Page
@@ -21,6 +21,8 @@ from app.schemas.quotations import (
     QuotationDetailsIn,
     QuotationOut,
     RejectIn,
+    ThreadMessageOut,
+    ThreadOut,
 )
 from app.services import audit
 from app.services.pricing.service import PricingService
@@ -44,9 +46,37 @@ def _loaded(query):
     )
 
 
+@router.get("/{quotation_id}/thread", response_model=ThreadOut)
+def quotation_thread(
+    db: TenantDb,
+    quotation: QuotationRequest = Depends(get_quotation),
+) -> ThreadOut:
+    """The whole conversation with this customer, oldest message first.
+
+    A read-model over the same rows the pipeline uses, so the thread and the
+    mailbox can never disagree about where a conversation stands.
+    """
+    from dataclasses import asdict
+
+    from app.services.threads import build_thread, thread_state
+
+    messages = build_thread(db, quotation)
+    return ThreadOut(
+        quotation_id=quotation.id,
+        quotation_number=quotation.quotation_number,
+        # The conversation's state, not the first message's - a reply that
+        # needs answering lives on its own row.
+        state=thread_state(db, quotation),
+        status=quotation.status.value,
+        customer_name=quotation.customer_name_raw,
+        customer_email=quotation.customer_email,
+        messages=[ThreadMessageOut(**asdict(m)) for m in messages],
+    )
+
+
 @router.get("", response_model=Page[QuotationOut])
 def list_quotations(
-    db: Session = Depends(get_db),
+    db: TenantDb,
     status_filter: QuotationStatus | None = Query(default=None, alias="status"),
     customer_id: int | None = None,
     search: str | None = Query(default=None, description="Match quotation number or customer"),
@@ -83,7 +113,7 @@ def list_quotations(
 
 @router.get("/{quotation_id}", response_model=QuotationDetailOut)
 def get_quotation_detail(
-    quotation_id: int, db: Session = Depends(get_db)
+    quotation_id: int, db: TenantDb
 ) -> QuotationDetailOut:
     quotation = db.scalars(
         _loaded(select(QuotationRequest)).where(QuotationRequest.id == quotation_id)
@@ -96,8 +126,8 @@ def get_quotation_detail(
 @router.put("/{quotation_id}/draft", response_model=ActionResult)
 def update_draft(
     payload: DraftUpdateIn,
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-    db: Session = Depends(get_db),
     user: User | None = Depends(current_user),
 ) -> ActionResult:
     """Save a reviewer's edits. Does not send."""
@@ -119,8 +149,8 @@ def update_draft(
 
 @router.post("/{quotation_id}/regenerate", response_model=ActionResult)
 def regenerate_draft(
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-    db: Session = Depends(get_db),
     user: User | None = Depends(current_user),
 ) -> ActionResult:
     """Ask for a fresh draft from the same verified figures.
@@ -147,8 +177,8 @@ def regenerate_draft(
 @router.post("/{quotation_id}/approve", response_model=ActionResult)
 def approve_quotation(
     payload: ApproveIn,
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-    db: Session = Depends(get_db),
     user: User | None = Depends(current_user),
 ) -> ActionResult:
     """Record the approval and send the email. The only path that sends."""
@@ -183,8 +213,8 @@ def approve_quotation(
 @router.post("/{quotation_id}/follow-up", response_model=ActionResult)
 def send_follow_up(
     payload: FollowUpIn,
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-    db: Session = Depends(get_db),
     user: User | None = Depends(current_user),
 ) -> ActionResult:
     """Send a nudge on a quotation that has already gone out. Repeatable."""
@@ -216,8 +246,8 @@ def send_follow_up(
 @router.post("/{quotation_id}/reject", response_model=ActionResult)
 def reject_quotation(
     payload: RejectIn,
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-    db: Session = Depends(get_db),
     user: User | None = Depends(current_user),
 ) -> ActionResult:
     try:
@@ -249,8 +279,8 @@ def get_pricing(
 def override_component(
     line_id: int,
     payload: OverrideIn,
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-    db: Session = Depends(get_db),
     user: User | None = Depends(current_user),
 ) -> QuotationPricing:
     """Substitute one component's figure for this quotation only.
@@ -292,8 +322,8 @@ def override_component(
 def clear_component_override(
     line_id: int,
     component_code: str,
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-    db: Session = Depends(get_db),
 ) -> QuotationPricing:
     """Put a component back to what the rules say."""
     item = next((i for i in quotation.line_items if i.id == line_id), None)
@@ -306,8 +336,8 @@ def clear_component_override(
 
 @router.post("/{quotation_id}/pricing/recalculate", response_model=list[PricingOut])
 def recalculate(
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-    db: Session = Depends(get_db),
     keep_overrides: bool = True,
 ) -> list[QuotationPricing]:
     """Re-run the current rules over every line.
@@ -328,8 +358,8 @@ def recalculate(
 @router.put("/{quotation_id}/details", response_model=ActionResult)
 def update_details(
     payload: QuotationDetailsIn,
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-    db: Session = Depends(get_db),
     user: User | None = Depends(current_user),
 ) -> ActionResult:
     """Record terms the enquiry left unstated, and re-price against them.
@@ -392,8 +422,8 @@ def update_details(
 
 @router.post("/{quotation_id}/despatched", response_model=ActionResult)
 def mark_despatched(
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-    db: Session = Depends(get_db),
     user: User | None = Depends(current_user),
 ) -> ActionResult:
     """Record that the goods have gone out.

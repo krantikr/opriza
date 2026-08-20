@@ -29,8 +29,31 @@ def sent_dir(tmp_path, monkeypatch) -> Path:
 
 @pytest.fixture()
 def client(db, default_user, sent_dir) -> TestClient:
+    """An authenticated client for the default desk.
+
+    The session is overridden, but authentication is *not* faked: the client
+    signs in with a real token, so these tests exercise the same dependency
+    chain a browser does. Stubbing `current_user` instead would leave every
+    route's auth untested.
+    """
+    from app.api.deps import tenant_db
+    from app.core.security import issue_token
+
     app.dependency_overrides[get_db] = lambda: db
+    # `tenant_db` is overridden because the test session is already bound by
+    # the `db` fixture; re-binding it inside a TestClient request would open a
+    # second transaction on the same session.
+    app.dependency_overrides[tenant_db] = lambda: db
+
+    token = issue_token(
+        user_id=default_user.id,
+        organisation_id=default_user.organisation_id,
+        role=default_user.role.value,
+        is_super_admin=False,
+        token_version=default_user.token_version,
+    )
     with TestClient(app) as test_client:
+        test_client.headers["Authorization"] = f"Bearer {token}"
         yield test_client
     app.dependency_overrides.clear()
 

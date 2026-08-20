@@ -47,9 +47,18 @@ def b64url_encode(data: bytes) -> str:
 class GmailClient:
     """Authenticated access to one Gmail mailbox."""
 
-    def __init__(self, credentials_path: Path, token_path: Path) -> None:
+    def __init__(
+        self,
+        credentials_path: Path,
+        token_path: Path,
+        refresh_token: str | None = None,
+    ) -> None:
         self.credentials_path = credentials_path
         self.token_path = token_path
+        #: Supplied per organisation by `get_email_source_for`. When set, it
+        #: is used in preference to the token file: one shared file on disk
+        #: cannot represent several desks' mailboxes.
+        self.refresh_token = refresh_token
         self._service: Any = None
 
     # --- Credentials ------------------------------------------------------
@@ -62,6 +71,9 @@ class GmailClient:
         from google.auth.exceptions import RefreshError
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
+
+        if self.refresh_token:
+            return self._credentials_from_refresh_token()
 
         if not self.token_path.exists():
             return None
@@ -85,6 +97,50 @@ class GmailClient:
             return creds
 
         return None
+
+    def _credentials_from_refresh_token(self):
+        """Build credentials for one organisation's stored refresh token.
+
+        The client id and secret still come from the application's own
+        credentials file - they identify Steel Desk to Google, and are the
+        same for every desk. Only the refresh token is per-organisation.
+        """
+        import json
+
+        from google.auth.exceptions import RefreshError
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+
+        if not self.credentials_path.exists():
+            logger.error(
+                "No Google client credentials at %s; mailboxes cannot connect.",
+                self.credentials_path,
+            )
+            return None
+
+        try:
+            blob = json.loads(self.credentials_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error("Google client credentials are unreadable: %s", exc)
+            return None
+
+        client = blob.get("installed") or blob.get("web") or {}
+        creds = Credentials(
+            token=None,
+            refresh_token=self.refresh_token,
+            token_uri=client.get("token_uri", "https://oauth2.googleapis.com/token"),
+            client_id=client.get("client_id"),
+            client_secret=client.get("client_secret"),
+            scopes=SCOPES,
+        )
+        try:
+            creds.refresh(Request())
+        except RefreshError as exc:
+            # Google expires refresh tokens. The desk must reconnect; saying
+            # so is more useful than a stack trace in a log nobody reads.
+            logger.warning("Mailbox refresh token is no longer valid: %s", exc)
+            return None
+        return creds
 
     def authorize(self, port: int = 0):
         """Run the interactive installed-app OAuth flow and store the token.

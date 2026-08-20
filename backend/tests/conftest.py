@@ -1,7 +1,14 @@
 """Shared test fixtures.
 
-Tests run against a throwaway SQLite file rather than the development database,
-and against a fixed set of stock lots so the availability assertions are stable.
+Tests run against PostgreSQL, not SQLite. That is a requirement rather than a
+preference: tenant isolation is enforced by row-level security, and a suite on
+a database with no such feature would pass while proving nothing about the
+property the product depends on most.
+
+Each test gets a schema created fresh with its policies applied, and every
+session is bound to a default organisation so ordinary tests need not think
+about tenancy at all. `test_tenancy.py` is where the binding is manipulated
+deliberately.
 """
 
 from __future__ import annotations
@@ -11,10 +18,11 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.db import Base
+from app.core.tenancy import bind_session
 from app.models import (
     ConfidenceLevel,
     Customer,
@@ -23,6 +31,7 @@ from app.models import (
     EmailCategory,
     EmailSourceType,
     MatchStatus,
+    Organisation,
     ProcessingStatus,
     QuantityUnit,
     QuotationLineItem,
@@ -34,30 +43,131 @@ from app.models import (
     UserRole,
 )
 
+#: The suite's own database. Separate from development data so a test run
+#: cannot destroy work in progress.
+TEST_DATABASE_URL = (
+    "postgresql+psycopg://steeldesk_app:steeldesk_dev@localhost:5432/steeldesk_test"
+)
+
+
+@pytest.fixture(scope="session")
+def engine():
+    """One engine and one schema for the run; tables are truncated per test.
+
+    Creating 31 tables and 30 policies per test would dominate the runtime.
+    """
+    from scripts.rls import LOGIN_TABLES, login_policy_sql, policy_sql, tenant_tables
+
+    engine = create_engine(TEST_DATABASE_URL, future=True)
+
+    # Dropping the schema rather than the tables: `drop_all` needs a
+    # dependency sort, and `emails` and `quotation_requests` reference each
+    # other, so no such order exists. The schema does not care.
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
+    Base.metadata.create_all(bind=engine)
+
+    with engine.begin() as conn:
+        for table in tenant_tables():
+            builder = login_policy_sql if table in LOGIN_TABLES else policy_sql
+            for statement in builder(table):
+                conn.execute(text(statement))
+
+    yield engine
+    engine.dispose()
+
 
 @pytest.fixture()
-def db(tmp_path) -> Generator[Session, None, None]:
-    """A fresh, isolated database per test."""
-    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}", future=True)
+def default_org(engine) -> int:
+    """The organisation every ordinary test's data belongs to.
 
-    @event.listens_for(engine, "connect")
-    def _pragmas(dbapi_connection, _record):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.close()
-
-    Base.metadata.create_all(bind=engine)
+    Created with the super-admin binding, because an organisation row has no
+    `organisation_id` of its own to be scoped by.
+    """
     session = sessionmaker(bind=engine, expire_on_commit=False, future=True)()
+    try:
+        bind_session(session, None, super_admin=True)
+        # One statement for every table: `sorted_tables` cannot order these,
+        # because `emails` and `quotation_requests` reference each other, and
+        # TRUNCATE ... CASCADE does not care about order anyway.
+        names = ", ".join(f'"{t}"' for t in Base.metadata.tables)
+        session.execute(text(f"TRUNCATE TABLE {names} RESTART IDENTITY CASCADE"))
+        org = Organisation(slug="test-desk", name="Test Desk")
+        session.add(org)
+        session.commit()
+        return org.id
+    finally:
+        session.close()
+
+
+@pytest.fixture()
+def db(engine, default_org) -> Generator[Session, None, None]:
+    """A session bound to the default organisation.
+
+    Bound by default so that the several hundred tests written before
+    multi-tenancy keep testing what they were written to test, rather than
+    each needing to learn about organisations.
+    """
+    session = sessionmaker(bind=engine, expire_on_commit=False, future=True)()
+    bind_session(session, default_org)
     try:
         yield session
     finally:
         session.close()
-        engine.dispose()
 
 
 @pytest.fixture()
-def default_user(db: Session) -> User:
-    user = User(name="Test Owner", email="owner@test.local", role=UserRole.ADMIN)
+def platform_db(engine, default_org) -> Generator[Session, None, None]:
+    """A session bound as the platform operator, for cross-desk work.
+
+    Onboarding an organisation is deliberately impossible from a desk-scoped
+    session, so the tests that do it need this rather than `db`.
+    """
+    session = sessionmaker(bind=engine, expire_on_commit=False, future=True)()
+    bind_session(session, None, super_admin=True)
+    try:
+        yield session
+    finally:
+        session.close()
+
+
+@pytest.fixture()
+def two_desks(engine, default_org):
+    """Two organisations, each with one customer, for the isolation tests."""
+    session = sessionmaker(bind=engine, expire_on_commit=False, future=True)()
+    try:
+        bind_session(session, None, super_admin=True)
+        alpha = Organisation(slug="alpha", name="Alpha Steel")
+        beta = Organisation(slug="beta", name="Beta Metals")
+        session.add_all([alpha, beta])
+        session.commit()
+
+        for org, label in ((alpha, "Alpha"), (beta, "Beta")):
+            bind_session(session, org.id)
+            session.add(
+                Customer(
+                    organisation_id=org.id,
+                    name=f"{label} customer",
+                    email=f"{label.lower()}@example.com",
+                )
+            )
+            session.commit()
+
+        session.expunge_all()
+        return alpha, beta
+    finally:
+        session.close()
+
+
+@pytest.fixture()
+def default_user(db: Session, default_org: int) -> User:
+    user = User(
+        organisation_id=default_org,
+        name="Test Owner",
+        email="owner@example.com",
+        role=UserRole.OWNER,
+    )
     db.add(user)
     db.commit()
     return user

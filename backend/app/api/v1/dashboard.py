@@ -5,12 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.deps import TenantDb
 from app.core.config import settings
-from app.core.db import get_db
 from app.core.rules import get_rules
 from app.models import (
     Approval,
@@ -58,7 +58,7 @@ def _distinct_spec_count(db: Session) -> int:
 
 
 @router.get("/dashboard/metrics", response_model=DashboardMetrics)
-def dashboard_metrics(db: Session = Depends(get_db)) -> DashboardMetrics:
+def dashboard_metrics(db: TenantDb) -> DashboardMetrics:
     # --- Emails -----------------------------------------------------------
     email_status = _counts_by(db, Email.processing_status)
     email_category = _counts_by(db, Email.category)
@@ -171,7 +171,7 @@ def dashboard_metrics(db: Session = Depends(get_db)) -> DashboardMetrics:
 
 @router.get("/audit-logs", response_model=Page[AuditLogOut])
 def list_audit_logs(
-    db: Session = Depends(get_db),
+    db: TenantDb,
     entity_type: str | None = None,
     entity_id: int | None = None,
     limit: int = Query(default=100, ge=1, le=500),
@@ -198,7 +198,7 @@ def list_audit_logs(
 
 
 @router.get("/system/status", response_model=SystemStatus, tags=["system"])
-def system_status(db: Session = Depends(get_db)) -> SystemStatus:
+def system_status(db: TenantDb) -> SystemStatus:
     """What the system is configured to do, and whether it can do it.
 
     Surfaced in the UI so the state of the Gmail connection and the LLM key is
@@ -228,9 +228,7 @@ def system_status(db: Session = Depends(get_db)) -> SystemStatus:
 
 
 @router.get("/dashboard/trends", tags=["dashboard"])
-def dashboard_trends(
-    days: int = Query(30, ge=7, le=365), db: Session = Depends(get_db)
-) -> dict:
+def dashboard_trends(db: TenantDb, days: int = Query(30, ge=7, le=365)) -> dict:
     """A daily series plus the same window immediately preceding it.
 
     The comparison is like for like - 30 days against 30 days - because

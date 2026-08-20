@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 
 import { api, query, useApi } from "../api/client";
 import type { Email, Page } from "../api/types";
+import ThreadView, { type Thread } from "../components/Thread";
 import {
   ago,
   Badge,
@@ -235,6 +236,21 @@ function MessageRow({
 
 function Reading({ id, onProcessed }: { id: number; onProcessed: () => void }) {
   const { data, loading, error, reload } = useApi<Email>(`/emails/${id}`);
+
+  // The conversation this message belongs to. Fetched separately so the
+  // message itself still appears promptly if the thread is slow.
+  const [thread, setThread] = useState<Thread | null>(null);
+  useEffect(() => {
+    let current = true;
+    setThread(null);
+    api
+      .get<Thread>(`/emails/${id}/thread`)
+      .then((t) => current && setThread(t))
+      .catch(() => current && setThread(null));
+    return () => {
+      current = false;
+    };
+  }, [id, data?.state]);
   const [busy, setBusy] = useState(false);
 
   if (loading && !data) return <Loading label="Opening" />;
@@ -380,10 +396,20 @@ function Reading({ id, onProcessed }: { id: number; onProcessed: () => void }) {
           </div>
         )}
 
+        {/* The conversation, not the single message.
+
+            A reply shown detached from what it answers is the thing this
+            replaces: a trader had to hold the other half in their head, or
+            open Gmail to see it. Falls back to the plain body while the
+            thread loads, and for a message that genuinely stands alone. */}
         <article className="px-5 py-4">
-          <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-ink">
-            {data.body_text || "(no body)"}
-          </pre>
+          {thread && thread.messages.length > 1 ? (
+            <ThreadView thread={thread} />
+          ) : (
+            <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-ink">
+              {data.body_text || "(no body)"}
+            </pre>
+          )}
         </article>
 
         {data.attachments && data.attachments.length > 0 && (

@@ -12,11 +12,17 @@ from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
-from app.models.enums import EmailCategory, EmailSourceType, ProcessingStatus, ReplyIntent
-from app.models.mixins import CreatedAtMixin, TimestampMixin, enum_col
+from app.models.enums import (
+    EmailCategory,
+    EmailSourceType,
+    MailDirection,
+    ProcessingStatus,
+    ReplyIntent,
+)
+from app.models.mixins import CreatedAtMixin, TenantMixin, TimestampMixin, enum_col
 
 
-class Email(Base, TimestampMixin):
+class Email(Base, TimestampMixin, TenantMixin):
     __tablename__ = "emails"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -67,6 +73,12 @@ class Email(Base, TimestampMixin):
     answered_at: Mapped[datetime | None] = mapped_column()
 
     # --- Pipeline state ---------------------------------------------------
+    #: Which way the message went. Outbound mail is stored so the thread is
+    #: complete and so a reply sent from Gmail counts as a reply.
+    direction: Mapped[MailDirection] = mapped_column(
+        enum_col(MailDirection), default=MailDirection.INBOUND, nullable=False, index=True
+    )
+
     processing_status: Mapped[ProcessingStatus] = mapped_column(
         enum_col(ProcessingStatus), default=ProcessingStatus.PENDING, nullable=False, index=True
     )
@@ -104,7 +116,7 @@ class Email(Base, TimestampMixin):
         return f"<Email {self.id} {self.subject!r}>"
 
 
-class EmailAttachment(Base, CreatedAtMixin):
+class EmailAttachment(Base, CreatedAtMixin, TenantMixin):
     """Attachment metadata plus extracted text.
 
     Extraction failures are recorded rather than raised: an unreadable PDF must

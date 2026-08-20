@@ -79,7 +79,13 @@ class GmailSource(EmailSource):
         if not body and html_parts:
             body = html_to_text("\n".join(html_parts))
 
+        # Gmail's own label is authoritative. Comparing the sender against a
+        # configured address would misread an alias or a second address the
+        # desk also sends from.
+        labels = message.get("labelIds") or []
+
         return RawEmail(
+            outbound="SENT" in labels,
             message_id=message["id"],
             source=self.source_type,
             thread_id=message.get("threadId"),
