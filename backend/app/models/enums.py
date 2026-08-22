@@ -253,6 +253,11 @@ class NotificationChannel(StrEnum):
     EMAIL = "EMAIL"
     WHATSAPP = "WHATSAPP"
     SMS = "SMS"
+    #: A system notification delivered by Firebase Cloud Messaging. Distinct
+    #: from IN_APP because it reaches a phone with the site closed, which is
+    #: the whole reason it exists - the in-app bell and the browser
+    #: Notification API both require the tab to be open.
+    PUSH = "PUSH"
 
 
 class NotificationKind(StrEnum):
@@ -317,3 +322,23 @@ class StockMovementKind(StrEnum):
     RELEASE = "RELEASE"
     ADJUSTMENT = "ADJUSTMENT"
     BLOCK = "BLOCK"
+
+
+class LostReason(StrEnum):
+    """Why a quotation did not convert.
+
+    Recorded as a closed set rather than free text because the value is in
+    the aggregate: "how many did we lose purely on price, and by how much"
+    is the question that tells a trader his margin is set wrong. Free text
+    cannot be counted, so it would answer nothing.
+
+    Capturing it has to cost one tap. Anything more and the data never
+    accumulates, and every report built on it stays empty.
+    """
+
+    PRICE = "PRICE"
+    COMPETITOR = "COMPETITOR"
+    DELAYED = "DELAYED"
+    NO_STOCK = "NO_STOCK"
+    NO_RESPONSE = "NO_RESPONSE"
+    OTHER = "OTHER"

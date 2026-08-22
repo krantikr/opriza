@@ -42,10 +42,18 @@ def build_reply(
     to_address: str,
     subject: str,
     body: str,
+    html_body: str | None = None,
     in_reply_to: str | None = None,
     references: str | None = None,
 ) -> EmailMessage:
-    """Build a plain-text reply that threads correctly."""
+    """Build a reply that threads correctly.
+
+    With `html_body` the message goes out as `multipart/alternative`: the plain
+    text is what the reviewer approved and remains the real content, and the
+    HTML is the same thing with the item table drawn as a table. Clients that
+    refuse HTML - and anyone reading on a watch or a screen reader - still get
+    a body with every figure in it, in aligned columns.
+    """
     message = EmailMessage()
     message["To"] = to_address
     message["From"] = formataddr((settings.company_name, settings.company_email))
@@ -59,6 +67,10 @@ def build_reply(
         message["References"] = f"{references} {in_reply_to}".strip() if references else in_reply_to
 
     message.set_content(body)
+    if html_body:
+        # add_alternative orders the parts text-then-html, which is what the
+        # MIME spec asks for: the richest acceptable part is the last one.
+        message.add_alternative(html_body, subtype="html")
     return message
 
 
@@ -141,7 +153,14 @@ def get_sender(override: str | None = None) -> EmailSender:
     return LocalFileSender()
 
 
-def reply_to(email: Email, *, subject: str, body: str, sender: EmailSender) -> SendResult:
+def reply_to(
+    email: Email,
+    *,
+    subject: str,
+    body: str,
+    html_body: str | None = None,
+    sender: EmailSender,
+) -> SendResult:
     """Send a reply to an ingested email, on its original thread."""
     if not email.sender_email:
         return SendResult(sent=False, error="The original email has no sender address.")
@@ -150,6 +169,7 @@ def reply_to(email: Email, *, subject: str, body: str, sender: EmailSender) -> S
         to_address=email.sender_email,
         subject=subject,
         body=body,
+        html_body=html_body,
         in_reply_to=email.rfc822_message_id,
         references=email.rfc822_message_id,
     )

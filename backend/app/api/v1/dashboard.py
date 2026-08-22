@@ -36,6 +36,7 @@ from app.schemas.dashboard import (
 )
 from app.schemas.quotations import AuditLogOut
 from app.services.email.factory import get_email_source
+from app.services.pricing import active_rule_set
 from app.services.telemetry import usage_summary
 from app.services.trends import TrendService
 
@@ -206,6 +207,7 @@ def system_status(db: TenantDb) -> SystemStatus:
     """
     source = get_email_source()
     rules = get_rules()
+    pricing = active_rule_set(db)
 
     return SystemStatus(
         app_name=settings.app_name,
@@ -221,6 +223,7 @@ def system_status(db: TenantDb) -> SystemStatus:
         },
         auto_send_enabled=settings.auto_send_enabled,
         rules_version=rules.version,
+        pricing_version=pricing.version if pricing else None,
         stock_lots=db.scalar(select(func.count()).select_from(StockItem)) or 0,
         stock_specs=_distinct_spec_count(db),
         customers=db.scalar(select(func.count()).select_from(Customer)) or 0,

@@ -18,6 +18,7 @@ from app.models.enums import (
     ImportEntity,
     ImportStatus,
     InviteStatus,
+    LostReason,
     MailboxStatus,
     MailDirection,
     MatchStatus,
@@ -43,6 +44,7 @@ from app.models.ops import (
     FollowUpSchedule,
     Notification,
     NotificationRule,
+    PushDevice,
     StockMovement,
 )
 from app.models.pricing import (
@@ -101,6 +103,7 @@ __all__ = [
     "SalesInvoice",
     # operations
     "NotificationRule",
+    "PushDevice",
     "Notification",
     "FollowUpRule",
     "FollowUpSchedule",
@@ -120,6 +123,7 @@ __all__ = [
     "EmailSourceType",
     "FollowUpStatus",
     "FollowUpTrigger",
+    "LostReason",
     "ImportEntity",
     "ImportStatus",
     "MatchStatus",

@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
-import { useApi } from "../api/client";
-import type { StockHold, StockItem, StockSummary } from "../api/types";
+import { api, useApi } from "../api/client";
+import type { StockHold, StockImportResult, StockItem, StockSummary } from "../api/types";
 import { HoldsPanel, StockAdjustDialog } from "../components/StockAdjust";
-import { DonutChart, HBarChart, type BarDatum } from "../components/charts";
 import {
+  Banner,
   Button,
   Card,
   Empty,
@@ -15,32 +15,6 @@ import {
   Loading,
   num,
 } from "../components/ui";
-
-/** Top product types by balance tonnage - one consistent hue since this is a
- * single ranked series, not a comparison of distinct categorical series. */
-function byProductType(rows: StockSummary[]): BarDatum[] {
-  const totals = new Map<string, number>();
-  for (const row of rows) {
-    const key = row.product_type ?? "Unspecified";
-    totals.set(key, (totals.get(key) ?? 0) + Number(row.balance_qty_mt));
-  }
-  return [...totals.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 8)
-    .map(([label, value]) => ({ label, value: Math.round(value), tone: "brand" as const }));
-}
-
-/** Ageing buckets. Deadstock is cash on the floor, so it is worth surfacing. */
-function byAgeing(rows: StockSummary[]): BarDatum[] {
-  const buckets = { "0-30 days": 0, "31-60 days": 0, "61-90 days": 0, "Over 90 days": 0 };
-  for (const row of rows) {
-    const age = row.ageing_max_days ?? 0;
-    const key =
-      age <= 30 ? "0-30 days" : age <= 60 ? "31-60 days" : age <= 90 ? "61-90 days" : "Over 90 days";
-    buckets[key as keyof typeof buckets] += Math.round(Number(row.balance_qty_mt));
-  }
-  return Object.entries(buckets).map(([label, value]) => ({ label, value }));
-}
 
 /** A spec key stable across reloads, so an expanded row stays expanded. */
 function specKey(row: StockSummary): string {
@@ -119,6 +93,71 @@ function LotTable({ lots, onAdjust }: { lots: StockItem[]; onAdjust: (lot: Stock
   );
 }
 
+/** The "Replace from Excel" control - the button only.
+
+    The outcome is deliberately not rendered here: this sits in a flex row
+    beside the search field, and a full-width result banner as a sibling would
+    wedge itself between the controls. The parent owns the result and draws it
+    under the header, where a multi-line report belongs.
+
+    The file replaces the stock list rather than merging into it, so the label
+    says "Replace" rather than "Upload": a trader should know what the action
+    does before picking a file, not discover it afterwards. */
+function StockUpload({
+  busy,
+  onPicked,
+}: {
+  busy: boolean;
+  onPicked: (file: File) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+
+  return (
+    <>
+      <input
+        ref={input}
+        type="file"
+        accept=".xlsx,.xlsm,.xls"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) onPicked(file);
+          // Cleared so re-picking the same file after correcting it still fires
+          // a change event; without this the second attempt looks like a dead
+          // button.
+          e.target.value = "";
+        }}
+      />
+      <Button disabled={busy} onClick={() => input.current?.click()}>
+        {busy ? "Importing…" : "Replace from Excel"}
+      </Button>
+    </>
+  );
+}
+
+/** What one import did: lots loaded, and every row that was rejected with its
+    row number, because a partly-loaded file is the normal case with real
+    spreadsheets and a bare "done" would hide it. */
+function ImportReport({ result }: { result: StockImportResult }) {
+  return (
+    <Banner tone={result.rows_failed > 0 ? "attention" : "settled"}>
+      {result.rows_imported} lot{result.rows_imported === 1 ? "" : "s"} loaded from{" "}
+      {result.source_file}
+      {result.rows_failed > 0 && ` · ${result.rows_failed} row(s) rejected`}
+      {result.errors.length > 0 && (
+        <ul className="mt-1.5 list-disc pl-4 text-xs">
+          {result.errors.slice(0, 5).map((err, i) => (
+            <li key={i}>
+              Row {err.row}: {err.error}
+            </li>
+          ))}
+          {result.errors.length > 5 && <li>…and {result.errors.length - 5} more</li>}
+        </ul>
+      )}
+    </Banner>
+  );
+}
+
 export default function Stock() {
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -127,10 +166,27 @@ export default function Stock() {
   const holds = useApi<StockHold[]>("/stock/holds", 60_000);
   const [adjusting, setAdjusting] = useState<StockItem | null>(null);
   const [showHolds, setShowHolds] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<StockImportResult | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
 
   function refreshAll() {
     reload();
     holds.reload();
+  }
+
+  async function importStock(file: File) {
+    setImporting(true);
+    setImportError(null);
+    setImportResult(null);
+    try {
+      setImportResult(await api.upload<StockImportResult>("/stock/import", file));
+      refreshAll();
+    } catch (e) {
+      setImportError((e as Error).message);
+    } finally {
+      setImporting(false);
+    }
   }
 
   function toggle(key: string) {
@@ -184,18 +240,25 @@ export default function Stock() {
             orders. Expand a row for the individual lots.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        {/* The search field is the only element here that may give up width:
+            it flexes down to a usable minimum while the two buttons keep their
+            natural size, so a narrow window shortens the input instead of
+            breaking the buttons apart. */}
+        <div className="flex flex-1 items-center justify-end gap-2">
           <Input
             value={search}
             onChange={setSearch}
             placeholder="Search grade, type, location, mill or coil"
-            className="w-72"
+            className="w-full min-w-40 max-w-72"
           />
+          <StockUpload busy={importing} onPicked={importStock} />
           <Button onClick={reload}>Refresh</Button>
         </div>
       </header>
 
       {error && <ErrorNote message={error} />}
+      {importError && <ErrorNote message={importError} />}
+      {importResult && <ImportReport result={importResult} />}
 
       <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
         <Kpi label="On hand" value={`${Math.round(totalMt).toLocaleString("en-IN")} MT`} hint={`${data?.length ?? 0} specs`} />
@@ -227,21 +290,6 @@ export default function Stock() {
         >
           {showHolds && <HoldsPanel holds={holds.data!} onChanged={refreshAll} />}
         </Card>
-      )}
-
-      {data && data.length > 0 && (
-        <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
-          <Card title="By product type" subtitle="Balance tonnage">
-            <HBarChart data={byProductType(data)} unit="MT" />
-          </Card>
-          <Card title="By age" subtitle="Where the tonnage is sitting">
-            <DonutChart
-              data={byAgeing(data)}
-              centerValue={`${Math.round(totalMt).toLocaleString("en-IN")}`}
-              centerLabel="MT on hand"
-            />
-          </Card>
-        </div>
       )}
 
       <Card padded={false}>

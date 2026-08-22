@@ -37,7 +37,7 @@ from app.schemas.pricing import (
 )
 from app.services import audit
 from app.services.pricing import PricingContext, PricingEngine, active_rule_set
-from app.services.pricing.defaults import next_version
+from app.services.pricing.defaults import next_version, seed_pricing_defaults
 
 router = APIRouter(tags=["pricing"])
 
@@ -54,6 +54,29 @@ def get_active_rules(db: TenantDb) -> PricingRuleSet:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No pricing rule set is published yet.",
         )
+    return rule_set
+
+
+@router.post(
+    "/pricing/rules/seed", response_model=RuleSetOut, status_code=status.HTTP_201_CREATED
+)
+def seed_starting_rules(db: TenantDb) -> PricingRuleSet:
+    """Publish the starting rule set for a desk that has none.
+
+    A desk with no rule set cannot be fixed from the rules editor, because the
+    editor edits a version and there is no version to edit. This is the way out
+    of that corner. It refuses if rules already exist rather than quietly
+    adding a second version, so it cannot be used to discard someone's work.
+    """
+    existing = db.scalar(select(PricingRuleSet).limit(1))
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This desk already has pricing rules.",
+        )
+    rule_set = seed_pricing_defaults(db, commit=False)
+    db.commit()
+    db.refresh(rule_set)
     return rule_set
 
 

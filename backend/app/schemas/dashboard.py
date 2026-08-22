@@ -77,6 +77,10 @@ class SystemStatus(BaseModel):
     llm_models: dict[str, str]
     auto_send_enabled: bool
     rules_version: str
+    # The published pricing rule set, which is what the desk actually prices
+    # with. None until one exists - distinct from `rules_version` above, which
+    # is the version of the static business-rules file.
+    pricing_version: int | None = None
     stock_lots: int = 0
     stock_specs: int = 0
     customers: int = 0

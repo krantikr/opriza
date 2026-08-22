@@ -133,7 +133,7 @@ def test_a_delivery_failure_is_recorded_rather_than_raised(
     class BrokenChannel(channels.Channel):
         kind = NotificationChannel.IN_APP
 
-        def send(self, *, destination, title, body):
+        def send(self, *, destination, title, body, link=None):
             return channels.DeliveryResult(sent=False, error="provider exploded")
 
         def describe(self):

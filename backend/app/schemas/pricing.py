@@ -50,6 +50,12 @@ class PricingOut(ORMModel):
     warnings: list[str] | None = Field(default=None)
     has_overrides: bool = False
     draft_stale: bool = False
+    #: True when this row was computed against a *different* rule set than the
+    #: one live now - typically it was priced before any rules were published.
+    #: The stored warnings then describe a state that no longer exists, and
+    #: rendering them as current is how a desk with working rules ends up
+    #: being told it has none.
+    rules_stale: bool = False
 
     @field_validator("components", "warnings", mode="before")
     @classmethod

@@ -713,9 +713,19 @@ export default function Shell({ children }: { children: React.ReactNode }) {
               <span className="truncate text-sm font-semibold text-ink">
                 {organisation?.name ?? "Steel Desk"}
               </span>
-              <span className="hidden text-[11px] text-ink-faint sm:inline">
-                pricing rules v{status?.rules_version ?? "—"}
-              </span>
+              {/* The published pricing version, not the business-rules file:
+                  this is the number that decides what a customer is quoted. */}
+              {status && (
+                <span className="hidden text-[11px] sm:inline">
+                  {status.pricing_version === null ? (
+                    <NavLink to="/pricing" className="text-attention hover:underline">
+                      pricing not set up
+                    </NavLink>
+                  ) : (
+                    <span className="text-ink-faint">pricing v{status.pricing_version}</span>
+                  )}
+                </span>
+              )}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">

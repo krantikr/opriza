@@ -153,21 +153,46 @@ function Message({ message }: { message: ThreadMessage }) {
   );
 }
 
-export default function ThreadView({ thread }: { thread: Thread }) {
+/** `showState` exists for the chase drawer, which states whose turn it is in
+ *  its own header using `ChaseService`'s resolver. Rendering the mailbox's
+ *  banner underneath would put two verdicts on one screen, and where the two
+ *  resolvers legitimately differ - the board counts an unclassified reply that
+ *  `pipeline_state` has not seen yet - they would visibly contradict. */
+/** `showCount` lets a host that already displays the message count elsewhere
+ *  drop the strip entirely - in the chase drawer the count sits up beside the
+ *  close button, and a bar existing only to repeat it wasted a band of the
+ *  panel that the conversation needs. */
+export default function ThreadView({
+  thread,
+  showState = true,
+  showCount = true,
+}: {
+  thread: Thread;
+  showState?: boolean;
+  showCount?: boolean;
+}) {
   const state = STATE_LABEL[thread.state] ?? STATE_LABEL.DONE;
 
   return (
     <div>
-      <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-rule pb-3">
-        <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${state.tone}`}>
-          {state.label}
-        </span>
-        <span className="text-xs text-ink-faint">{state.hint}</span>
-        <span className="ml-auto text-xs text-ink-faint">
-          {thread.messages.length}{" "}
-          {thread.messages.length === 1 ? "message" : "messages"}
-        </span>
-      </div>
+      {(showState || showCount) && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-rule pb-3">
+          {showState && (
+            <>
+              <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${state.tone}`}>
+                {state.label}
+              </span>
+              <span className="text-xs text-ink-faint">{state.hint}</span>
+            </>
+          )}
+          {showCount && (
+            <span className="ml-auto text-xs text-ink-faint">
+              {thread.messages.length}{" "}
+              {thread.messages.length === 1 ? "message" : "messages"}
+            </span>
+          )}
+        </div>
+      )}
 
       {thread.messages.length === 0 ? (
         <p className="py-6 text-center text-sm text-ink-soft">

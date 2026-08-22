@@ -34,13 +34,25 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** The one place a credential is attached to an outbound request.
+ *
+ *  Per-call headers would mean one forgotten call is an anonymous request that
+ *  401s for no visible reason, so both `request` and `download` come here. */
+function authHeaders(): Record<string, string> {
   const auth = token.get();
+  return auth ? { Authorization: `Bearer ${auth}` } : {};
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // A FormData body must not carry an explicit content type: the browser
+  // generates one that includes the multipart boundary, and any value set
+  // here would replace it and leave the server unable to parse the parts.
+  const isMultipart = init?.body instanceof FormData;
   const response = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
-      ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
+      ...(isMultipart ? {} : { "Content-Type": "application/json" }),
+      ...authHeaders(),
       ...(init?.headers ?? {}),
     },
   });
@@ -78,6 +90,44 @@ export const api = {
   patch: <T,>(path: string, body?: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body ?? {}) }),
   del: <T,>(path: string) => request<T>(path, { method: "DELETE" }),
+
+  /** POST a file as multipart/form-data.
+   *
+   *  `Content-Type` is deliberately left unset rather than passed through
+   *  `post`: the browser has to write it itself so it can include the
+   *  multipart boundary, and naming it here produces a body the server
+   *  cannot parse. */
+  upload: <T,>(path: string, file: File, field = "file") => {
+    const form = new FormData();
+    form.append(field, file);
+    return request<T>(path, { method: "POST", body: form });
+  },
+
+  /** Fetch a file and hand it to the browser as a download.
+   *
+   *  A plain <a href> cannot be used: the session token lives in
+   *  localStorage rather than a cookie, so the browser would send an
+   *  unauthenticated request and receive a 401 page instead of the file. */
+  download: async (path: string, fallbackName: string): Promise<void> => {
+    const response = await fetch(`${BASE}${path}`, { headers: authHeaders() });
+    if (!response.ok) {
+      throw new ApiError(`Export failed (${response.status}).`, response.status);
+    }
+
+    // Prefer the name the server chose, so the date stamp it applies survives.
+    const disposition = response.headers.get("Content-Disposition") ?? "";
+    const match = /filename="?([^"';]+)"?/i.exec(disposition);
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = match?.[1] ?? fallbackName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  },
 };
 
 interface ApiState<T> {

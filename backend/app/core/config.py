@@ -32,6 +32,9 @@ class Settings(BaseSettings):
 
     # --- Company identity -------------------------------------------------
     company_name: str = "Your Steel Trading Company"
+    #: Printed under the company name on the quotation table, as on the desk's
+    #: own letterhead. Blank leaves the strip off entirely.
+    company_tagline: str = ""
     company_email: str = "sales@example.com"
     company_phone: str = "+91 00000 00000"
     company_signatory: str = "Sales Team"
@@ -93,6 +96,22 @@ class Settings(BaseSettings):
     twilio_auth_token: str = ""
     twilio_whatsapp_from: str = ""
     twilio_sms_from: str = ""
+
+    # --- Push notifications (Firebase Cloud Messaging) --------------------
+    # Push is the only channel that reaches a trader with the site closed;
+    # the in-app bell and the browser Notification API both need the tab
+    # open. Unset means the channel reports itself unavailable and delivery
+    # is recorded as failed with a readable reason - never a crash, matching
+    # how the Twilio channel behaves before it is configured.
+    #
+    # `fcm_credentials_file` is the service-account JSON downloaded from
+    # Firebase console > Project settings > Service accounts.
+    fcm_project_id: str = ""
+    fcm_credentials_file: str = ""
+
+    @property
+    def fcm_configured(self) -> bool:
+        return bool(self.fcm_project_id and self.fcm_credentials_file)
 
     # --- Follow-ups -------------------------------------------------------
     # The scheduler decides when a nudge is *due*; sending stays a human

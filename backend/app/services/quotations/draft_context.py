@@ -22,29 +22,9 @@ from app.core.config import settings
 from app.core.rules import BusinessRules, get_rules
 from app.models import QuotationRequest
 
-
-def format_inr(value: Decimal | float | int | None) -> str:
-    """Format with Indian digit grouping: 1184000 -> 11,84,000.00."""
-    if value is None:
-        return "-"
-    amount = Decimal(str(value)).quantize(Decimal("0.01"))
-    sign = "-" if amount < 0 else ""
-    whole, _, fraction = f"{abs(amount):.2f}".partition(".")
-
-    if len(whole) <= 3:
-        grouped = whole
-    else:
-        # Last three digits, then pairs: 1184000 -> 11,84,000
-        head, tail = whole[:-3], whole[-3:]
-        pairs = []
-        while len(head) > 2:
-            pairs.insert(0, head[-2:])
-            head = head[:-2]
-        if head:
-            pairs.insert(0, head)
-        grouped = ",".join([*pairs, tail])
-
-    return f"{sign}{grouped}.{fraction}"
+# `format_inr` lives with the table renderer, which is the other user of it;
+# re-exported here because callers already import it from this module.
+from app.services.quotations.table import TABLE_PLACEHOLDER, format_inr
 
 
 def format_quantity(value: Decimal | float | int | None) -> str:
@@ -67,6 +47,25 @@ class DraftContext:
     unmatched_line_count: int = 0
 
 
+def company_identity(quotation: QuotationRequest) -> tuple[str, str]:
+    """The desk's own name and signatory.
+
+    `settings.company_name` is a single global value, which is wrong for a
+    multi-tenant system: every desk would sign as the same firm. The
+    organisation's own name wins where the relationship is loaded, so KK
+    Traders signs as KK Traders rather than as the placeholder
+    "Your Steel Trading Company" that ships in the defaults.
+    """
+    org = getattr(quotation, "organisation", None)
+    name = (org.name if org is not None and org.name else None) or settings.company_name
+    # The sign-off prints signatory then company on separate lines, so a
+    # signatory that already carries the company name repeats it:
+    #   Sales Desk, KK Traders
+    #   KK Traders
+    signatory = settings.company_signatory or "Sales Desk"
+    return name, signatory
+
+
 def build_draft_context(
     quotation: QuotationRequest, rules: BusinessRules | None = None
 ) -> DraftContext:
@@ -75,13 +74,15 @@ def build_draft_context(
     lines: list[str] = []
     required: list[RequiredFact | None] = []
 
+    company_name, signatory = company_identity(quotation)
+
     # --- Company ----------------------------------------------------------
     lines += [
         "COMPANY",
-        f"Name: {settings.company_name}",
+        f"Name: {company_name}",
         f"Email: {settings.company_email}",
         f"Phone: {settings.company_phone}",
-        f"Signatory: {settings.company_signatory}",
+        f"Signatory: {signatory}",
         "",
     ]
 
@@ -112,6 +113,17 @@ def build_draft_context(
     lines.append("")
 
     # --- Items ------------------------------------------------------------
+    # The customer-facing item table is rendered deterministically and spliced
+    # in at this marker after drafting; the model is told to emit the marker on
+    # its own line and not to restate the figures as prose around it.
+    lines += [
+        "ITEM TABLE",
+        f"Insert the line `{TABLE_PLACEHOLDER}` on its own line where the item table belongs.",
+        "The table carries every specification, weight, rate, amount and the total,",
+        "so do not list the items again in prose and do not compute any total.",
+        "",
+    ]
+
     lines.append("ITEMS")
     matched = unmatched = 0
 
@@ -184,7 +196,7 @@ def build_draft_context(
     lines += [f"- {term}" for term in rules.quotation.rendered_terms()]
     lines.append("")
 
-    lines += ["SIGN-OFF", settings.company_signatory, settings.company_name]
+    lines += ["SIGN-OFF", signatory, company_name]
 
     return DraftContext(
         facts="\n".join(lines).strip(),

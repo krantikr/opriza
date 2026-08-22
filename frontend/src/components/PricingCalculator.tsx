@@ -171,6 +171,21 @@ export default function PricingCalculator({
     }
   }
 
+  /** Re-run the live rules over this quotation. The endpoint keeps overrides
+   *  by default, so a figure a human deliberately set is not discarded. */
+  async function recalculate() {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post(`/quotations/${quotationId}/pricing/recalculate`);
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function clearOverride(code: string) {
     setBusy(true);
     setError(null);
@@ -187,11 +202,30 @@ export default function PricingCalculator({
   return (
     <div className="flex flex-col gap-3">
       {error && <Banner tone="danger">{error}</Banner>}
-      {pricing.warnings.map((w) => (
-        <Banner key={w} tone="attention">
-          {w}
+
+      {/* Stored warnings describe the state at the moment this line was
+          priced. Once the live rule set has moved on - somebody published
+          rules that did not exist then - repeating them tells a desk with
+          working pricing that it has none. Offer the recompute instead. */}
+      {pricing.rules_stale ? (
+        <Banner
+          tone="attention"
+          action={
+            <Button variant="primary" disabled={busy} onClick={recalculate}>
+              {busy ? "Recalculating…" : "Recalculate"}
+            </Button>
+          }
+        >
+          This was priced before the current rules were published, so the
+          figures below are out of date.
         </Banner>
-      ))}
+      ) : (
+        pricing.warnings.map((w) => (
+          <Banner key={w} tone="attention">
+            {w}
+          </Banner>
+        ))
+      )}
 
       <div className="overflow-hidden rounded-card border border-rule bg-surface shadow-card">
         <header className="flex items-center justify-between gap-3 border-b border-rule px-4 py-3">

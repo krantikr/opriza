@@ -105,6 +105,10 @@ REPLIABLE_STATUSES = (
 
 logger = get_logger(__name__)
 
+#: A reviewer facing thirty notes reads none of them, and the older ones are
+#: the least likely to still be true.
+MAX_REVIEW_NOTES = 8
+
 CONFIDENCE_ORDER = {ConfidenceLevel.LOW: 0, ConfidenceLevel.MEDIUM: 1, ConfidenceLevel.HIGH: 2}
 
 
@@ -154,6 +158,35 @@ class WorkflowResult:
             parts.append(f"status={self.status}")
         parts.append(f"{self.duration_ms}ms")
         return " ".join(parts)
+
+
+def _merge_notes(existing: str | None, notes: list[str]) -> str | None:
+    """Combine review notes without repeating or accumulating empties.
+
+    Three things were going wrong and each showed up on screen:
+
+    * **Duplicates.** Every processing run appended its notes to the previous
+      run's, so re-processing an enquiry showed "No stock matches this spec"
+      twice, then three times.
+    * **Empty entries.** A note like ``f"Line {n}: {reason}"`` with a blank
+      reason stored a bare ``Line 1:``, which reads as a truncated error.
+    * **No ceiling.** The column grew without limit, and a reviewer facing a
+      wall of notes reads none of them.
+
+    Order is preserved - the first mention of a problem is the one with
+    context around it - and the newest notes win when the cap is hit, because
+    a note from three runs ago is the least likely to still be true.
+    """
+    seen: dict[str, None] = {}
+    for note in [*(existing or "").splitlines(), *notes]:
+        cleaned = note.strip()
+        # A "Line 3:" with nothing after the colon is not a note.
+        if not cleaned or cleaned.rstrip().endswith(":"):
+            continue
+        seen[cleaned] = None
+
+    kept = list(seen)[-MAX_REVIEW_NOTES:]
+    return "\n".join(kept) or None
 
 
 class QuotationWorkflow:
@@ -432,8 +465,8 @@ class QuotationWorkflow:
         outside what this system does on its own."""
         quotation = self.db.get(QuotationRequest, state["replied_quotation_id"])
         quotation.status = QuotationStatus.CUSTOMER_ACCEPTED
-        quotation.review_notes = "\n".join(
-            filter(None, [quotation.review_notes, f"Customer replied: {state.get('reply_reason', '')}"])
+        quotation.review_notes = _merge_notes(
+            quotation.review_notes, [f"Customer replied: {state.get('reply_reason', '')}"]
         )
         self.db.commit()
         self._finish_email(state["email_id"], ProcessingStatus.PROCESSED)
@@ -471,8 +504,8 @@ class QuotationWorkflow:
         email = self.db.get(Email, state["email_id"])
         quotation = self.db.get(QuotationRequest, state["replied_quotation_id"])
         quotation.status = QuotationStatus.CUSTOMER_DECLINED
-        quotation.review_notes = "\n".join(
-            filter(None, [quotation.review_notes, f"Customer declined: {state.get('reply_reason', '')}"])
+        quotation.review_notes = _merge_notes(
+            quotation.review_notes, [f"Customer declined: {state.get('reply_reason', '')}"]
         )
         self.db.commit()
 
@@ -480,7 +513,7 @@ class QuotationWorkflow:
         notes = list(result.review_notes) if result.error else []
         if result.error:
             notes.append(f"Courtesy reply generation failed: {result.error}")
-            quotation.review_notes = "\n".join(filter(None, [quotation.review_notes, *notes]))
+            quotation.review_notes = _merge_notes(quotation.review_notes, notes)
             self.db.commit()
 
         self._finish_email(state["email_id"], ProcessingStatus.PROCESSED)
@@ -501,11 +534,9 @@ class QuotationWorkflow:
         """Neither a clear yes nor no - left for a human to read and decide,
         status unchanged so it stays visible wherever it already was."""
         quotation = self.db.get(QuotationRequest, state["replied_quotation_id"])
-        quotation.review_notes = "\n".join(
-            filter(
-                None,
-                [quotation.review_notes, f"Customer replied (needs review): {state.get('reply_reason', '')}"],
-            )
+        quotation.review_notes = _merge_notes(
+            quotation.review_notes,
+            [f"Customer replied (needs review): {state.get('reply_reason', '')}"],
         )
         self.db.commit()
         self._finish_email(state["email_id"], ProcessingStatus.PROCESSED)
@@ -682,7 +713,7 @@ class QuotationWorkflow:
         else:
             quotation.status = QuotationStatus.PROCESSING
 
-        quotation.review_notes = "\n".join(notes) or None
+        quotation.review_notes = _merge_notes(None, notes)
         self.db.commit()
 
         audit.record(
@@ -717,7 +748,7 @@ class QuotationWorkflow:
             else QuotationStatus.READY_FOR_REVIEW
         )
         if notes:
-            quotation.review_notes = "\n".join(filter(None, [quotation.review_notes, *notes]))
+            quotation.review_notes = _merge_notes(quotation.review_notes, notes)
         self.db.commit()
 
         self._finish_email(state["email_id"], ProcessingStatus.PROCESSED)
@@ -839,9 +870,16 @@ class QuotationWorkflow:
 
     @staticmethod
     def _route_after_stock_check(state: WorkflowState) -> str:
-        # No checked line means there is nothing to write a reply about. The
-        # quotation still reaches the reviewer, just without a draft.
-        return "draft" if state.get("checked_lines", 0) > 0 else "review"
+        # A reply is drafted even when nothing matched stock. The customer
+        # asked for material and is owed an answer either way: the table lists
+        # exactly what they requested, with the rate and amount left blank
+        # where there is no figure to state. Withholding the draft meant the
+        # commonest real case - an enquiry for something not held - produced
+        # no reply at all, which is the one outcome a sales desk cannot have.
+        #
+        # An unmatched line still routes to review afterwards, so the draft is
+        # never sent unseen; it is a starting point, not an approval.
+        return "draft"
 
     # --- Helpers ----------------------------------------------------------
 

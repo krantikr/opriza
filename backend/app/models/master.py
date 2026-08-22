@@ -14,7 +14,7 @@ be traced back to the file and the moment it arrived.
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, ForeignKey, Index, String, Text
+from sqlalchemy import Boolean, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -25,9 +25,14 @@ from app.models.types import Quantity
 
 class Customer(Base, TimestampMixin, TenantMixin):
     __tablename__ = "customers"
+    # Codes are a desk's own numbering, so "C001" belongs to whichever desk
+    # issued it rather than to the first one to claim it.
+    __table_args__ = (
+        UniqueConstraint("organisation_id", "customer_code", name="uq_customer_code"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    customer_code: Mapped[str | None] = mapped_column(String(40), unique=True)
+    customer_code: Mapped[str | None] = mapped_column(String(40))
     name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     email: Mapped[str | None] = mapped_column(String(255), index=True)
     phone: Mapped[str | None] = mapped_column(String(40))

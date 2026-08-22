@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 
 import Shell from "./components/Shell";
-import { ToastProvider } from "./components/Toasts";
+import { ToastProvider, useToast } from "./components/Toasts";
 import { Loading } from "./components/ui";
 import { AuthProvider, useAuth } from "./lib/auth";
+import { enablePush, listenInForeground } from "./lib/push";
 import Account from "./pages/Account";
 import Activity from "./pages/Activity";
 import Admin from "./pages/Admin";
@@ -19,6 +21,49 @@ import Settings from "./pages/Settings";
 import { AcceptInvite, SignIn } from "./pages/SignIn";
 import Stock from "./pages/Stock";
 import Team from "./pages/Team";
+
+/** Keeps this browser registered for push, and routes foreground messages
+ *  to the toast layer.
+ *
+ *  Runs on every load rather than once: Firebase rotates registration tokens
+ *  on its own schedule, so a device that registered a month ago and never
+ *  re-registered would have quietly stopped receiving anything.
+ *
+ *  Silent on failure by design. Push not being configured, permission never
+ *  granted, an unsupported browser - none of those are problems the trader
+ *  asked about while opening the dashboard, and Settings is where the state
+ *  is explained and fixed. */
+function PushBridge() {
+  const toast = useToast();
+
+  useEffect(() => {
+    let stop = () => {};
+    let cancelled = false;
+
+    // Only re-register where permission already exists. Prompting on load is
+    // the pattern browsers penalise and people reflexively dismiss; the ask
+    // lives behind a button in Settings.
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      void enablePush();
+    }
+
+    void listenInForeground((title, body, link) => {
+      // The tab is open, so the OS notification is suppressed and this shows
+      // instead - otherwise the app buzzes about something already on screen.
+      if (!cancelled) toast.push({ title, body, tone: "info", link });
+    }).then((teardown) => {
+      if (cancelled) teardown();
+      else stop = teardown;
+    });
+
+    return () => {
+      cancelled = true;
+      stop();
+    };
+  }, [toast]);
+
+  return null;
+}
 
 /** The signed-in application. Nothing inside renders without a session. */
 function Desk() {
@@ -54,6 +99,7 @@ function Desk() {
 
   return (
     <ToastProvider onOpenLink={navigate}>
+      <PushBridge />
       <Shell>
         <Routes>
           <Route path="/" element={<Dashboard />} />

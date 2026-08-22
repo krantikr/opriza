@@ -60,9 +60,13 @@ class PricingRuleSet(Base, CreatedAtMixin, TenantMixin):
     """
 
     __tablename__ = "pricing_rule_sets"
+    # Versions number from 1 *per desk*, so the uniqueness has to be scoped to
+    # the organisation. A global unique on `version` would mean only the first
+    # desk on the platform could ever hold v1.
+    __table_args__ = (UniqueConstraint("organisation_id", "version", name="uq_rule_set_version"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    version: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
     label: Mapped[str | None] = mapped_column(String(120))
     notes: Mapped[str | None] = mapped_column(Text)
     # Exactly one set is live. Enforced in the service, not by a constraint,
@@ -225,7 +229,11 @@ class LocationDistance(Base, TimestampMixin, TenantMixin):
 
     __tablename__ = "location_distances"
     __table_args__ = (
-        UniqueConstraint("origin", "destination", name="uq_location_distance"),
+        # Org-scoped: a lane is one desk's own figure, and two desks both
+        # shipping Nagpur -> Pune is the normal case, not a conflict.
+        UniqueConstraint(
+            "organisation_id", "origin", "destination", name="uq_location_distance"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -248,9 +256,13 @@ class VehicleRate(Base, TimestampMixin, TenantMixin):
     """
 
     __tablename__ = "vehicle_rates"
+    # Every desk names its own fleet; "Trailer" is not one desk's to reserve.
+    __table_args__ = (
+        UniqueConstraint("organisation_id", "name", name="uq_vehicle_name"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(80), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
     capacity_mt: Mapped[Decimal] = mapped_column(Quantity, nullable=False)
     rate_per_day: Mapped[Decimal] = mapped_column(Money, nullable=False)
     avg_km_per_day: Mapped[float] = mapped_column(nullable=False, default=350.0)

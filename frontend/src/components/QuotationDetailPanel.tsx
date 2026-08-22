@@ -2,7 +2,12 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { api, useApi } from "../api/client";
-import type { ActionResult, LineItem, QuotationDetail as Detail } from "../api/types";
+import type {
+  ActionResult,
+  LineItem,
+  PastOrders,
+  QuotationDetail as Detail,
+} from "../api/types";
 import PricingCalculator from "./PricingCalculator";
 import ThreadView, { type Thread } from "./Thread";
 import {
@@ -13,11 +18,13 @@ import {
   Card,
   Empty,
   ErrorNote,
-  Field,
   Input,
   inr,
+  inrShort,
   Loading,
   num,
+  Scroller,
+  StatCard,
   Tabs,
   when,
 } from "./ui";
@@ -31,7 +38,7 @@ import {
    Stacking them all would bury the reply under the arithmetic.
    --------------------------------------------------------------------------- */
 
-type TabKey = "overview" | "pricing" | "content" | "activity";
+type TabKey = "overview" | "content" | "pricing" | "past" | "activity";
 
 function SendIcon() {
   return (
@@ -69,6 +76,14 @@ function EnquiryTerms({
     !draft.required_delivery_date && "delivery date",
     !draft.payment_terms && "payment terms",
   ].filter(Boolean) as string[];
+
+  /* Only the terms that were actually agreed. The rest are named once by the
+     "N to fill in" chip rather than three times as empty cells. */
+  const known: [string, string][] = [
+    draft.delivery_location ? ["Deliver to", draft.delivery_location] : null,
+    draft.required_delivery_date ? ["Wanted by", draft.required_delivery_date] : null,
+    draft.payment_terms ? ["Payment", draft.payment_terms] : null,
+  ].filter(Boolean) as [string, string][];
 
   const dirty =
     draft.delivery_location !== (quotation.delivery_location ?? "") ||
@@ -108,50 +123,63 @@ function EnquiryTerms({
   );
 
   return (
-    <section className="overflow-hidden rounded-card border border-rule bg-surface shadow-card">
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-rule px-4 py-2.5">
+    // A strip inside the summary card, not a card of its own: the two
+    // together described one quotation and repeated its customer.
+    <section className="mt-3 border-t border-rule pt-3">
+      <header className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-ink">Enquiry details</h3>
+          <h3 className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint">
+            Terms
+          </h3>
           {missing.length > 0 && !open && (
-            <span className="rounded-full bg-attention-wash px-2 py-0.5 text-[11px] font-medium text-attention-ink">
+            <span className="rounded-full bg-attention-wash px-2 py-0.5 text-[10.5px] font-medium text-attention-ink">
               {missing.length} to fill in
             </span>
           )}
         </div>
         {open ? (
           <div className="flex items-center gap-2">
-            <Button variant="ghost" onClick={() => setOpen(false)}>
+            <Button compact variant="ghost" onClick={() => setOpen(false)}>
               Cancel
             </Button>
-            <Button variant="primary" disabled={!dirty || busy} onClick={save}>
+            <Button compact variant="primary" disabled={!dirty || busy} onClick={save}>
               {busy ? "Saving…" : "Save"}
             </Button>
           </div>
         ) : (
-          <Button onClick={() => setOpen(true)}>
+          <Button compact variant="ghost" onClick={() => setOpen(true)}>
             {missing.length > 0 ? "Fill in" : "Edit"}
           </Button>
         )}
       </header>
 
-      <div className="grid gap-3 px-4 py-3 sm:grid-cols-2 lg:grid-cols-3">
-        <div className="flex flex-col gap-1">
-          <span className="text-[11px] font-medium text-ink-faint">Customer</span>
-          <span className="truncate text-sm text-ink">
-            {quotation.customer_company || quotation.customer_name || "—"}
-          </span>
+      {/* Customer and email are deliberately absent: the summary card above
+          already names the buyer, and repeating it made the two cards read as
+          two different subjects. This card is only the terms a reviewer fills
+          in or corrects. */}
+      {/* Three cells reading "not stated" is an empty grid pretending to be
+          data. Until a reviewer opens the editor, only what is known shows. */}
+      {open ? (
+        <div className="mt-2 grid gap-3 sm:grid-cols-3">
+          {field("delivery_location", "Deliver to", "e.g. Patna")}
+          {field("required_delivery_date", "Wanted by", "e.g. within 2 weeks")}
+          {field("payment_terms", "Payment terms", "e.g. 30 days from invoice")}
         </div>
-        <div className="flex flex-col gap-1">
-          <span className="text-[11px] font-medium text-ink-faint">Email</span>
-          <span className="truncate text-sm text-ink">{quotation.customer_email ?? "—"}</span>
-        </div>
-        {field("delivery_location", "Deliver to", "e.g. Patna")}
-        {field("required_delivery_date", "Wanted by", "e.g. within 2 weeks")}
-        {field("payment_terms", "Payment terms", "e.g. 30 days from invoice")}
-      </div>
+      ) : (
+        known.length > 0 && (
+          <dl className="mt-1.5 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+            {known.map(([label, value]) => (
+              <div key={label} className="flex items-center gap-1.5">
+                <dt className="text-ink-faint">{label}</dt>
+                <dd className="font-medium text-ink">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        )
+      )}
 
       {open && (
-        <p className="border-t border-rule px-4 py-2 text-[11px] text-ink-faint">
+        <p className="mt-2 text-[11px] text-ink-faint">
           Saving re-prices every line — a delivery location brings freight into the build-up.
         </p>
       )}
@@ -159,73 +187,232 @@ function EnquiryTerms({
   );
 }
 
-/** Everything understood about one requested material. */
-function MaterialOverview({ item }: { item: LineItem }) {
-  const availability = item.stock_availability;
+/** A line as a trader says it: "8 × 1250 × 5800 mm C-45 Plate".
+ *
+ *  Built from the *parsed* specification rather than the sentence it came
+ *  from. `raw_text` is whatever the customer typed - often a whole paragraph -
+ *  and putting that where the material belongs buries the one thing the card
+ *  exists to state. The matched lot's name wins when there is one, because
+ *  that is the desk's own vocabulary for the same steel. */
+function specOf(item: LineItem | undefined): string {
+  if (!item) return "Material not stated";
+  if (item.matched_stock_item_name) return item.matched_stock_item_name;
+
+  const dims = [item.thickness_mm, item.width_mm, item.length_mm].filter(Boolean);
+  const parts = [
+    dims.length >= 2 ? `${dims.join(" × ")} mm` : null,
+    item.product_type,
+    item.grade && item.grade !== item.product_type ? item.grade : null,
+  ].filter(Boolean);
+
+  // Fall back to the customer's own words only when nothing was extracted -
+  // a long sentence still beats an empty card.
+  return parts.length > 0 ? parts.join(" ") : (item.raw_text?.slice(0, 90) ?? "Material not stated");
+}
+
+/** What this customer has bought and been quoted before.
+ *
+ *  Fetched only when the tab is opened - it is two extra queries, and most
+ *  visits to a quotation never ask the question.
+ *
+ *  Note on scope: the desk has no proforma invoice anywhere in the system
+ *  (no model, no field, no generation), so this shows what genuinely exists -
+ *  billed sales from `sales_invoices` and earlier quotations. */
+function PastOrdersTab({ quotationId }: { quotationId: number }) {
+  const { data, error, loading } = useApi<PastOrders>(
+    `/quotations/${quotationId}/past-orders`,
+  );
+
+  if (loading && !data) return <Loading label="Looking up their history" />;
+  if (error) return <ErrorNote message={error} />;
+  if (!data) return null;
+
+  const nothing = data.invoices.length === 0 && data.quotations.length === 0;
+  const delta = data.rate_delta === null ? null : Number(data.rate_delta);
 
   return (
-    <div className="rounded-card border border-rule bg-surface p-4 shadow-card">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="font-semibold text-ink">
-            {item.matched_stock_item_name ?? item.raw_text ?? `Line ${item.line_no}`}
-          </p>
-          <p className="mt-0.5 text-xs text-ink-faint">
-            {item.quantity ? `${num(item.quantity)} ${item.quantity_unit}` : "quantity not stated"}
-            {item.quantity_mt && item.quantity_unit !== "MT" && ` · ${num(item.quantity_mt)} MT`}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge value={item.match_status} dot={false} />
-          {item.pricing?.quote_rate && (
-            <span className="tabular text-sm font-bold text-brand">
-              {inr(item.pricing.quote_rate)}/MT
-            </span>
-          )}
-        </div>
-      </div>
-
-      <dl className="mt-3 grid gap-x-8 border-t border-rule pt-2 sm:grid-cols-2">
-        <Field label="In stock">
-          {availability?.available_qty_mt != null
-            ? `${num(availability.available_qty_mt)} MT`
-            : "—"}
-        </Field>
-        <Field label="Enough for this order">
-          {availability?.sufficient === null || availability?.sufficient === undefined
-            ? "not judged"
-            : availability.sufficient
-              ? "yes"
-              : "no"}
-        </Field>
-        <Field label="Held for">
-          {availability?.ageing_min_days == null
-            ? "—"
-            : availability.ageing_min_days === availability.ageing_max_days
-              ? `${availability.ageing_min_days} days`
-              : `${availability.ageing_min_days}–${availability.ageing_max_days} days`}
-        </Field>
-        <Field label="Line total">
-          {item.pricing?.line_total ? inr(item.pricing.line_total) : "—"}
-        </Field>
-      </dl>
-
-      {item.match_status !== "MATCH_FOUND" && item.match_candidates.length > 0 && (
-        <div className="mt-3 overflow-hidden rounded-lg border border-attention/30 bg-attention-wash">
-          <p className="px-3 py-2 text-xs font-semibold text-attention-ink">
-            {item.match_candidates.length} specs fit equally well — a human must choose
-          </p>
-          <ul className="divide-y divide-attention/20 border-t border-attention/20">
-            {item.match_candidates.map((c) => (
-              <li key={c.stock_item_id} className="flex justify-between gap-3 px-3 py-1.5 text-xs">
-                <span className="min-w-0 truncate text-attention-ink">{c.display_name}</span>
-                <span className="tabular shrink-0 text-attention-ink/80">
-                  {c.score.toFixed(1)}
+    <div className="flex flex-col gap-4">
+      {/* The comparison, first and largest: the reason to open this tab is to
+          check today's rate against what they have actually paid. */}
+      {data.avg_rate_same_material !== null && (
+        <Card>
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint">
+                They usually pay
+              </p>
+              <p className="tabular text-xl font-bold text-ink">
+                {inr(data.avg_rate_same_material)}
+                <span className="ml-1 text-xs font-medium text-ink-faint">/MT</span>
+              </p>
+            </div>
+            <div>
+              <p className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint">
+                You are quoting
+              </p>
+              <p className="tabular text-xl font-bold text-brand">
+                {inr(data.current_rate)}
+                <span className="ml-1 text-xs font-medium text-ink-faint">/MT</span>
+              </p>
+            </div>
+            {delta !== null && (
+              <div
+                className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
+                  delta > 0
+                    ? "bg-attention-wash text-attention-ink"
+                    : delta < 0
+                      ? "bg-settled-wash text-settled-ink"
+                      : "bg-sunk text-ink-soft"
+                }`}
+              >
+                {delta > 0 ? "▲" : delta < 0 ? "▼" : "="} {inr(Math.abs(delta))}
+                <span className="ml-1 text-xs font-normal">
+                  {delta > 0 ? "above" : delta < 0 ? "below" : "same as"} their average
                 </span>
-              </li>
-            ))}
-          </ul>
+              </div>
+            )}
+          </div>
+          <p className="mt-2 border-t border-rule pt-2 text-xs text-ink-faint">
+            Averaged over past invoices for this same specification only.
+          </p>
+        </Card>
+      )}
+
+      {nothing ? (
+        <Card>
+          <Empty message="No earlier invoices or quotations for this customer. Nothing to compare today's rate against." />
+        </Card>
+      ) : (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <StatCard label="Past orders" value={data.orders_count} />
+          <StatCard label="Total billed" value={inrShort(data.total_value)} tone="settled" />
+          <StatCard
+            label="Quoted before"
+            value={`${data.quotes_won}/${data.quotes_count}`}
+            tone={data.quotes_count > 0 && data.quotes_won === 0 ? "attention" : "info"}
+          />
+          <StatCard
+            label="Last order"
+            value={data.last_order_at ? when(data.last_order_at).split(",")[0] : "—"}
+          />
         </div>
+      )}
+
+      {data.invoices.length > 0 && (
+        <Card title="Invoiced sales" subtitle="What they have actually paid" padded={false}>
+          <Scroller>
+            <table className="w-full min-w-[38rem] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-rule">
+                  {["Invoice", "Date", "Material", "Qty (MT)", "Rate/MT", "Value"].map(
+                    (h, i) => (
+                      <th
+                        key={h}
+                        className={`whitespace-nowrap px-3 py-2 text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint ${
+                          i >= 3 ? "text-right" : "text-left"
+                        }`}
+                      >
+                        {h}
+                      </th>
+                    ),
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {data.invoices.map((row, i) => (
+                  <tr
+                    key={`${row.invoice_no}-${i}`}
+                    className="border-b border-rule last:border-0"
+                  >
+                    <td className="whitespace-nowrap px-3 py-2 text-ink">
+                      {row.invoice_no ?? "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-ink-soft">
+                      {row.invoice_date ? when(row.invoice_date).split(",")[0] : "—"}
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className="text-ink">{row.material}</span>
+                      {/* Marked because these are the only rows that anchor a
+                          price; the rest are relationship context. */}
+                      {row.same_material && (
+                        <span className="ml-1.5 rounded-full bg-brand-wash px-1.5 py-0.5 text-[10px] font-medium text-brand-ink">
+                          same spec
+                        </span>
+                      )}
+                    </td>
+                    <td className="tabular whitespace-nowrap px-3 py-2 text-right text-ink-soft">
+                      {row.quantity_mt ? num(row.quantity_mt) : "—"}
+                    </td>
+                    <td className="tabular whitespace-nowrap px-3 py-2 text-right font-medium text-ink">
+                      {row.rate_per_mt ? inr(row.rate_per_mt) : "—"}
+                    </td>
+                    <td className="tabular whitespace-nowrap px-3 py-2 text-right text-ink-soft">
+                      {row.line_total ? inrShort(row.line_total) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Scroller>
+        </Card>
+      )}
+
+      {data.quotations.length > 0 && (
+        <Card
+          title="Earlier quotations"
+          subtitle="Whether this buyer converts, or shops around"
+          padded={false}
+        >
+          <Scroller>
+            <table className="w-full min-w-[38rem] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-rule">
+                  {["Quotation", "Raised", "Material", "Rate/MT", "Value", "Outcome"].map(
+                    (h, i) => (
+                      <th
+                        key={h}
+                        className={`whitespace-nowrap px-3 py-2 text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint ${
+                          i === 3 || i === 4 ? "text-right" : "text-left"
+                        }`}
+                      >
+                        {h}
+                      </th>
+                    ),
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {data.quotations.map((row) => (
+                  <tr key={row.id} className="border-b border-rule last:border-0">
+                    <td className="whitespace-nowrap px-3 py-2 font-medium text-ink">
+                      {row.quotation_number}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2 text-ink-soft">
+                      {ago(row.created_at)}
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className="text-ink">{row.material}</span>
+                      {row.same_material && (
+                        <span className="ml-1.5 rounded-full bg-brand-wash px-1.5 py-0.5 text-[10px] font-medium text-brand-ink">
+                          same spec
+                        </span>
+                      )}
+                    </td>
+                    <td className="tabular whitespace-nowrap px-3 py-2 text-right text-ink">
+                      {row.rate_per_mt ? inr(row.rate_per_mt) : "—"}
+                    </td>
+                    <td className="tabular whitespace-nowrap px-3 py-2 text-right text-ink-soft">
+                      {row.value ? inrShort(row.value) : "—"}
+                    </td>
+                    <td className="px-3 py-2">
+                      <Badge value={row.status} dot={false} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Scroller>
+        </Card>
       )}
     </div>
   );
@@ -235,11 +422,16 @@ export default function QuotationDetailPanel({
   id,
   onChanged,
   onBack,
+  asDrawer = false,
 }: {
   id: number;
   onChanged: () => void;
   /** Shown on narrow screens, where the detail replaces the list. */
   onBack?: () => void;
+  /** Rendered inside a slide-over rather than a side-by-side pane. The
+   *  dismiss control then has to be visible at every width - `xl:hidden`
+   *  would leave a desktop drawer with no way out but the scrim. */
+  asDrawer?: boolean;
 }) {
   const { data, error, loading, reload } = useApi<Detail>(`/quotations/${id}`);
   // The conversation, from the endpoint that assembles it. Fetched separately
@@ -296,6 +488,54 @@ export default function QuotationDetailPanel({
   );
   const headline = data.line_items[0];
 
+  /* Status as colour, matching the stripe on the list and the chase board so
+     one glance carries across all three screens. */
+  const statusStripe =
+    (
+      {
+        CUSTOMER_ACCEPTED: "bg-settled",
+      SENT: "bg-brand-soft",
+      APPROVED: "bg-brand-soft",
+      READY_FOR_REVIEW: "bg-attention",
+      NEEDS_INFORMATION: "bg-attention",
+      EDITED: "bg-info",
+        FAILED: "bg-danger",
+      } as Record<string, string>
+    )[data.status] ?? "bg-rule-firm";
+
+  /* What is actually stopping a price, in the order a trader would clear it.
+     Derived from the current record rather than from `review_notes`, which is
+     a snapshot taken at processing time and goes stale the moment somebody
+     publishes rules or receives stock. */
+  const blockers = [
+    data.line_items.some((i) => i.match_status === "NO_MATCH")
+      ? "no matching stock"
+      : null,
+    data.line_items.some((i) => i.match_status === "MULTIPLE_MATCHES")
+      ? "more than one spec fits — pick one"
+      : null,
+    !data.delivery_location ? "add a delivery location for freight" : null,
+  ].filter(Boolean) as string[];
+
+  /* Stock figures worth printing. A cell reading "—" tells a trader nothing
+     he did not already know from "no matching stock" above. */
+  const availability = headline?.stock_availability;
+  const stockFacts: [string, string][] = [];
+  if (availability?.available_qty_mt != null) {
+    stockFacts.push(["In stock", `${num(availability.available_qty_mt)} MT`]);
+  }
+  if (availability?.sufficient != null) {
+    stockFacts.push(["Covers this order", availability.sufficient ? "yes" : "no"]);
+  }
+  if (availability?.ageing_min_days != null) {
+    stockFacts.push([
+      "Ageing",
+      availability.ageing_min_days === availability.ageing_max_days
+        ? `${availability.ageing_min_days} days`
+        : `${availability.ageing_min_days}–${availability.ageing_max_days} days`,
+    ]);
+  }
+
   async function act(label: string, run: () => Promise<ActionResult>) {
     setBusy(label);
     setNote(null);
@@ -316,7 +556,11 @@ export default function QuotationDetailPanel({
       {/* --- Action bar ----------------------------------------------------- */}
       <header className="sticky top-0 z-10 flex flex-col gap-2 border-b border-rule bg-surface px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:px-5 sm:py-3">
         <div className="flex min-w-0 items-center gap-2">
-          {onBack && (
+          {/* A back arrow only where the detail replaced the list. In a drawer
+              the dismiss control lives on the right with the other actions,
+              matching the chase drawer - a lone ✕ stranded at the far left of
+              a wide panel reads as belonging to nothing. */}
+          {onBack && !asDrawer && (
             <button
               type="button"
               onClick={onBack}
@@ -362,41 +606,142 @@ export default function QuotationDetailPanel({
             <SendIcon />
             {busy === "send" ? "Sending…" : "Send response"}
           </Button>
+          {onBack && asDrawer && (
+            <button
+              type="button"
+              onClick={onBack}
+              aria-label="Close"
+              className="ml-1 shrink-0 rounded-lg p-1.5 text-ink-faint hover:bg-sunk hover:text-ink"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          )}
         </div>
       </header>
 
       <div className="flex flex-col gap-4 p-4 sm:p-5">
-        {/* --- Identity --------------------------------------------------- */}
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-xl font-bold tracking-tight text-ink sm:text-2xl">
-                {data.quotation_number}
-              </h3>
-              <Badge value={data.status} dot={false} />
-              <Badge value={data.confidence} dot={false} />
-            </div>
-            <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-ink-soft">
-              <span>{headline?.matched_stock_item_name ?? headline?.raw_text ?? "—"}</span>
-              <span className="text-ink-faint">|</span>
-              <span>{data.customer_company || data.customer_name || "Unknown customer"}</span>
-              {headline?.quantity_mt && (
-                <>
-                  <span className="text-ink-faint">|</span>
-                  <span>{num(headline.quantity_mt)} MT</span>
-                </>
-              )}
-            </p>
-          </div>
+        {/* --- Summary -----------------------------------------------------
+            One card, built on one rule: show what is known, say plainly what
+            is blocking, and render nothing for what is simply absent.
 
-          <div className="text-sm sm:text-right">
-            <p className="text-ink-soft">
-              Indicative value{" "}
-              <span className="tabular ml-1 font-bold text-brand">{inr(totalValue)}</span>
-            </p>
-            <p className="mt-0.5 text-xs text-ink-faint">Raised {ago(data.created_at)}</p>
+            Before this, six cells read "not stated / — / not judged / No
+            Match / ₹0.00". A trader scanning that learns nothing except that
+            the screen is full of holes, and the two facts that *do* matter -
+            what was asked for, and what is stopping a price - are buried
+            among them. ------------------------------------------------- */}
+        <section className="relative overflow-hidden rounded-card border border-rule bg-surface shadow-card">
+          {/* A status stripe, matching the chase board and the list. State
+              reads before any word does, and it ties the three screens
+              together. */}
+          <span
+            className={`absolute inset-y-0 left-0 w-1 ${statusStripe}`}
+            aria-hidden
+          />
+
+          <div className="p-4 pl-5">
+            <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
+              <div className="min-w-0 flex-1">
+                {/* The material leads. It is what the quotation is *about*;
+                    the reference number identifies it to the system and can
+                    sit quietly above. */}
+                <p className="flex flex-wrap items-center gap-2 text-[11px] text-ink-faint">
+                  <span className="font-semibold tracking-wide text-ink-soft">
+                    {data.quotation_number}
+                  </span>
+                  <Badge value={data.status} dot={false} />
+                </p>
+                <h3 className="mt-1 text-[17px] font-semibold leading-snug tracking-tight text-ink">
+                  {specOf(headline)}
+                </h3>
+                <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-ink-soft">
+                  <span className="font-medium text-ink">
+                    {data.customer_company || data.customer_name || "Unknown customer"}
+                  </span>
+                  {headline?.quantity_mt && (
+                    <>
+                      <span className="text-ink-faint">·</span>
+                      <span className="tabular">{num(headline.quantity_mt)} MT</span>
+                    </>
+                  )}
+                  {data.line_count > 1 && (
+                    <>
+                      <span className="text-ink-faint">·</span>
+                      <span>{data.line_count} lines</span>
+                    </>
+                  )}
+                  <span className="text-ink-faint">·</span>
+                  <span className="text-ink-faint">
+                    {data.sent_at ? "sent " : "raised "}
+                    {ago(data.sent_at ?? data.created_at)}
+                  </span>
+                </p>
+              </div>
+
+              {/* A price only earns the largest type on the card once there is
+                  one. Zero in bold blue reads as a real quote of nothing. */}
+              {totalValue && Number(totalValue) > 0 ? (
+                <div className="shrink-0 text-right">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+                    Indicative value
+                  </p>
+                  <p className="tabular text-[22px] font-bold leading-tight tracking-tight text-brand">
+                    {inr(totalValue)}
+                  </p>
+                  {headline?.pricing?.quote_rate && (
+                    <p className="tabular text-[11px] text-ink-faint">
+                      {inr(headline.pricing.quote_rate)}/MT
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <span className="shrink-0 rounded-full border border-rule bg-sunk px-2.5 py-1 text-[11px] font-medium text-ink-soft">
+                  Not priced yet
+                </span>
+              )}
+            </div>
+
+            {/* One line naming what is actually in the way, in the order a
+                trader would resolve it. Silent when nothing is blocking. */}
+            {blockers.length > 0 && (
+              <div className="mt-3 flex items-start gap-2 rounded-lg border border-attention/25 bg-attention-wash px-3 py-2 text-[13px] text-attention-ink">
+                <svg
+                  viewBox="0 0 24 24"
+                  className="mt-0.5 size-3.5 shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                >
+                  <path d="M12 8v5M12 16.5v.01" />
+                  <circle cx="12" cy="12" r="9" strokeWidth="1.6" />
+                </svg>
+                <p>
+                  <span className="font-semibold">To price this: </span>
+                  {blockers.join(" · ")}
+                </p>
+              </div>
+            )}
+
+          {/* Stock, only where there is stock to report. "In stock —, held
+              for —, enough? not judged" is four cells saying nothing. */}
+            {stockFacts.length > 0 && (
+              <dl className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t border-rule pt-3 text-xs">
+                {stockFacts.map(([label, value]) => (
+                  <div key={label} className="flex items-center gap-1.5">
+                    <dt className="text-ink-faint">{label}</dt>
+                    <dd className="tabular font-medium text-ink">{value}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+
+            {/* Terms: a compact line when known, expanded into fields only
+                when a reviewer chooses to fill them in. */}
+            <EnquiryTerms quotation={data} onSaved={() => { reload(); onChanged(); }} />
           </div>
-        </div>
+        </section>
 
         {note && <Banner tone={note.bad ? "danger" : "settled"}>{note.text}</Banner>}
 
@@ -421,8 +766,9 @@ export default function QuotationDetailPanel({
         <Tabs<TabKey>
           tabs={[
             { key: "overview", label: "Overview" },
-            { key: "pricing", label: "Pricing Calculator" },
             { key: "content", label: "Response Content" },
+            { key: "pricing", label: "Pricing Calculator" },
+            { key: "past", label: "Past orders" },
             { key: "activity", label: "Activity" },
           ]}
           value={tab}
@@ -432,10 +778,6 @@ export default function QuotationDetailPanel({
         {/* --- Overview ---------------------------------------------------- */}
         {tab === "overview" && (
           <div className="flex flex-col gap-4">
-            {/* Commercial terms first: these are the fields a reviewer fills
-                in or corrects, and they gate everything downstream. */}
-            <EnquiryTerms quotation={data} onSaved={() => { reload(); onChanged(); }} />
-
             {/* Then the conversation, in the order it happened.
 
                 Assembled by the backend rather than stitched together here:
@@ -474,31 +816,7 @@ export default function QuotationDetailPanel({
                   </p>
                 </div>
               )}
-            </div>
 
-            {(data.review_notes || data.missing_information.length > 0) && (
-              <Banner tone="attention">
-                {data.missing_information.length > 0 && (
-                  <p>
-                    <span className="font-semibold">Missing from the enquiry: </span>
-                    {data.missing_information.join(" · ")}
-                  </p>
-                )}
-                {data.review_notes && (
-                  <pre className="mt-1 whitespace-pre-wrap font-sans text-xs leading-relaxed">
-                    {data.review_notes}
-                  </pre>
-                )}
-              </Banner>
-            )}
-
-            <div className="flex flex-col gap-2">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
-                Materials
-              </p>
-              {data.line_items.map((item) => (
-                <MaterialOverview key={item.id} item={item} />
-              ))}
             </div>
           </div>
         )}
@@ -583,11 +901,31 @@ export default function QuotationDetailPanel({
               </Card>
             ) : (
               <Card>
-                <Empty message="No draft was generated. Resolve the notes on Overview, then regenerate." />
+                {/* Drafting no longer waits on the notes being resolved - an
+                    enquiry gets a reply either way, with the rate left blank
+                    where there is no figure. So this offers the action rather
+                    than sending the reviewer off to fix something first. */}
+                <Empty
+                  message="No draft has been written for this enquiry yet."
+                  action={
+                    <Button
+                      variant="primary"
+                      disabled={busy !== null}
+                      onClick={() =>
+                        act("regen", () => api.post(`/quotations/${data.id}/regenerate`))
+                      }
+                    >
+                      {busy === "regen" ? "Generating…" : "Generate draft"}
+                    </Button>
+                  }
+                />
               </Card>
             )}
           </>
         )}
+
+        {/* --- Past orders --------------------------------------------------- */}
+        {tab === "past" && <PastOrdersTab quotationId={data.id} />}
 
         {/* --- Activity ------------------------------------------------------ */}
         {tab === "activity" && (

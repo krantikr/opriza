@@ -23,10 +23,11 @@ from app.models import (
     NotificationKind,
     NotificationRule,
     NotificationStatus,
+    PushDevice,
     QuotationRequest,
     User,
 )
-from app.services.notifications.channels import get_channel
+from app.services.notifications.channels import FcmChannel, get_channel
 
 logger = get_logger(__name__)
 
@@ -217,7 +218,22 @@ class NotificationService:
         )
 
         channel = get_channel(rule.channel)
-        outcome = channel.send(destination=destination or "", title=title, body=body or "")
+        outcome = channel.send(
+            destination=destination or "", title=title, body=body or "", link=link
+        )
+
+        # A token Firebase reports as dead stays dead - the app was removed or
+        # the registration replaced. Leaving it active means every future
+        # notification burns a request and records a failure against a device
+        # that no longer exists.
+        if (
+            not outcome.sent
+            and rule.channel is NotificationChannel.PUSH
+            and isinstance(channel, FcmChannel)
+            and channel.is_dead_token(outcome.error)
+            and destination
+        ):
+            self._retire_device(destination, outcome.error)
 
         notification.status = NotificationStatus.SENT if outcome.sent else NotificationStatus.FAILED
         notification.provider_message_id = outcome.provider_message_id
@@ -232,6 +248,18 @@ class NotificationService:
         self.db.flush()
         return notification
 
+    def _retire_device(self, token: str, reason: str | None) -> None:
+        """Deactivate a device Firebase says is gone.
+
+        Deactivated rather than deleted, so "why did this phone stop buzzing"
+        stays answerable from the row itself.
+        """
+        device = self.db.scalar(select(PushDevice).where(PushDevice.token == token))
+        if device is not None and device.is_active:
+            device.is_active = False
+            device.disabled_reason = (reason or "Rejected by Firebase")[:300]
+            logger.info("Retired push device %s: %s", device.id, device.disabled_reason)
+
     def _recipients(self, rule: NotificationRule) -> list[tuple[str | None, int | None]]:
         """Who this rule reaches, as (destination, user_id) pairs."""
         if rule.channel is NotificationChannel.IN_APP:
@@ -243,6 +271,18 @@ class NotificationService:
             if explicit:
                 return explicit
             return [(u.email, u.id) for u in self._target_users(rule) if u.email]
+
+        if rule.channel is NotificationChannel.PUSH:
+            # One row per *device*, not per user: a trader with a phone and a
+            # desk machine expects the buzz on both, and each holds its own
+            # Firebase token.
+            devices = self.db.scalars(
+                select(PushDevice).where(
+                    PushDevice.is_active.is_(True),
+                    PushDevice.user_id.in_([u.id for u in self._target_users(rule)]),
+                )
+            ).all()
+            return [(d.token, d.user_id) for d in devices]
 
         explicit_phones = [(p, None) for p in (rule.recipient_phones or [])]
         return explicit_phones

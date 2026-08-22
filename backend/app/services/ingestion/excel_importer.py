@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.core.db import utcnow
@@ -34,8 +35,10 @@ from app.models import (
     ImportBatch,
     ImportEntity,
     ImportStatus,
+    QuotationLineItem,
     RecordStatus,
     StockItem,
+    StockMovement,
 )
 from app.services.ingestion.column_map import ColumnSpec, build_mapping
 
@@ -76,8 +79,16 @@ class ImportResult:
 # ---------------------------------------------------------------------------
 
 
+#: Excel's own error text, which arrives as a literal string. A formula that
+#: failed in the sheet is a blank figure, not a value to reject the row over -
+#: `#DIV/0!` in a landed-cost column is simply a lot whose quantity is zero.
+EXCEL_ERRORS = frozenset(
+    {"#DIV/0!", "#N/A", "#VALUE!", "#REF!", "#NAME?", "#NULL!", "#NUM!", "#SPILL!", "#CALC!"}
+)
+
+
 def clean(value: Any) -> Any:
-    """Normalise spreadsheet blanks (NaN, NaT, empty string) to None."""
+    """Normalise spreadsheet blanks (NaN, NaT, empty string, #DIV/0!) to None."""
     if value is None:
         return None
     if isinstance(value, float) and math.isnan(value):
@@ -88,7 +99,10 @@ def clean(value: Any) -> Any:
     except (TypeError, ValueError):
         pass
     if isinstance(value, str):
-        return value.strip() or None
+        text = value.strip()
+        if text.upper() in EXCEL_ERRORS:
+            return None
+        return text or None
     return value
 
 
@@ -110,6 +124,62 @@ def to_float(value: Any) -> float | None:
         return float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         raise ValueError(f"expected a number, got {value!r}") from None
+
+
+#: A length written as a coil rather than a cut size. Coil stock has no fixed
+#: length, so the dimension is genuinely absent - not a bad value.
+COIL_MARKERS = frozenset({"c", "coil", "in coil", "coil form"})
+
+
+def to_count(value: Any) -> float | None:
+    """A piece count, tolerating the way traders tally them.
+
+    Counts are written as sums when a lot arrived in parts - "34+1" is 35
+    pieces, and rejecting the row over it loses a real lot of stock. Only
+    additive digit groups are accepted, so anything else still raises rather
+    than being silently reinterpreted.
+    """
+    cleaned = clean(value)
+    if cleaned is None:
+        return None
+    text = str(cleaned).replace(",", "").strip()
+    if "+" in text:
+        parts = [p.strip() for p in text.split("+")]
+        if all(re.fullmatch(r"\d+(?:\.\d+)?", p) for p in parts if p):
+            return sum(float(p) for p in parts if p)
+    return to_float(cleaned)
+
+
+def to_dimension(value: Any) -> float | None:
+    """A millimetre dimension as written on a stock sheet.
+
+    Three real forms appear beyond a plain number, and each means something
+    the importer can represent honestly:
+
+    * "C" / "COIL" - coil stock, which has no cut length. Recorded as absent.
+    * "6 MTR" - stated in metres, converted to 6000 mm.
+    * "300 - 6 MTR" - a note carrying the size alongside it; the length is the
+      metre figure, so it resolves the same way.
+
+    Anything still unrecognised raises, so a genuinely bad cell is reported
+    rather than quietly becoming a number it never said.
+    """
+    cleaned = clean(value)
+    if cleaned is None:
+        return None
+    if isinstance(cleaned, int | float):
+        return float(cleaned)
+
+    text = str(cleaned).strip()
+    if text.lower() in COIL_MARKERS:
+        return None
+
+    # Metres, however the sheet spells it, converted to the mm this column holds.
+    metres = re.search(r"(\d+(?:\.\d+)?)\s*(?:mtr|mtrs|meter|meters|metre|metres|m)\b", text, re.I)
+    if metres:
+        return float(metres.group(1)) * 1000
+
+    return to_float(cleaned)
 
 
 def to_int(value: Any) -> int | None:
@@ -173,7 +243,57 @@ class BaseImporter(ABC):
         """
 
     def _read_frame(self, path: Path) -> pd.DataFrame:
+        """Read the configured sheet, falling back to the first one.
+
+        The named sheet is the client's own workbook layout. A file uploaded
+        from the Stock screen is often an export or a hand-made list where that
+        tab simply does not exist, and failing on the name would reject a file
+        whose columns are perfectly readable. The name stays the preference so
+        the original multi-sheet workbook still picks the right tab.
+        """
+        if isinstance(self.sheet_name, str):
+            available = pd.ExcelFile(path).sheet_names
+            if self.sheet_name not in available:
+                return self._read_first_matching(path, available)
         return pd.read_excel(path, sheet_name=self.sheet_name, header=self.header_row)
+
+    def _read_first_matching(self, path: Path, available: list[str]) -> pd.DataFrame:
+        """Pick the sheet whose header row actually maps to our columns.
+
+        Header position varies between files - the client's workbook carries a
+        date stamp above the header, an export usually does not - so each
+        candidate is tried at both offsets and the first that satisfies the
+        required columns wins. Without this a readable file is rejected for
+        the cosmetic reason that its header sits one row higher.
+        """
+        best: pd.DataFrame | None = None
+        best_score = -1
+        for sheet in available:
+            for header in dict.fromkeys([self.header_row, 0]):
+                try:
+                    frame = pd.read_excel(path, sheet_name=sheet, header=header)
+                except Exception:  # noqa: BLE001 - a bad sheet must not stop the search
+                    continue
+                # Candidates are ranked by how many columns actually resolve,
+                # not by whether the mapping merely "succeeds": most specs are
+                # optional, so an offset header that maps nothing at all still
+                # counts as ok. Counting is what distinguishes the real header
+                # row from the first row of data sitting where a header should
+                # be.
+                score = len(build_mapping(list(frame.columns), self.specs).by_header)
+                if score > best_score:
+                    best, best_score = frame, score
+        if best is None:
+            raise ImportFailed(f"No readable sheet found in {path.name}")
+        return best
+
+    def _validate_frame(self, frame: pd.DataFrame) -> None:  # noqa: B027, ARG002
+        """Hook for checks that need the parsed sheet, before anything is written.
+
+        Runs after column mapping and before `_before_import`, so an importer
+        that replaces what it loads can reject a bad file while the previous
+        data is still intact.
+        """
 
     def _before_import(self, path: Path) -> None:  # noqa: B027
         """Hook for subclasses that need to clear prior state before loading.
@@ -186,10 +306,10 @@ class BaseImporter(ABC):
         if not path.exists():
             raise ImportFailed(f"File not found: {path}")
 
-        self._before_import(path)
-
         try:
             frame = self._read_frame(path)
+        except ImportFailed:
+            raise
         except Exception as exc:  # noqa: BLE001 - surfaced to the caller as-is
             raise ImportFailed(f"Could not read {path.name}: {exc}") from exc
 
@@ -198,6 +318,12 @@ class BaseImporter(ABC):
             raise ImportFailed(
                 f"{path.name} is missing required column(s): {mapping.describe_missing()}"
             )
+
+        self._validate_frame(frame)
+
+        # Only now that the file is known to be readable and to carry the
+        # required columns may an importer clear what it is replacing.
+        self._before_import(path)
 
         batch = ImportBatch(
             entity_type=self.entity,
@@ -282,6 +408,11 @@ class StockImporter(BaseImporter):
 
     specs = [
         ColumnSpec("product_type", ("product", "type", "material", "category")),
+        # Required, because this import *replaces* the stock list. Without a
+        # column that anchors identity and one that carries quantity, the file
+        # is not a stock list at all, and accepting it would silently empty the
+        # desk's stock. Grade is not required on its own - some lists carry
+        # only a product type - so the pair is enforced in `_before_import`.
         ColumnSpec("grade", ("material grade", "quality", "steel grade")),
         ColumnSpec("thickness_mm", ("thk", "thickness", "thick")),
         ColumnSpec("width_mm", ("wdth", "width", "size", "wide")),
@@ -295,19 +426,62 @@ class StockImporter(BaseImporter):
         ColumnSpec("nop", ("no of pieces", "pieces", "pcs")),
         ColumnSpec("qty_kg", ("qty", "quantity", "weight")),
         ColumnSpec("balance_nop", ("balance pieces",)),
-        ColumnSpec("balance_qty_kg", ("balance qty", "balance quantity", "balance weight")),
+        ColumnSpec(
+            "balance_qty_kg",
+            ("balance qty", "balance quantity", "balance weight"),
+            required=True,
+        ),
         ColumnSpec("stock_date", ("date",)),
         ColumnSpec("curr_dt", ("curr dt", "current date")),
     ]
 
-    def _before_import(self, path: Path) -> None:
+    def _validate_frame(self, frame: pd.DataFrame) -> None:
+        """Refuse a file that identifies nothing.
+
+        `build_mapping` only enforces specs marked required, and a lot may be
+        identified by either a grade or a product type, so neither can be
+        required on its own. Checking for the pair here is what stops a
+        spreadsheet of unrelated columns from being accepted as an empty stock
+        list and wiping what the desk actually holds.
+        """
+        mapped = set(build_mapping(list(frame.columns), self.specs).by_header.values())
+        if not mapped & {"grade", "product_type"}:
+            raise ImportFailed(
+                "This file has no grade or product type column, so it cannot be "
+                "read as a stock list."
+            )
+
+    def _before_import(self, path: Path) -> None:  # noqa: ARG002
         # The file is a full point-in-time snapshot with no natural key to
         # upsert lots on, so each import replaces the table wholesale - this
         # is what stops balance quantity double-counting across repeated
         # monthly imports. Still fully audited: the ImportBatch row this
         # creates records exactly what replaced what, and when.
+        #
+        # Deliberately NOT committed here, and deliberately not run before the
+        # file is read: an upload that turns out to be unreadable or to be the
+        # wrong workbook must leave the desk's stock exactly as it was, not
+        # empty. Rolling the delete into the import's own transaction means
+        # the swap is all-or-nothing.
+        #
+        # Rows elsewhere point at the lots being replaced, and both references
+        # are nullable by design, so they are detached first - a foreign key
+        # would otherwise refuse the delete outright. Neither loses meaning:
+        # a movement carries its own denormalised spec so it still counts
+        # against the re-imported lot, and a quotation line re-matches against
+        # the new lots. Clearing the match is also the honest outcome - the
+        # specific lot a line was matched to no longer exists.
+        self.db.execute(
+            update(QuotationLineItem)
+            .where(QuotationLineItem.matched_stock_item_id.is_not(None))
+            .values(matched_stock_item_id=None)
+        )
+        self.db.execute(
+            update(StockMovement)
+            .where(StockMovement.stock_item_id.is_not(None))
+            .values(stock_item_id=None)
+        )
         self.db.execute(delete(StockItem))
-        self.db.commit()
 
     def import_row(self, row: dict[str, Any], batch: ImportBatch) -> str:
         grade = to_str(row.get("grade"), 60)
@@ -318,15 +492,15 @@ class StockImporter(BaseImporter):
         item = StockItem(
             product_type=product_type,
             grade=grade,
-            thickness_mm=to_float(row.get("thickness_mm")),
-            width_mm=to_float(row.get("width_mm")),
-            length_mm=to_float(row.get("length_mm")),
+            thickness_mm=to_dimension(row.get("thickness_mm")),
+            width_mm=to_dimension(row.get("width_mm")),
+            length_mm=to_dimension(row.get("length_mm")),
             location=to_str(row.get("location"), 120),
             make=to_str(row.get("make"), 80),
             coil_no=to_str(row.get("coil_no"), 60),
-            nop=to_float(row.get("nop")),
+            nop=to_count(row.get("nop")),
             qty_kg=to_decimal(row.get("qty_kg")),
-            balance_nop=to_float(row.get("balance_nop")),
+            balance_nop=to_count(row.get("balance_nop")),
             balance_qty_kg=to_decimal(row.get("balance_qty_kg")),
             purchase_rate_per_kg=to_float(row.get("purchase_rate_per_kg")),
             landed_cost_per_kg=to_float(row.get("landed_cost_per_kg")),

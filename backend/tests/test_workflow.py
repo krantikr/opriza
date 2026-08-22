@@ -291,13 +291,17 @@ def test_missing_quantity_is_flagged_rather_than_invented(
     assert item.stock_availability.suggested_rate is not None
 
 
-def test_ambiguous_product_produces_no_price_and_no_draft(
-    db, plate, wide_plate, customer, inbound
-):
-    """Two plates fit '10mm plate'. The system must not choose one and price it."""
+def test_ambiguous_product_is_never_priced(db, plate, wide_plate, customer, inbound):
+    """Two plates fit '10mm plate'. The system must not choose one and price it.
+
+    A draft is still written: the customer asked for material and is owed a
+    reply. What must not happen is a *price* being invented for a spec the
+    system could not resolve, so the rate stays empty and the ambiguity is
+    raised in the review notes.
+    """
     email = inbound()
     ambiguous = enquiry(line_items=[line(width_mm=None, length_mm=None)])
-    llm = FakeLLM(classify=[classified()], extract=[ambiguous])
+    llm = FakeLLM(classify=[classified()], extract=[ambiguous], draft=[DRAFT])
 
     result = QuotationWorkflow(db, client=llm).run(email.id)
     quotation = db.get(QuotationRequest, result.quotation_id)
@@ -306,8 +310,6 @@ def test_ambiguous_product_produces_no_price_and_no_draft(
     assert item.match_status is MatchStatus.MULTIPLE_MATCHES
     assert item.matched_stock_item_id is None
     assert item.stock_availability.suggested_rate is None
-    assert quotation.current_draft is None
-    assert "draft" not in llm.calls
     assert len(item.match_candidates) >= 2
     assert "More than one stock spec" in quotation.review_notes
 
@@ -325,14 +327,48 @@ def test_unstocked_material_is_never_priced(db, plate, customer, inbound):
             )
         ]
     )
-    llm = FakeLLM(classify=[classified()], extract=[unknown])
+    llm = FakeLLM(classify=[classified()], extract=[unknown], draft=[DRAFT])
 
     result = QuotationWorkflow(db, client=llm).run(email.id)
     item = db.get(QuotationRequest, result.quotation_id).line_items[0]
 
     assert item.match_status is MatchStatus.NO_MATCH
+    # The guarantee is about the *price*, not the reply: material the desk does
+    # not hold still earns an answer, with the rate left blank.
     assert item.stock_availability.suggested_rate is None
-    assert "draft" not in llm.calls
+
+
+def test_unmatched_material_still_gets_a_reply_with_a_blank_rate(db, plate, customer, inbound):
+    """The case a sales desk cannot afford to get wrong.
+
+    An enquiry for material the desk does not hold is the commonest real one.
+    It must still produce a reply listing exactly what was asked for, with the
+    rate and amount blank - not silence.
+    """
+    from app.services.quotations.table import build_rows, totals
+
+    email = inbound()
+    unknown = enquiry(
+        line_items=[line(product_type="Sheet", grade="SS 304", thickness_mm=3.0,
+                         width_mm=None, length_mm=None)]
+    )
+    llm = FakeLLM(classify=[classified()], extract=[unknown], draft=[DRAFT])
+
+    result = QuotationWorkflow(db, client=llm).run(email.id)
+    quotation = db.get(QuotationRequest, result.quotation_id)
+
+    assert quotation.current_draft is not None
+    assert "draft" in llm.calls
+
+    rows = build_rows(quotation)
+    assert len(rows) == 1
+    # The customer's own request is listed back to them...
+    assert rows[0].grade == "SS 304"
+    # ...with no price invented for it.
+    assert rows[0].rate is None
+    assert rows[0].amount is None
+    _, total_amount = totals(rows)
+    assert total_amount is None
 
 
 def test_unknown_sender_is_added_as_an_unverified_customer(db, plate, inbound):
@@ -532,3 +568,42 @@ def test_naming_the_reference_matches_more_widely_than_sharing_a_thread():
 
     # Everything the thread matcher accepts, the reference matcher does too.
     assert set(SENT_STATUSES) <= set(REPLIABLE_STATUSES)
+
+
+# ---------------------------------------------------------------------------
+# Review notes
+#
+# A trader reported four "errors" on a quotation whose desk had pricing rules
+# published and stock loaded. Two of the notes were stale snapshots, two were
+# duplicated, and one was a bare "Line 1:". All three are fixed here.
+# ---------------------------------------------------------------------------
+
+
+def test_review_notes_never_repeat():
+    """Re-processing appended to the previous run, so the same problem showed
+    twice, then three times."""
+    from app.workflows.quotation import _merge_notes
+
+    merged = _merge_notes("Line 1: no stock", ["Line 1: no stock", "Line 2: no rate"])
+
+    assert merged == "Line 1: no stock\nLine 2: no rate"
+
+
+def test_a_note_with_no_reason_is_not_stored():
+    """`f"Line {n}: {reason}"` with a blank reason stored a bare "Line 1:",
+    which reads as a truncated error."""
+    from app.workflows.quotation import _merge_notes
+
+    assert _merge_notes(None, ["Line 1:", "   ", ""]) is None
+
+
+def test_notes_are_capped_newest_first():
+    """A reviewer facing thirty notes reads none of them, and the oldest are
+    the least likely to still be true."""
+    from app.workflows.quotation import MAX_REVIEW_NOTES, _merge_notes
+
+    merged = _merge_notes(None, [f"note {i}" for i in range(30)])
+    lines = (merged or "").splitlines()
+
+    assert len(lines) == MAX_REVIEW_NOTES
+    assert lines[-1] == "note 29"

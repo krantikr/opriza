@@ -1,31 +1,35 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
-import { query, useApi } from "../api/client";
+import { api, query, useApi } from "../api/client";
 import type { Page, Quotation } from "../api/types";
 import QuotationDetailPanel from "../components/QuotationDetailPanel";
 import {
-  Badge,
+  ago,
+  Button,
   Empty,
   ErrorNote,
-  FilterButton,
-  inr,
+  inrShort,
   Loading,
   Pagination,
   SearchInput,
-  StatCard,
-  Tabs,
+  when,
 } from "../components/ui";
 
 /* ---------------------------------------------------------------------------
-   Quotations: the list and the open one, side by side.
+   Quotations: a full-width table, with the open one in a drawer over it.
 
-   A trader works a queue - open, judge, act, next - so the list stays on
-   screen while a quotation is being read. Selecting a row changes the URL, so
-   an individual quotation is still linkable and the back button behaves.
+   Same shape as the chase board, deliberately. A trader moves between the two
+   screens all day; two layouts over the same objects cost a beat every time.
+   The list gets the whole width because a quotation has more attributes worth
+   comparing across rows - value, status, age, material - than fit in a rail,
+   and comparison is the reason to be on a list screen at all.
+
+   Selecting a row still changes the URL, so an individual quotation stays
+   linkable and the back button behaves.
    --------------------------------------------------------------------------- */
 
-const PAGE_SIZE = 8;
+const PAGE_SIZE = 14;
 
 const TABS = [
   { key: "all", label: "All", statuses: [] as string[] },
@@ -39,6 +43,185 @@ const TABS = [
   { key: "closed", label: "Closed", statuses: ["REJECTED", "FAILED"] },
 ];
 
+/** Where a quotation stands, in the words the rest of the app uses. The stripe
+ *  carries it in form as well as colour, so state reads before any word does. */
+const STATE: Record<string, { label: string; stripe: string; chip: string }> = {
+  NEW: { label: "New", stripe: "bg-rule-firm", chip: "bg-sunk text-ink-soft" },
+  PROCESSING: { label: "Reading", stripe: "bg-rule-firm", chip: "bg-sunk text-ink-soft" },
+  READY_FOR_REVIEW: {
+    label: "Needs review",
+    stripe: "bg-attention",
+    chip: "bg-attention-wash text-attention-ink",
+  },
+  NEEDS_INFORMATION: {
+    label: "Missing details",
+    stripe: "bg-attention",
+    chip: "bg-attention-wash text-attention-ink",
+  },
+  EDITED: { label: "Edited", stripe: "bg-info", chip: "bg-info-wash text-info-ink" },
+  APPROVED: { label: "Approved", stripe: "bg-brand-soft", chip: "bg-brand-wash text-brand-ink" },
+  SENT: { label: "Sent", stripe: "bg-brand-soft", chip: "bg-brand-wash text-brand-ink" },
+  CUSTOMER_ACCEPTED: {
+    label: "Won",
+    stripe: "bg-settled",
+    chip: "bg-settled-wash text-settled-ink",
+  },
+  CUSTOMER_DECLINED: { label: "Lost", stripe: "bg-rule-firm", chip: "bg-sunk text-ink-soft" },
+  REJECTED: { label: "Rejected", stripe: "bg-rule-firm", chip: "bg-sunk text-ink-soft" },
+  FAILED: { label: "Could not read", stripe: "bg-danger", chip: "bg-danger-wash text-danger-ink" },
+};
+
+const FALLBACK = { label: "—", stripe: "bg-rule-firm", chip: "bg-sunk text-ink-soft" };
+
+/** Stable hue per customer, matching the chase board and the Inbox: the same
+ *  buyer is always the same colour on every screen. */
+function hueFor(name: string): number {
+  const hues = [212, 340, 152, 28, 265, 190];
+  let total = 0;
+  for (const ch of name) total += ch.charCodeAt(0);
+  return hues[total % hues.length];
+}
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0] ?? "")
+    .join("")
+    .toUpperCase();
+}
+
+/** A figure that is also its own filter: the number you noticed is the one you
+ *  want to see, so it is the control rather than a label beside one. */
+function Stat({
+  label,
+  value,
+  tone = "",
+  active,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  tone?: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`flex items-baseline gap-1.5 rounded-lg px-2.5 py-1 transition-colors ${
+        active ? "bg-brand-wash" : "hover:bg-sunk"
+      }`}
+    >
+      <span className={`text-[15px] font-semibold tabular-nums ${tone || "text-ink"}`}>
+        {value}
+      </span>
+      <span className="text-[12px] text-ink-faint">{label}</span>
+    </button>
+  );
+}
+
+function Row({
+  q,
+  selected,
+  onOpen,
+}: {
+  q: Quotation;
+  selected: boolean;
+  onOpen: () => void;
+}) {
+  const state = STATE[q.status] ?? FALLBACK;
+  const who = q.customer_company || q.customer_name || "Unknown";
+  const hue = hueFor(who);
+  const value = Number(q.total_suggested_value ?? 0);
+
+  return (
+    <tr
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      tabIndex={0}
+      aria-selected={selected}
+      className={`cursor-pointer border-b border-rule align-top outline-none last:border-0 focus-visible:bg-sunk ${
+        selected ? "bg-brand-wash" : "hover:bg-ground"
+      }`}
+    >
+      <td className="relative py-2.5 pl-3 pr-3">
+        <span className={`absolute inset-y-0 left-0 w-1 ${state.stripe}`} aria-hidden />
+        <div className="flex items-start gap-2.5">
+          <span
+            className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full text-[10px] font-semibold text-white"
+            style={{ background: `hsl(${hue} 62% 45%)` }}
+          >
+            {initials(who)}
+          </span>
+          <span className="min-w-0">
+            <span className="flex items-center gap-1.5">
+              <span className="truncate text-[13.5px] font-semibold text-ink">{who}</span>
+              {q.requires_manual_review && (
+                <span
+                  className="size-1.5 shrink-0 rounded-full bg-attention"
+                  title="Flagged for review"
+                />
+              )}
+            </span>
+            <span className="block truncate text-[11.5px] text-ink-faint">
+              {q.customer_email ?? "no address on file"}
+            </span>
+          </span>
+        </div>
+      </td>
+
+      <td className="px-3 py-2.5">
+        <span className="block text-[13px] leading-tight text-ink">
+          {q.headline_product ?? "—"}
+        </span>
+        <span className="block text-[11.5px] text-ink-faint">
+          {q.line_count} {q.line_count === 1 ? "line" : "lines"}
+          {q.delivery_location ? ` · ${q.delivery_location}` : ""}
+        </span>
+      </td>
+
+      <td className="px-3 py-2.5">
+        <span
+          className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-medium ${state.chip}`}
+        >
+          {state.label}
+        </span>
+        {q.headline_availability && (
+          <span className="mt-1 block text-[11px] text-ink-faint">
+            {q.headline_availability}
+          </span>
+        )}
+      </td>
+
+      <td className="px-3 py-2.5 text-right">
+        <span className="block whitespace-nowrap text-[14px] font-semibold tabular-nums text-ink">
+          {value > 0 ? inrShort(value) : "—"}
+        </span>
+      </td>
+
+      <td className="px-3 py-2.5 pr-4 text-right">
+        <span
+          className="block whitespace-nowrap text-[12.5px] tabular-nums text-ink-soft"
+          title={when(q.sent_at ?? q.created_at)}
+        >
+          {ago(q.sent_at ?? q.created_at)}
+        </span>
+        <span className="block whitespace-nowrap text-[11px] text-ink-faint">
+          {q.sent_at ? "sent" : "raised"} · {q.quotation_number}
+        </span>
+      </td>
+    </tr>
+  );
+}
+
 export default function Quotations() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -46,6 +229,8 @@ export default function Quotations() {
   const [tab, setTab] = useState("all");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const { data, error, loading, reload } = useApi<Page<Quotation>>(
     `/quotations${query({ search, limit: 200 })}`,
@@ -73,156 +258,181 @@ export default function Quotations() {
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const rows = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  // Keep a quotation open: the first on arrival, and a valid one after
-  // filtering, so the detail pane is never left showing something hidden.
   const selectedId = id ? Number(id) : null;
+
+  // Escape closes the drawer, matching every other overlay in the app.
   useEffect(() => {
-    if (!rows.length) return;
-    // Only auto-open where both panes are visible. On a phone the detail
-    // replaces the list, so opening one uninvited hides everything else.
-    if (!window.matchMedia("(min-width: 1280px)").matches) return;
-    if (selectedId === null || !filtered.some((q) => q.id === selectedId)) {
-      navigate(`/quotations/${rows[0].id}`, { replace: true });
+    if (selectedId === null) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") navigate("/quotations");
     }
-  }, [rows, filtered, selectedId, navigate]);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedId, navigate]);
 
   useEffect(() => setPage(1), [tab, search]);
 
-  const stats = {
-    total: all.length,
-    draft: countFor("draft"),
-    sent: countFor("sent"),
-    replied: countFor("replied"),
-  };
+  const totalValue = filtered.reduce(
+    (sum, q) => sum + Number(q.total_suggested_value ?? 0),
+    0,
+  );
+
+  async function exportXlsx() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      // Exports what you are looking at, not the whole table: a filtered view
+      // that silently exports everything is worse than no export.
+      await api.download(
+        `/quotations/export${query({ search })}`,
+        "quotations.xlsx",
+      );
+    } catch (e) {
+      setExportError((e as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  }
 
   return (
-    <div className="grid h-[calc(100vh-7rem)] grid-cols-1 md:h-[calc(100vh-3.25rem)] xl:grid-cols-[minmax(0,32rem)_1fr]">
-      {/* --- List ---------------------------------------------------------- */}
-      <section
-        className={`flex min-h-0 flex-col border-r border-rule ${
-          selectedId ? "hidden xl:flex" : "flex"
-        }`}
-      >
-        <header className="px-4 pb-3 pt-4 sm:px-5">
+    <div className="flex flex-col gap-3 p-5">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
           <h1 className="text-lg font-semibold text-ink">Quotations</h1>
-          <p className="text-sm text-ink-faint">All generated replies and pricing</p>
-        </header>
-
-        <div className="grid grid-cols-2 gap-2 px-4 sm:grid-cols-4 sm:gap-2.5 sm:px-5">
-          <StatCard label="Total" value={stats.total} />
-          <StatCard label="Draft" value={stats.draft} tone="attention" />
-          <StatCard label="Sent" value={stats.sent} tone="settled" />
-          <StatCard label="Replied" value={stats.replied} tone="info" />
+          <p className="mt-0.5 text-sm text-ink-soft">
+            <span className="font-semibold tabular-nums text-ink">
+              {inrShort(totalValue)}
+            </span>{" "}
+            across {filtered.length} quotation{filtered.length === 1 ? "" : "s"}.
+          </p>
         </div>
+        <Button onClick={exportXlsx} disabled={exporting}>
+          {exporting ? "Preparing…" : "Export to Excel"}
+        </Button>
+      </header>
 
-        <div className="flex items-center gap-2 px-4 py-3 sm:px-5">
-          <SearchInput
-            value={search}
-            onChange={setSearch}
-            placeholder="Search quotations…"
-            className="flex-1"
+      {exportError && <ErrorNote message={exportError} />}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-0.5">
+          <Stat
+            label="All"
+            value={countFor("all")}
+            active={tab === "all"}
+            onClick={() => setTab("all")}
           />
-          <FilterButton />
-        </div>
-
-        <div className="overflow-x-auto px-4 sm:px-5">
-          <Tabs
-            tabs={TABS.map((t) => ({ key: t.key, label: t.label, count: countFor(t.key) }))}
-            value={tab}
-            onChange={setTab}
+          <Stat
+            label="Draft"
+            value={countFor("draft")}
+            tone="text-attention"
+            active={tab === "draft"}
+            onClick={() => setTab("draft")}
           />
-        </div>
-
-        {error && <div className="p-4"><ErrorNote message={error} /></div>}
-
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {loading && !data ? (
-            <Loading label="Loading quotations" />
-          ) : rows.length === 0 ? (
-            <Empty message="Nothing here. New enquiries appear once processed." />
-          ) : (
-            <ul>
-              {rows.map((q) => {
-                const open = q.id === selectedId;
-                return (
-                  <li key={q.id}>
-                    <button
-                      type="button"
-                      onClick={() => navigate(`/quotations/${q.id}`)}
-                      className={`flex w-full items-start justify-between gap-2 border-b border-l-2 border-rule px-4 py-3 text-left transition-colors sm:gap-3 sm:px-5 ${
-                        open
-                          ? "border-l-brand-soft bg-brand-wash"
-                          : "border-l-transparent hover:bg-sunk"
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-semibold text-brand">{q.quotation_number}</span>
-                          {q.requires_manual_review && (
-                            <span
-                              className="size-1.5 shrink-0 rounded-full bg-attention"
-                              title="Flagged for review"
-                            />
-                          )}
-                        </div>
-                        <p className="mt-0.5 truncate text-xs text-ink-faint">
-                          {q.headline_product ?? "—"}
-                          {q.line_count > 1 && ` +${q.line_count - 1} more`}
-                        </p>
-                        <p className="mt-1 truncate text-xs text-ink-soft">
-                          {q.customer_company || q.customer_name || "—"}
-                          <span className="text-ink-faint">
-                            {" · "}
-                            {new Date(q.created_at).toLocaleDateString("en-IN", {
-                              day: "2-digit",
-                              month: "short",
-                            })}
-                          </span>
-                        </p>
-                      </div>
-
-                      <div className="flex shrink-0 flex-col items-end gap-1.5">
-                        <span className="tabular whitespace-nowrap text-sm font-semibold text-ink">
-                          {q.total_suggested_value && Number(q.total_suggested_value) > 0
-                            ? inr(q.total_suggested_value)
-                            : "—"}
-                        </span>
-                        <Badge value={q.status} dot={false} />
-                      </div>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
-
-        <div className="border-t border-rule">
-          <Pagination
-            page={page}
-            pageCount={pageCount}
-            onChange={setPage}
-            summary={`Showing ${rows.length} of ${filtered.length} quotations`}
+          <Stat
+            label="Sent"
+            value={countFor("sent")}
+            tone="text-brand-soft-ink"
+            active={tab === "sent"}
+            onClick={() => setTab("sent")}
+          />
+          <Stat
+            label="Replied"
+            value={countFor("replied")}
+            tone="text-settled"
+            active={tab === "replied"}
+            onClick={() => setTab("replied")}
+          />
+          <Stat
+            label="Closed"
+            value={countFor("closed")}
+            active={tab === "closed"}
+            onClick={() => setTab("closed")}
           />
         </div>
-      </section>
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search by customer, material or number…"
+          className="ml-auto w-full sm:w-72"
+        />
+      </div>
 
-      {/* --- Detail --------------------------------------------------------- */}
-      <section
-        className={`min-h-0 overflow-y-auto overflow-x-hidden bg-ground ${
-          selectedId ? "block" : "hidden xl:block"
-        }`}
-      >
-        {selectedId ? (
-          <QuotationDetailPanel
-            id={selectedId}
-            onChanged={reload}
-            onBack={() => navigate("/quotations")}
-          />
+      {error && <ErrorNote message={error} />}
+
+      <div className="overflow-hidden rounded-card border border-rule bg-surface shadow-card">
+        {loading && !data ? (
+          <Loading label="Loading quotations" />
+        ) : rows.length === 0 ? (
+          <Empty message="Nothing here. New enquiries appear once processed." />
         ) : (
-          <Empty message="Select a quotation to open it." />
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[52rem] border-collapse">
+                <thead>
+                  <tr className="border-b border-rule">
+                    {[
+                      ["Customer", "pl-4 pr-3 text-left"],
+                      ["Material", "px-3 text-left"],
+                      ["Status", "px-3 text-left"],
+                      ["Value", "px-3 text-right"],
+                      ["Raised", "px-3 pr-4 text-right"],
+                    ].map(([label, cls]) => (
+                      <th
+                        key={label}
+                        className={`${cls} whitespace-nowrap py-2 text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint`}
+                      >
+                        {label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((q) => (
+                    <Row
+                      key={q.id}
+                      q={q}
+                      selected={q.id === selectedId}
+                      onOpen={() => navigate(`/quotations/${q.id}`)}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="border-t border-rule">
+              <Pagination
+                page={page}
+                pageCount={pageCount}
+                onChange={setPage}
+                summary={`Showing ${rows.length} of ${filtered.length} quotations`}
+              />
+            </div>
+          </>
         )}
-      </section>
+      </div>
+
+      {/* --- Detail, as a drawer over the table ----------------------------- */}
+      {selectedId !== null && (
+        <>
+          <div
+            className="fixed inset-0 z-40 bg-ink/30 backdrop-blur-[1px]"
+            onClick={() => navigate("/quotations")}
+            aria-hidden
+          />
+          <aside
+            role="dialog"
+            aria-modal="true"
+            aria-label="Quotation details"
+            className="fixed inset-y-0 right-0 z-50 flex w-full flex-col overflow-y-auto border-l border-rule bg-ground shadow-raised md:w-[min(56rem,64vw)]"
+          >
+            <QuotationDetailPanel
+              id={selectedId}
+              onChanged={reload}
+              onBack={() => navigate("/quotations")}
+              asDrawer
+            />
+          </aside>
+        </>
+      )}
     </div>
   );
 }

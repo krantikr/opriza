@@ -17,6 +17,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -113,6 +114,50 @@ class Notification(Base, CreatedAtMixin, TenantMixin):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Notification {self.kind}/{self.channel} {self.status}>"
+
+
+class PushDevice(Base, TimestampMixin, TenantMixin):
+    """A browser or phone registered to receive push notifications.
+
+    One row per *device*, not per user: a trader with a phone and a desk
+    machine expects the buzz on both, and Firebase issues a separate
+    registration token for each.
+
+    Tokens rotate. Firebase reissues one whenever the browser decides to -
+    a reinstall, a cleared cache, a long absence - so the token is the
+    natural key and `last_seen_at` is refreshed on every registration. A
+    token Firebase reports as dead is deactivated rather than deleted, so
+    "why did this device stop buzzing" stays answerable.
+    """
+
+    __tablename__ = "push_devices"
+    __table_args__ = (
+        UniqueConstraint("organisation_id", "token", name="uq_push_device_token"),
+        Index("ix_push_devices_user", "user_id", "is_active"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: The FCM registration token. Long, and not a secret in the usual sense,
+    #: but it addresses a specific device so it is not shown in the UI.
+    token: Mapped[str] = mapped_column(String(512), nullable=False)
+
+    #: For the Settings list, so a person can tell which device is which
+    #: before turning one off.
+    label: Mapped[str | None] = mapped_column(String(120))
+    user_agent: Mapped[str | None] = mapped_column(String(300))
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column()
+    #: Why it stopped: the provider's own words, kept for diagnosis.
+    disabled_reason: Mapped[str | None] = mapped_column(String(300))
+
+    user: Mapped["User"] = relationship()  # noqa: F821
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<PushDevice user={self.user_id} {'active' if self.is_active else 'off'}>"
 
 
 # ---------------------------------------------------------------------------

@@ -296,13 +296,16 @@ export function Button({
   // Both keep the same type size; only the padding tightens, so a compact
   // button never looks like a different component.
   const sizing = compact ? "px-2.5 py-1 text-sm gap-1.5" : "px-3.5 py-2 text-sm gap-1.5";
+  // `whitespace-nowrap` and `shrink-0`: a button is sized by its label, so under
+  // flex pressure it must make the row wrap rather than break its own text -
+  // "Replace from Excel" stacked into three lines reads as three controls.
   return (
     <button
       type={type}
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`inline-flex items-center justify-center rounded-lg font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${sizing} ${className}`}
+      className={`inline-flex shrink-0 items-center justify-center whitespace-nowrap rounded-lg font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${sizing} ${className}`}
     >
       {children}
     </button>
@@ -388,16 +391,22 @@ export function Toggle({
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="inline-flex items-center gap-2 text-sm text-ink"
+      className="inline-flex shrink-0 items-center gap-2 text-sm text-ink"
     >
+      {/* `isolate` matters: the animated track paints into its own compositing
+          layer, and without isolation that layer clipped the first glyph of
+          the adjacent label - "Active" rendered as "\ctive". Confirmed by
+          hiding the track, which made the label render correctly. */}
       <span
-        className={`relative h-4.5 w-8 shrink-0 rounded-full transition-colors ${checked ? "bg-brand" : "bg-rule-firm"}`}
+        className={`relative isolate h-4.5 w-8 shrink-0 rounded-full transition-colors ${checked ? "bg-brand" : "bg-rule-firm"}`}
       >
         <span
           className={`absolute top-0.5 size-3.5 rounded-full bg-white transition-transform ${checked ? "translate-x-4" : "translate-x-0.5"}`}
         />
       </span>
-      {label}
+      {label && (
+        <span className="relative shrink-0 whitespace-nowrap">{label}</span>
+      )}
     </button>
   );
 }

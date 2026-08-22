@@ -257,6 +257,17 @@ export interface StockSummary {
   lots: StockItem[];
 }
 
+export interface StockImportResult {
+  status: string;
+  source_file: string;
+  rows_total: number;
+  rows_imported: number;
+  rows_failed: number;
+  rows_skipped: number;
+  errors: { row?: number; error?: string }[];
+  batch_id: number | null;
+}
+
 export interface Customer {
   id: number;
   customer_code: string | null;
@@ -332,6 +343,7 @@ export interface SystemStatus {
   llm_models: Record<string, string>;
   auto_send_enabled: boolean;
   rules_version: string;
+  pricing_version: number | null;
   stock_lots: number;
   stock_specs: number;
   customers: number;
@@ -397,6 +409,8 @@ export interface QuotationPricing {
   warnings: string[];
   has_overrides: boolean;
   draft_stale: boolean;
+  /** Priced against a rule set that is no longer live. */
+  rules_stale: boolean;
 }
 
 export interface PricingRule {
@@ -463,6 +477,9 @@ export interface FollowUpRule {
   id: number;
   label: string;
   is_active: boolean;
+  trigger: "ELAPSED" | "PROMISED_DATE";
+  first_after_hours: number;
+  remind_before_hours: number;
   first_after_days: number;
   interval_days: number;
   max_attempts: number;
@@ -483,6 +500,134 @@ export interface FollowUpSchedule {
   subject: string | null;
   body: string | null;
   resolution_note: string | null;
+}
+
+export interface ScoreFactor {
+  label: string;
+  factor: number;
+}
+
+/** One open quotation on the chase board. The row is the quotation, not a
+ *  scheduled nudge - a due schedule is only one of the signals that makes it
+ *  hot, carried here as `schedule_id`. */
+export interface ChaseRow {
+  quotation_id: number;
+  quotation_number: string;
+  turn: "YOURS" | "THEIRS" | "COLD" | "SNOOZED";
+
+  customer_name: string;
+  customer_email: string | null;
+  contact_name: string | null;
+  customer_note: string;
+  quotes_total: number;
+  quotes_won: number;
+
+  material: string;
+  quantity: string;
+  quoted_rate: number | null;
+  value: number;
+
+  reason: string;
+  /** What to do, in the imperative. Replaced a body snippet, which was almost
+   *  always the salutation once clamped to the column. */
+  next_step: string;
+
+  last_at: string | null;
+  last_direction: string | null;
+  last_actor: string;
+  last_subject: string | null;
+  message_count: number;
+
+  sent_at: string | null;
+  quote_age_days: number;
+  days_waiting: number;
+  waiting_note: string;
+  chase_until: string | null;
+  chase_note: string | null;
+
+  delivery_location: string | null;
+  required_by: string | null;
+  payment_terms: string | null;
+
+  stock_note: string | null;
+  stock_short: boolean;
+
+  promised_date: string | null;
+  promised_words: string | null;
+  snoozed_until: string | null;
+  has_attachment: boolean;
+  attempts: number;
+  last_chased_at: string | null;
+  schedule_id: number | null;
+
+  value_at_risk: number;
+  factors: ScoreFactor[];
+}
+
+export interface ChaseBoard {
+  rows: ChaseRow[];
+  counts: Record<string, number>;
+  value_awaiting_you: number;
+  quiet_over_a_week: number;
+}
+
+export type LostReason =
+  | "PRICE"
+  | "COMPETITOR"
+  | "DELAYED"
+  | "NO_STOCK"
+  | "NO_RESPONSE"
+  | "OTHER";
+
+export interface PastInvoice {
+  invoice_no: string | null;
+  invoice_date: string | null;
+  material: string;
+  quantity_mt: string | null;
+  rate_per_mt: string | null;
+  line_total: string | null;
+  delivery_location: string | null;
+  /** Matches the specification being quoted, so it can anchor a price. */
+  same_material: boolean;
+}
+
+export interface PastQuotationRow {
+  id: number;
+  quotation_number: string;
+  created_at: string;
+  sent_at: string | null;
+  status: string;
+  material: string;
+  quantity_mt: string | null;
+  rate_per_mt: string | null;
+  value: string | null;
+  won: boolean;
+  same_material: boolean;
+}
+
+export interface PastOrders {
+  customer_name: string | null;
+  invoices: PastInvoice[];
+  quotations: PastQuotationRow[];
+  orders_count: number;
+  total_value: string | null;
+  total_quantity_mt: string | null;
+  last_order_at: string | null;
+  quotes_count: number;
+  quotes_won: number;
+  avg_rate_same_material: string | null;
+  current_rate: string | null;
+  rate_delta: string | null;
+}
+
+export interface PushDevice {
+  id: number;
+  label: string | null;
+  user_agent: string | null;
+  is_active: boolean;
+  last_seen_at: string | null;
+  disabled_reason: string | null;
+  created_at: string;
 }
 
 export interface NotificationRule {

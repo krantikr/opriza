@@ -18,6 +18,7 @@ from app.models.enums import (
     ApprovalAction,
     ConfidenceLevel,
     DraftStatus,
+    LostReason,
     MatchStatus,
     QuantityUnit,
     QuotationStatus,
@@ -30,9 +31,16 @@ class QuotationRequest(Base, TimestampMixin, TenantMixin):
     """Header record for one enquiry email that the MVP will act on."""
 
     __tablename__ = "quotation_requests"
+    # Quotation numbers restart per desk - they appear on the customer's
+    # document, so each desk owns its own sequence.
+    __table_args__ = (
+        UniqueConstraint(
+            "organisation_id", "quotation_number", name="uq_quotation_number"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    quotation_number: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
+    quotation_number: Mapped[str] = mapped_column(String(30), nullable=False)
     email_id: Mapped[int] = mapped_column(
         ForeignKey("emails.id", ondelete="CASCADE"), unique=True, nullable=False
     )
@@ -68,6 +76,16 @@ class QuotationRequest(Base, TimestampMixin, TenantMixin):
     sent_message_id: Mapped[str | None] = mapped_column(String(255))
     send_error: Mapped[str | None] = mapped_column(Text)
 
+    # --- Chase --------------------------------------------------------------
+    #: Parked until this date at the trader's request - "he said call after
+    #: Diwali". Without it a row nobody can act on yet stays on the chase list
+    #: and rots, which teaches the trader to ignore the whole screen.
+    snoozed_until: Mapped[date | None] = mapped_column(index=True)
+    #: Why it did not convert. A closed set, because the value is in the
+    #: aggregate: free text cannot answer "how many did we lose on price".
+    lost_reason: Mapped[LostReason | None] = mapped_column(enum_col(LostReason))
+    lost_note: Mapped[str | None] = mapped_column(String(300))
+
     email: Mapped["Email"] = relationship(  # noqa: F821
         back_populates="quotation_request", foreign_keys="[QuotationRequest.email_id]"
     )
@@ -77,6 +95,15 @@ class QuotationRequest(Base, TimestampMixin, TenantMixin):
         order_by="Email.received_at",
     )
     customer: Mapped["Customer | None"] = relationship()  # noqa: F821
+    #: The desk this quotation belongs to. `TenantMixin` supplies the column
+    #: but no relationship, and the drafted reply has to sign with this desk's
+    #: own name rather than the single global one in settings - otherwise
+    #: every organisation signs as the same firm.
+    organisation: Mapped["Organisation"] = relationship(  # noqa: F821
+        primaryjoin="QuotationRequest.organisation_id == Organisation.id",
+        foreign_keys="[QuotationRequest.organisation_id]",
+        viewonly=True,
+    )
     line_items: Mapped[list["QuotationLineItem"]] = relationship(
         back_populates="quotation_request",
         cascade="all, delete-orphan",

@@ -8,13 +8,17 @@ nudge due; nothing here lets it deliver one on its own.
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from sqlalchemy import func, select
 
-from app.api.deps import TenantDb, current_user
+from app.api.deps import CurrentUser, TenantDb, current_user
+from app.core.config import settings
 from app.core.db import utcnow
 from app.models import (
     Customer,
@@ -24,8 +28,11 @@ from app.models import (
     FollowUpSchedule,
     FollowUpStatus,
     Notification,
+    NotificationChannel,
     NotificationRule,
+    PushDevice,
     QuotationRequest,
+    QuotationStatus,
     RecordStatus,
     StockItem,
     StockMovement,
@@ -35,21 +42,33 @@ from app.models import (
 from app.schemas.common import ActionResult, Page
 from app.schemas.ops import (
     BalanceOut,
+    ChaseBoardOut,
+    ChaseRowOut,
+    ChaseSendIn,
     CustomerIn,
     CustomerNoteIn,
     CustomerNoteOut,
     FollowUpRuleIn,
     FollowUpRuleOut,
     FollowUpScheduleOut,
+    MarkLostIn,
     NotificationOut,
     NotificationRuleIn,
     NotificationRuleOut,
+    PushDeviceIn,
+    PushDeviceOut,
+    PushStatusOut,
+    SnoozeIn,
+    StockImportOut,
     StockMovementIn,
     StockMovementOut,
     TimelineEntry,
 )
+from app.services.chase import ChaseService
+from app.services.ingestion.excel_importer import ImportFailed, StockImporter
 from app.services.insights import InsightService
 from app.services.notifications import NotificationService
+from app.services.notifications.channels import get_channel
 from app.services.quotations.followup import FollowUpError, FollowUpService
 from app.services.quotations.followup_rules import FollowUpScheduler
 from app.services.reports import DateRange, ReportService
@@ -291,6 +310,303 @@ def skip_follow_up(
 
 
 # ---------------------------------------------------------------------------
+# Push devices
+#
+# Push is the only channel that reaches a trader with the site closed. The
+# in-app bell needs the dashboard open and the browser Notification API needs
+# the tab alive, so neither covers the case this exists for.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/push/status", response_model=PushStatusOut, tags=["notifications"])
+def push_status(db: TenantDb, user: User | None = Depends(current_user)) -> PushStatusOut:
+    """Whether push can work, and how many devices this person has registered.
+
+    `configured` is about the desk's Firebase setup rather than the browser's
+    permission, so the UI can say "ask your administrator" instead of
+    prompting for a permission that could never deliver anything.
+    """
+    count = 0
+    if user is not None:
+        count = int(
+            db.scalar(
+                select(func.count())
+                .select_from(PushDevice)
+                .where(PushDevice.user_id == user.id, PushDevice.is_active.is_(True))
+            )
+            or 0
+        )
+    return PushStatusOut(configured=settings.fcm_configured, devices=count)
+
+
+@router.post("/push/devices", response_model=PushDeviceOut, tags=["notifications"])
+def register_push_device(
+    payload: PushDeviceIn,
+    db: TenantDb,
+    user: User | None = Depends(current_user),
+) -> PushDevice:
+    """Register or refresh this browser's push token.
+
+    Idempotent on the token, because the frontend calls it on every load:
+    Firebase rotates tokens on its own schedule, and a device that registered
+    once and never again would quietly stop receiving anything. A token that
+    was previously retired is revived here - the person has clearly just
+    granted permission again.
+    """
+    if user is None:
+        raise HTTPException(status_code=401, detail="Sign in to register a device.")
+
+    device = db.scalar(select(PushDevice).where(PushDevice.token == payload.token))
+    if device is None:
+        device = PushDevice(user_id=user.id, token=payload.token)
+        db.add(device)
+
+    device.user_id = user.id
+    device.label = payload.label or device.label
+    device.user_agent = payload.user_agent or device.user_agent
+    device.is_active = True
+    device.disabled_reason = None
+    device.last_seen_at = utcnow()
+    db.commit()
+    db.refresh(device)
+    return device
+
+
+@router.get("/push/devices", response_model=list[PushDeviceOut], tags=["notifications"])
+def list_push_devices(db: TenantDb, user: User | None = Depends(current_user)) -> list[PushDevice]:
+    """This person's registered devices, so they can see and revoke them."""
+    if user is None:
+        return []
+    return list(
+        db.scalars(
+            select(PushDevice)
+            .where(PushDevice.user_id == user.id)
+            .order_by(PushDevice.last_seen_at.desc().nullslast())
+        )
+    )
+
+
+@router.delete(
+    "/push/devices/{device_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    tags=["notifications"],
+)
+def revoke_push_device(
+    device_id: int, db: TenantDb, user: User | None = Depends(current_user)
+) -> None:
+    """Turn a device off. Row-level security already scopes this to the desk;
+    the user check stops one colleague revoking another's phone."""
+    device = db.get(PushDevice, device_id)
+    if device is None or (user is not None and device.user_id != user.id):
+        raise HTTPException(status_code=404, detail="Device not found")
+    device.is_active = False
+    device.disabled_reason = "Turned off by the user."
+    db.commit()
+
+
+@router.post("/push/test", response_model=ActionResult, tags=["notifications"])
+def send_test_push(db: TenantDb, user: User | None = Depends(current_user)) -> ActionResult:
+    """Send a push to this person's own devices.
+
+    The only honest way to confirm the whole chain - Firebase project, service
+    account, service worker, OS permission - is actually working end to end.
+    """
+    if user is None:
+        raise HTTPException(status_code=401, detail="Sign in first.")
+
+    devices = list(
+        db.scalars(
+            select(PushDevice).where(
+                PushDevice.user_id == user.id, PushDevice.is_active.is_(True)
+            )
+        )
+    )
+    if not devices:
+        return ActionResult(ok=False, detail="No devices registered on this account yet.")
+
+    channel = get_channel(NotificationChannel.PUSH)
+    sent = 0
+    errors: list[str] = []
+    for device in devices:
+        outcome = channel.send(
+            destination=device.token,
+            title="Steel Desk",
+            body="Push notifications are working.",
+            link="/",
+        )
+        if outcome.sent:
+            sent += 1
+        elif outcome.error:
+            errors.append(outcome.error)
+
+    db.commit()
+    return ActionResult(
+        ok=sent > 0,
+        detail=(
+            f"Sent to {sent} of {len(devices)} device(s)."
+            if sent
+            else (errors[0] if errors else "Delivery failed.")
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chase board
+#
+# `/queue` above is the scheduler's view: nudges a rule has already decided are
+# due. The board below is the trader's view: every open quotation, bucketed by
+# whose turn it is and ranked by money at risk. Both exist because they answer
+# different questions, and the queue is what the scheduler acts on.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/follow-ups/board", response_model=ChaseBoardOut, tags=["follow-ups"])
+def chase_board(db: TenantDb) -> ChaseBoardOut:
+    """Every open quotation, ranked by what it costs to keep ignoring it."""
+    service = ChaseService(db)
+    rows = service.board()
+    counts = service.counts(rows)
+
+    return ChaseBoardOut(
+        rows=[ChaseRowOut(**_row_dict(r)) for r in rows],
+        counts=counts,
+        value_awaiting_you=sum(r.value for r in rows if r.turn.value == "YOURS"),
+        quiet_over_a_week=sum(
+            1 for r in rows if r.days_waiting >= 7 and r.turn.value != "SNOOZED"
+        ),
+    )
+
+
+def _row_dict(row) -> dict:
+    """`ChaseRow` is a slotted dataclass, so `asdict` is the honest conversion."""
+    from dataclasses import asdict
+
+    data = asdict(row)
+    data["turn"] = row.turn.value
+    return data
+
+
+@router.post("/follow-ups/quotation/{quotation_id}/send", response_model=ActionResult, tags=["follow-ups"])
+def send_chase(
+    quotation_id: int,
+    payload: ChaseSendIn,
+    db: TenantDb,
+    user: User | None = Depends(current_user),
+) -> ActionResult:
+    """Send the follow-up the trader just read and edited in the drawer.
+
+    Distinct from `/follow-ups/{schedule_id}/send`, which mails whatever the
+    scheduler drafted days ago. Here the text arrives from the screen, so what
+    the trader saw under the thread is exactly what goes out. It still routes
+    through `FollowUpService.send`, which remains the only function that mails
+    a customer and still refuses anything that is not `SENT`.
+    """
+    quotation = db.get(QuotationRequest, quotation_id)
+    if quotation is None:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+
+    try:
+        result = FollowUpService(db).send(
+            quotation,
+            user_id=user.id if user else None,
+            subject=payload.subject,
+            body=payload.body,
+        )
+    except FollowUpError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    # A nudge the scheduler was still holding for this quotation is now
+    # redundant: the trader has just chased by hand. Leaving it DUE would show
+    # the same row as outstanding tomorrow morning.
+    if payload.schedule_id is not None:
+        schedule = db.get(FollowUpSchedule, payload.schedule_id)
+        if schedule is not None and schedule.status is FollowUpStatus.DUE:
+            schedule.status = FollowUpStatus.SENT
+            schedule.follow_up_id = result.follow_up.id
+            schedule.resolved_at = utcnow()
+
+    db.commit()
+    return ActionResult(
+        ok=result.sent,
+        detail="Follow-up sent." if result.sent else f"Send failed: {result.send.error}",
+        quotation_id=quotation.id,
+        status=quotation.status.value,
+    )
+
+
+@router.post("/follow-ups/quotation/{quotation_id}/snooze", response_model=ActionResult, tags=["follow-ups"])
+def snooze_quotation(quotation_id: int, payload: SnoozeIn, db: TenantDb) -> ActionResult:
+    """Park a quotation until a date the trader chose.
+
+    "He said call after Diwali." Without this the row sits on the chase list
+    with nothing anybody can do about it, and a list full of rows you cannot
+    act on is a list you stop reading.
+    """
+    quotation = db.get(QuotationRequest, quotation_id)
+    if quotation is None:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    if payload.until <= date.today():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Pick a date in the future - snoozing until today changes nothing.",
+        )
+
+    quotation.snoozed_until = payload.until
+    if payload.note:
+        quotation.review_notes = _with_note(quotation.review_notes, payload.note)
+
+    # The scheduler must not chase something deliberately parked.
+    FollowUpScheduler(db).cancel_for(quotation, "Snoozed by a reviewer.")
+    db.commit()
+
+    return ActionResult(
+        detail=f"Parked until {payload.until:%-d %b}.",
+        quotation_id=quotation.id,
+        status=quotation.status.value,
+    )
+
+
+@router.post("/follow-ups/quotation/{quotation_id}/lost", response_model=ActionResult, tags=["follow-ups"])
+def mark_lost(quotation_id: int, payload: MarkLostIn, db: TenantDb) -> ActionResult:
+    """Record that a quotation did not convert, and why.
+
+    The reason is the point. One tap keeps it cheap enough that the data
+    actually accumulates, and only then can a report answer "how many did we
+    lose purely on price".
+    """
+    quotation = db.get(QuotationRequest, quotation_id)
+    if quotation is None:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+
+    quotation.lost_reason = payload.reason
+    quotation.lost_note = payload.note
+    quotation.status = QuotationStatus.CUSTOMER_DECLINED
+    FollowUpScheduler(db).cancel_for(quotation, f"Marked lost: {payload.reason.value}.")
+    db.commit()
+
+    return ActionResult(
+        detail="Marked lost.",
+        quotation_id=quotation.id,
+        status=quotation.status.value,
+    )
+
+
+@router.post("/follow-ups/quotation/{quotation_id}/wake", response_model=ActionResult, tags=["follow-ups"])
+def wake_quotation(quotation_id: int, db: TenantDb) -> ActionResult:
+    """Bring a snoozed quotation back onto the board now."""
+    quotation = db.get(QuotationRequest, quotation_id)
+    if quotation is None:
+        raise HTTPException(status_code=404, detail="Quotation not found")
+    quotation.snoozed_until = None
+    db.commit()
+    return ActionResult(detail="Back on the board.", quotation_id=quotation.id)
+
+
+def _with_note(existing: str | None, note: str) -> str:
+    return f"{existing}\n{note}" if existing else note
+
+
+# ---------------------------------------------------------------------------
 # Stock movement
 # ---------------------------------------------------------------------------
 
@@ -366,6 +682,81 @@ def stock_balance(stock_item_id: int, db: TenantDb) -> BalanceOut:
         on_hand_mt=balance.on_hand_mt.quantize(Decimal("0.001")),
         available_mt=balance.available_mt.quantize(Decimal("0.001")),
         reserved_mt=(balance.reserved_kg / Decimal(1000)).quantize(Decimal("0.001")),
+    )
+
+
+MAX_STOCK_UPLOAD_BYTES = 20 * 1024 * 1024
+STOCK_UPLOAD_SUFFIXES = {".xlsx", ".xlsm", ".xls"}
+
+
+@router.post("/stock/import", response_model=StockImportOut, tags=["stock"])
+async def import_stock(
+    db: TenantDb,
+    user: CurrentUser,
+    file: UploadFile = File(...),  # noqa: B008 - FastAPI's declaration style
+) -> StockImportOut:
+    """Replace the stock list from an uploaded spreadsheet.
+
+    The file is a full point-in-time snapshot, so it replaces what is held
+    rather than merging into it - two imports of the same file leave one copy
+    of each lot, not two. The swap and the insert share one transaction, so a
+    file that fails half way through leaves the previous stock untouched.
+
+    The upload is written to a temporary file because the importer reads via
+    pandas, which needs a real path; it is removed on every exit path.
+    """
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in STOCK_UPLOAD_SUFFIXES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Upload an Excel file (.xlsx, .xlsm or .xls).",
+        )
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="That file is empty."
+        )
+    # Bounded before anything touches the database: an oversized upload is
+    # rejected as a bad request, never as a timeout half way through a replace.
+    if len(payload) > MAX_STOCK_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="That file is larger than 20 MB.",
+        )
+
+    tmp = Path(tempfile.mkdtemp()) / (Path(file.filename or "stock.xlsx").name)
+    try:
+        tmp.write_bytes(payload)
+        try:
+            result = StockImporter(db, imported_by=user.email).run(tmp)
+        except ImportFailed as exc:
+            # The importer raises this for a file it cannot read or one missing
+            # required columns. Nothing was replaced, so this is a plain 400
+            # naming the problem rather than a server error.
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            ) from exc
+        except Exception:
+            # Anything else leaves the session mid-transaction, and the replace
+            # must not be half-applied. Rolling back here is what guarantees
+            # the desk still has the stock it started with; the error is then
+            # re-raised so it is logged rather than quietly swallowed.
+            db.rollback()
+            raise
+    finally:
+        shutil.rmtree(tmp.parent, ignore_errors=True)
+
+    return StockImportOut(
+        status=result.status.value,
+        source_file=result.source_file,
+        rows_total=result.rows_total,
+        rows_imported=result.rows_imported,
+        rows_failed=result.rows_failed,
+        rows_skipped=result.rows_skipped,
+        errors=result.errors,
+        batch_id=result.batch_id,
     )
 
 

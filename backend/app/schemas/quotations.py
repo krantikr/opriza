@@ -268,3 +268,66 @@ class QuotationDetailsIn(BaseModel):
     delivery_location: str | None = Field(default=None, max_length=120)
     required_delivery_date: str | None = Field(default=None, max_length=120)
     payment_terms: str | None = Field(default=None, max_length=200)
+
+
+# --- Past orders -----------------------------------------------------------
+
+
+class PastInvoiceOut(BaseModel):
+    """A sale already billed, for judging today's rate against."""
+
+    invoice_no: str | None = None
+    invoice_date: date | None = None
+    material: str
+    quantity_mt: Decimal | None = None
+    rate_per_mt: Decimal | None = None
+    line_total: Decimal | None = None
+    delivery_location: str | None = None
+    #: True when this line matches the specification being quoted, not just
+    #: the customer. Those are the rows that actually anchor a price.
+    same_material: bool = False
+
+
+class PastQuotationOut(BaseModel):
+    """An earlier quotation to the same customer, and how it ended."""
+
+    id: int
+    quotation_number: str
+    created_at: datetime
+    sent_at: datetime | None = None
+    status: str
+    material: str
+    quantity_mt: Decimal | None = None
+    rate_per_mt: Decimal | None = None
+    value: Decimal | None = None
+    won: bool = False
+    same_material: bool = False
+
+
+class PastOrdersOut(BaseModel):
+    """What this customer has bought and been quoted before.
+
+    Assembled for one question: is the rate about to go out consistent with
+    what this buyer has actually paid? The figures are what a trader would
+    otherwise dig out of a spreadsheet before picking up the phone.
+    """
+
+    customer_name: str | None = None
+    invoices: list[PastInvoiceOut]
+    quotations: list[PastQuotationOut]
+
+    #: Headline figures over the invoices returned.
+    orders_count: int = 0
+    total_value: Decimal | None = None
+    total_quantity_mt: Decimal | None = None
+    last_order_at: date | None = None
+
+    #: Win rate over the earlier quotations, which is what says whether this
+    #: buyer converts or shops the desk around.
+    quotes_count: int = 0
+    quotes_won: int = 0
+
+    #: Average rate paid for *this* material, and how today's compares.
+    avg_rate_same_material: Decimal | None = None
+    current_rate: Decimal | None = None
+    rate_delta: Decimal | None = None

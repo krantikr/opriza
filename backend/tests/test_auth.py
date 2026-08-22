@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, time, timedelta
 
 import pytest
+from sqlalchemy import select
 
 from app.core.security import TokenError, read_token
 from app.models import InviteStatus, Organisation, OrgStatus, User, UserRole
@@ -315,6 +316,52 @@ def test_two_desks_with_the_same_name_get_distinct_handles(platform_db):
         platform_db, name="Steel Traders", owner_email="two@example.com"
     )
     assert first.slug != second.slug
+
+
+def test_a_new_desk_can_price_on_day_one(platform_db):
+    """Onboarding publishes a pricing rule set.
+
+    Without one the Pricing screen has nothing to edit and every enquiry comes
+    back unquotable, with no way to recover from inside the app - the desk
+    cannot do the one thing it exists to do.
+    """
+    from app.models import PricingRuleSet
+
+    org, _, _ = auth_service.create_organisation(
+        platform_db, name="Epsilon Steel", owner_email="epsilon@example.com"
+    )
+
+    rule_set = platform_db.scalars(
+        select(PricingRuleSet).where(PricingRuleSet.organisation_id == org.id)
+    ).first()
+    assert rule_set is not None
+    assert rule_set.is_active
+    assert rule_set.rules, "a rule set with no rules prices nothing"
+
+
+def test_each_desk_numbers_its_pricing_versions_from_one(platform_db):
+    """Version 1 is not the platform's to hand out once.
+
+    A global unique on `version` meant the second desk onboarded could not be
+    given a starting rule set at all.
+    """
+    from app.models import PricingRuleSet
+
+    first, _, _ = auth_service.create_organisation(
+        platform_db, name="Zeta Steel", owner_email="zeta@example.com"
+    )
+    second, _, _ = auth_service.create_organisation(
+        platform_db, name="Eta Steel", owner_email="eta@example.com"
+    )
+
+    versions = {
+        org.id: platform_db.scalars(
+            select(PricingRuleSet.version).where(PricingRuleSet.organisation_id == org.id)
+        ).all()
+        for org in (first, second)
+    }
+    assert versions[first.id] == [1]
+    assert versions[second.id] == [1]
 
 
 def test_a_new_desk_starts_on_the_requested_schedule(platform_db):

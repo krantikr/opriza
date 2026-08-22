@@ -13,7 +13,6 @@ import {
   Banner,
   Button,
   Card,
-  Empty,
   ErrorNote,
   Input,
   inr,
@@ -425,6 +424,49 @@ function VehiclesPanel() {
   );
 }
 
+/** The way out of a desk that has no rule set at all.
+
+    Without this the screen is a dead end: the editor edits a version, there is
+    no version, and the only fix is a script the trader cannot run. */
+function NoRulesYet({ onSeeded }: { onSeeded: () => void }) {
+  const [seeding, setSeeding] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  async function seed() {
+    setSeeding(true);
+    setFailed(null);
+    try {
+      await api.post("/pricing/rules/seed");
+      onSeeded();
+    } catch (e) {
+      setFailed((e as Error).message);
+    } finally {
+      setSeeding(false);
+    }
+  }
+
+  return (
+    <div className="p-5">
+      <Card
+        title="Pricing is not set up yet"
+        subtitle="Every enquiry needs a cost build-up before it can be quoted."
+      >
+        <div className="flex flex-col items-start gap-3">
+          <p className="max-w-prose text-sm text-ink-soft">
+            Start from the standard build-up — base price, freight, handling, financing, risk
+            buffer, then margin and rounding. Every figure is a starting point you are meant to
+            change, and nothing is sent to a customer until you publish.
+          </p>
+          {failed && <ErrorNote message={failed} />}
+          <Button variant="primary" disabled={seeding} onClick={seed}>
+            {seeding ? "Setting up…" : "Set up starting rules"}
+          </Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 export default function Pricing() {
   const { data: active, loading, error, reload } = useApi<PricingRuleSet>("/pricing/rules");
   const [rules, setRules] = useState<PricingRule[] | null>(null);
@@ -436,8 +478,11 @@ export default function Pricing() {
   }, [active]);
 
   if (loading && !active) return <Loading label="Loading pricing rules" />;
+  // A desk with no rule set is a state to recover from, not an error to report:
+  // the 404 here means "not set up yet", which has a one-click answer.
+  if (error && /no pricing rule set/i.test(error)) return <NoRulesYet onSeeded={reload} />;
   if (error) return <div className="p-6"><ErrorNote message={error} /></div>;
-  if (!rules) return <Empty message="No pricing rules are published yet." />;
+  if (!rules) return <NoRulesYet onSeeded={reload} />;
 
   const dirty = JSON.stringify(rules) !== JSON.stringify(active?.rules ?? []);
 

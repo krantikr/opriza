@@ -30,7 +30,12 @@ from app.models import (
     PricingRule,
     PricingRuleSet,
 )
-from app.services.pricing.components import COMPONENTS, PricingContext, money
+from app.services.pricing.components import (
+    COMPONENTS,
+    NO_BASE_PRICE,
+    PricingContext,
+    money,
+)
 
 logger = get_logger(__name__)
 
@@ -213,7 +218,11 @@ class PricingEngine:
                 outcome.warnings.append(result.warning)
 
         if outcome.base_rate is None:
-            outcome.warnings.append("No base price available.")
+            # The base-price component reports its own reason for standing
+            # aside. This is the backstop for the case where no base rule ran
+            # at all, so it must not restate a warning already recorded.
+            if NO_BASE_PRICE not in outcome.warnings:
+                outcome.warnings.append(NO_BASE_PRICE)
             return outcome
 
         outcome.total_cost = cost_before_margin if cost_before_margin is not None else running

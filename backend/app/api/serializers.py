@@ -197,20 +197,60 @@ def follow_up_out(follow_up: FollowUp) -> FollowUpOut:
 
 
 def _quotation_summary(quotation: QuotationRequest) -> tuple[Decimal | None, bool]:
-    """Total indicative value (suggested rate x tonnage) and review flag."""
+    """Total indicative value and review flag.
+
+    `QuotationPricing` wins where it exists: it is the figure the calculator
+    settled on and the one the customer was actually quoted, whereas
+    `StockAvailability.suggested_rate` is the cost-plus suggestion made before
+    anybody reviewed it. Falling back to the suggestion keeps a line valued
+    while it is still being worked on, and stops a priced quotation showing a
+    dash in the list while its own detail pane shows a figure.
+    """
     total: Decimal | None = None
     needs_review = False
     for item in quotation.line_items:
         availability = item.stock_availability
-        if availability is None:
+        if availability is not None:
+            needs_review = needs_review or availability.requires_manual_review
+
+        pricing = item.pricing
+        if pricing is not None and pricing.line_total is not None:
+            total = (total or Decimal(0)) + pricing.line_total
             continue
-        needs_review = needs_review or availability.requires_manual_review
-        if availability.suggested_rate is None:
+
+        if availability is None or availability.suggested_rate is None:
             continue
         basis = item.quantity_mt if item.quantity_mt is not None else availability.available_qty_mt
         if basis is not None:
             total = (total or Decimal(0)) + availability.suggested_rate * basis
     return total, needs_review
+
+
+def _headline(item: QuotationLineItem | None) -> str | None:
+    """What the line is about, in the words a trader uses.
+
+    Prefers the matched lot's name, then the customer's own wording, and only
+    then builds a description from the extracted specification - a line that
+    matched nothing and whose raw text was not kept still has a grade and a
+    thickness, and "12 mm TMT Fe500D" beats an empty cell.
+    """
+    if item is None:
+        return None
+    if item.matched_stock_item is not None:
+        return item.matched_stock_item.display_name
+    if item.raw_text:
+        return item.raw_text[:80]
+
+    parts: list[str] = []
+    if item.thickness_mm:
+        parts.append(f"{item.thickness_mm:g} mm")
+    elif item.diameter_mm:
+        parts.append(f"{item.diameter_mm:g} mm")
+    if item.product_type:
+        parts.append(item.product_type)
+    if item.grade:
+        parts.append(item.grade)
+    return " ".join(parts) or None
 
 
 def _availability_label(item: QuotationLineItem | None) -> str | None:
@@ -247,11 +287,7 @@ def quotation_out(quotation: QuotationRequest) -> QuotationOut:
         delivery_location=quotation.delivery_location,
         line_count=len(quotation.line_items),
         total_suggested_value=total,
-        headline_product=(
-            first.matched_stock_item.display_name
-            if first and first.matched_stock_item
-            else (first.raw_text[:80] if first and first.raw_text else None)
-        ),
+        headline_product=_headline(first),
         headline_availability=_availability_label(first),
         requires_manual_review=needs_review,
         created_at=quotation.created_at,

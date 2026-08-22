@@ -121,6 +121,12 @@ class Component(Protocol):
 
 
 # ---------------------------------------------------------------------------
+#: The single wording for an unpriceable line. Shared with the engine's
+#: backstop so the component's report and the backstop cannot drift apart into
+#: two near-identical banners on the same screen.
+NO_BASE_PRICE = "No base price available."
+
+
 # Base price
 # ---------------------------------------------------------------------------
 
@@ -153,7 +159,7 @@ def base_price(config: dict, ctx: PricingContext, running: Decimal, base: Decima
                 "offer covers this material, so no base price can be established."
             ),
             applied=False,
-            warning="No base price available.",
+            warning=NO_BASE_PRICE,
             meta={"basis": "UNAVAILABLE"},
         )
 

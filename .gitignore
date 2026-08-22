@@ -37,3 +37,9 @@ frontend/tsconfig.tsbuildinfo
 
 # Locally "sent" mail (EMAIL_SOURCE=local)
 data/sent/
+
+# Firebase service-account keys. These authorise sending push as this project,
+# so a committed one is a live credential leak.
+*service-account*.json
+*serviceAccount*.json
+firebase-adminsdk-*.json

@@ -16,13 +16,16 @@ from __future__ import annotations
 from collections.abc import Generator
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.db import Base
+from app.core.db import Base, get_db
 from app.core.tenancy import bind_session
+from app.main import app
 from app.models import (
     ConfidenceLevel,
     Customer,
@@ -42,6 +45,7 @@ from app.models import (
     User,
     UserRole,
 )
+from app.services.email.sender import LocalFileSender
 
 #: The suite's own database. Separate from development data so a test run
 #: cannot destroy work in progress.
@@ -349,3 +353,52 @@ def quoted_quotation(db: Session, plate: StockItem, customer: Customer) -> Quota
     db.commit()
     db.refresh(quotation)
     return quotation
+
+
+# ---------------------------------------------------------------------------
+# API client
+#
+# Shared rather than per-module: several suites now drive routes, and each
+# rebuilding this would risk them drifting apart on how auth is set up.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def sent_dir(tmp_path, monkeypatch) -> Path:
+    """Redirect outbound mail to a temporary folder."""
+    outbox = tmp_path / "sent"
+    monkeypatch.setattr(
+        "app.services.quotations.approval.get_sender", lambda: LocalFileSender(outbox)
+    )
+    return outbox
+
+
+@pytest.fixture()
+def client(db, default_user, sent_dir) -> TestClient:
+    """An authenticated client for the default desk.
+
+    The session is overridden, but authentication is *not* faked: the client
+    signs in with a real token, so these tests exercise the same dependency
+    chain a browser does. Stubbing `current_user` instead would leave every
+    route's auth untested.
+    """
+    from app.api.deps import tenant_db
+    from app.core.security import issue_token
+
+    app.dependency_overrides[get_db] = lambda: db
+    # `tenant_db` is overridden because the test session is already bound by
+    # the `db` fixture; re-binding it inside a TestClient request would open a
+    # second transaction on the same session.
+    app.dependency_overrides[tenant_db] = lambda: db
+
+    token = issue_token(
+        user_id=default_user.id,
+        organisation_id=default_user.organisation_id,
+        role=default_user.role.value,
+        is_super_admin=False,
+        token_version=default_user.token_version,
+    )
+    with TestClient(app) as test_client:
+        test_client.headers["Authorization"] = f"Bearer {token}"
+        yield test_client
+    app.dependency_overrides.clear()

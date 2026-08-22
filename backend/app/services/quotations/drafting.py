@@ -25,6 +25,7 @@ from app.core.rules import BusinessRules, get_rules
 from app.models import DraftStatus, QuotationDraft, QuotationRequest
 from app.services import audit, telemetry
 from app.services.quotations.draft_context import build_draft_context
+from app.services.quotations.table import build_rows, splice_text
 
 logger = get_logger(__name__)
 
@@ -123,10 +124,16 @@ class DraftingService:
         warnings = find_unsupported_claims(draft_email.body)
         subject = self._reply_subject(draft_email.subject, email.subject if email else None)
 
+        # Spliced *after* verification, deliberately. The guards check what the
+        # model actually wrote; the table is settled arithmetic that was never
+        # the model's to get wrong, and running the fact check over it would
+        # only be checking this code against itself.
+        body = splice_text(draft_email.body, build_rows(quotation))
+
         draft = self._store(
             quotation,
             subject=subject,
-            body=draft_email.body,
+            body=body,
             model=model_used,
             user_id=user_id,
             violations=violations,

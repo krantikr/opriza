@@ -59,6 +59,7 @@ const pricing: QuotationPricing = {
   warnings: [],
   has_overrides: false,
   draft_stale: false,
+  rules_stale: false,
 };
 
 const fetchMock = vi.fn();

@@ -218,9 +218,23 @@ class ApprovalService:
 
         # --- Send -----------------------------------------------------------
         from app.services.email.sender import reply_to
+        from app.services.quotations.table import build_html_email, build_rows
+
+        # Built from the approved text, so the HTML the customer sees carries
+        # the reviewer's edits rather than a freshly regenerated body.
+        html_body = build_html_email(
+            final_body,
+            build_rows(quotation),
+            title=settings.company_name,
+            tagline=settings.company_tagline or None,
+        )
 
         result = reply_to(
-            quotation.email, subject=final_subject, body=final_body, sender=self.sender
+            quotation.email,
+            subject=final_subject,
+            body=final_body,
+            html_body=html_body,
+            sender=self.sender,
         )
 
         if result.sent:

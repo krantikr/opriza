@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
@@ -17,6 +17,7 @@ from app.schemas.quotations import (
     ApproveIn,
     DraftUpdateIn,
     FollowUpIn,
+    PastOrdersOut,
     QuotationDetailOut,
     QuotationDetailsIn,
     QuotationOut,
@@ -25,10 +26,12 @@ from app.schemas.quotations import (
     ThreadOut,
 )
 from app.services import audit
+from app.services.pricing.engine import active_rule_set
 from app.services.pricing.service import PricingService
 from app.services.quotations.approval import ApprovalError, ApprovalService
 from app.services.quotations.drafting import DraftingService
 from app.services.quotations.followup import FollowUpError, FollowUpService
+from app.services.quotations.past_orders import PastOrdersService
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/quotations", tags=["quotations"])
@@ -109,6 +112,147 @@ def list_quotations(
     ).all()
 
     return Page(items=[quotation_out(q) for q in rows], total=total, limit=limit, offset=offset)
+
+
+@router.get("/export", response_model=None, tags=["quotations"])
+def export_quotations(
+    db: TenantDb,
+    status_filter: QuotationStatus | None = Query(default=None, alias="status"),
+    search: str | None = Query(default=None),
+) -> Response:
+    """The quotation list as a real .xlsx workbook.
+
+    Registered *before* `/{quotation_id}` because FastAPI matches in order and
+    a dynamic segment would otherwise swallow the literal path and try to read
+    "export" as an integer id.
+
+    A real workbook rather than a CSV: traders open these in Excel, and a CSV
+    of Indian-format rupee figures loses its number typing on the way in. Every
+    column that holds a number is written as a number so the file can be summed
+    and sorted without being cleaned up first.
+    """
+    from io import BytesIO
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    query = select(QuotationRequest)
+    if status_filter:
+        query = query.where(QuotationRequest.status == status_filter)
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.where(
+            QuotationRequest.quotation_number.ilike(pattern)
+            | QuotationRequest.customer_name_raw.ilike(pattern)
+            | QuotationRequest.customer_company_raw.ilike(pattern)
+            | QuotationRequest.customer_email.ilike(pattern)
+        )
+
+    rows = db.scalars(
+        _loaded(query).order_by(QuotationRequest.created_at.desc())
+    ).all()
+
+    headers = [
+        "Quotation",
+        "Customer",
+        "Contact",
+        "Email",
+        "Material",
+        "Lines",
+        "Value (INR)",
+        "Status",
+        "Delivery to",
+        "Raised",
+        "Sent",
+    ]
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Quotations"
+    sheet.append(headers)
+
+    head_fill = PatternFill("solid", fgColor="0F172A")
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = head_fill
+        cell.alignment = Alignment(vertical="center")
+
+    for quotation in rows:
+        out = quotation_out(quotation)
+        sheet.append(
+            [
+                out.quotation_number,
+                out.customer_company or out.customer_name or "",
+                out.customer_name or "",
+                out.customer_email or "",
+                out.headline_product or "",
+                out.line_count,
+                # Written as a number, not a formatted string, so the column
+                # sums in Excel without being cleaned up first.
+                float(out.total_suggested_value) if out.total_suggested_value else None,
+                out.status,
+                out.delivery_location or "",
+                _naive(quotation.created_at),
+                _naive(quotation.sent_at),
+            ]
+        )
+
+    for column in range(1, len(headers) + 1):
+        letter = get_column_letter(column)
+        width = max(
+            len(str(sheet.cell(row=r, column=column).value or ""))
+            for r in range(1, sheet.max_row + 1)
+        )
+        sheet.column_dimensions[letter].width = min(max(width + 2, 10), 42)
+
+    for row in sheet.iter_rows(min_row=2, min_col=7, max_col=7):
+        for cell in row:
+            cell.number_format = "#,##0.00"
+    for row in sheet.iter_rows(min_row=2, min_col=10, max_col=11):
+        for cell in row:
+            cell.number_format = "dd-mmm-yyyy hh:mm"
+
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{sheet.max_row}"
+
+    buffer = BytesIO()
+    book.save(buffer)
+    stamp = utcnow().strftime("%Y-%m-%d")
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": f'attachment; filename="quotations-{stamp}.xlsx"'
+        },
+    )
+
+
+def _naive(value):
+    """Excel has no concept of an offset, and openpyxl refuses tz-aware values."""
+    return value.replace(tzinfo=None) if value is not None else None
+
+
+@router.get("/{quotation_id}/past-orders", response_model=PastOrdersOut)
+def quotation_past_orders(
+    db: TenantDb,
+    quotation: QuotationRequest = Depends(get_quotation),
+) -> PastOrdersOut:
+    """What this customer has bought and been quoted before.
+
+    The question a trader asks before sending a rate - "is this what they
+    normally pay?" - answered from the same invoice table the pricing
+    calculator anchors on, so the tab shows the evidence behind the figure
+    rather than a second opinion assembled differently.
+    """
+    from dataclasses import asdict
+
+    result = PastOrdersService(db).for_quotation(quotation)
+    data = asdict(result)
+    return PastOrdersOut(**data)
 
 
 @router.get("/{quotation_id}", response_model=QuotationDetailOut)
@@ -269,10 +413,22 @@ def reject_quotation(
 
 @router.get("/{quotation_id}/pricing", response_model=list[PricingOut])
 def get_pricing(
+    db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
-) -> list[QuotationPricing]:
+) -> list[PricingOut]:
     """The stored cost build-up for every line, as the calculator renders it."""
-    return [item.pricing for item in quotation.line_items if item.pricing is not None]
+    live = active_rule_set(db)
+    rows = []
+    for item in quotation.line_items:
+        if item.pricing is None:
+            continue
+        out = PricingOut.model_validate(item.pricing)
+        # A row priced against a rule set that is no longer the live one is a
+        # snapshot, not a verdict. Saying so lets the screen offer a recompute
+        # instead of repeating a warning that has since been resolved.
+        out.rules_stale = bool(live and item.pricing.rule_set_id != live.id)
+        rows.append(out)
+    return rows
 
 
 @router.post("/{quotation_id}/lines/{line_id}/pricing/override", response_model=PricingOut)

@@ -3,12 +3,14 @@
 The uniqueness constraint on `message_id` is the duplicate-quotation guard
 (spec section 10). It is enforced by the database rather than by an
 "is this processed?" check in application code, because two poller runs
-overlapping in time would both pass such a check.
+overlapping in time would both pass such a check. It is scoped per
+organisation, so the guard holds within a desk without letting one desk's
+mailbox block another's.
 """
 
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -24,11 +26,16 @@ from app.models.mixins import CreatedAtMixin, TenantMixin, TimestampMixin, enum_
 
 class Email(Base, TimestampMixin, TenantMixin):
     __tablename__ = "emails"
+    # Scoped to the desk: two organisations connecting the same shared mailbox
+    # would otherwise collide on Gmail's message id.
+    __table_args__ = (
+        UniqueConstraint("organisation_id", "message_id", name="uq_email_message_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
     # Gmail's immutable message id, or a stable hash for locally sourced files.
-    message_id: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    message_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     thread_id: Mapped[str | None] = mapped_column(String(255), index=True)
     # RFC 5322 Message-ID header, needed to thread the reply correctly on send.
     rfc822_message_id: Mapped[str | None] = mapped_column(String(400))
