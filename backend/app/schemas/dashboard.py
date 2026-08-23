@@ -84,3 +84,9 @@ class SystemStatus(BaseModel):
     stock_lots: int = 0
     stock_specs: int = 0
     customers: int = 0
+    #: When this desk's mailbox was last checked, and how often it is checked
+    #: right now. The cadence is time-banded, so "every 10 minutes" is only
+    #: true inside working hours - the poller's own reason string is carried
+    #: through rather than restated here, where it would drift.
+    last_polled_at: datetime | None = None
+    poll_reason: str | None = None

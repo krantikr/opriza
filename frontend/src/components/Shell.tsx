@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
 import { api, useApi } from "../api/client";
 import type { Page, SystemStatus } from "../api/types";
@@ -141,6 +141,35 @@ const NAV = [
   { to: "/team", label: "Team", icon: Icons.customers },
   { to: "/settings", label: "Settings", icon: Icons.settings },
 ];
+
+/* What the top bar calls the current page.
+
+   Separate from the rail labels on purpose: the rail is abbreviated to keep
+   eleven destinations on one line each ("Quotes", "Chase"), while the header
+   is the page's own title and matches what the page used to print above its
+   own content ("Quotations", "Follow-ups"). Longest prefix wins, so
+   /quotations/17 still reads "Quotations". */
+const PAGE_TITLES: [string, string][] = [
+  ["/inbox", "Inbox"],
+  ["/quotations", "Quotations"],
+  ["/follow-ups", "Follow-ups"],
+  ["/stock", "Stock"],
+  ["/customers", "Clients"],
+  ["/pricing", "Pricing"],
+  ["/reports", "Reports"],
+  ["/activity", "Activity"],
+  ["/team", "Team"],
+  ["/account", "Your account"],
+  ["/mail-schedule", "Mail checking"],
+  ["/settings", "Settings"],
+];
+
+export function pageTitle(pathname: string): string {
+  const match = PAGE_TITLES.filter(([path]) => pathname.startsWith(path)).sort(
+    (a, b) => b[0].length - a[0].length,
+  )[0];
+  return match ? match[1] : "Home";
+}
 
 /* The rail reads as three jobs rather than one list of eleven: the work that
    arrives, the reference data behind a quote, and the desk itself. Dividers
@@ -408,14 +437,19 @@ function NotificationBell() {
               onClick={toggleAlerts}
               className="mt-0.5 shrink-0"
             >
+              {/* Same construction as `Toggle` in ui.tsx - flex with padding,
+                  so the knob is laid out inside the track rather than
+                  positioned against a hand-matched width. Hand-rolled here
+                  because this one sits on the dark rail, but the two must not
+                  drift into looking like different controls. */}
               <span
-                className={`relative block h-5 w-9 rounded-full transition-colors ${
-                  wanted ? "bg-brand" : "bg-rule-firm"
+                className={`relative flex h-5 w-9 items-center rounded-full p-0.5 transition-colors ${
+                  wanted ? "bg-brand-ink" : "bg-rule-firm"
                 }`}
               >
                 <span
-                  className={`absolute top-0.5 size-4 rounded-full bg-white transition-transform ${
-                    wanted ? "translate-x-4.5" : "translate-x-0.5"
+                  className={`size-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                    wanted ? "translate-x-full" : "translate-x-0"
                   }`}
                 />
               </span>
@@ -555,6 +589,7 @@ export default function Shell({ children }: { children: React.ReactNode }) {
   const { data: queue } = useApi<{ id: number }[]>("/follow-ups/queue", 60_000);
   const [menuOpen, setMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useRailCollapsed();
+  const title = pageTitle(useLocation().pathname);
 
   const dueCount = queue?.length ?? 0;
 
@@ -576,11 +611,17 @@ export default function Shell({ children }: { children: React.ReactNode }) {
             collapsed ? "justify-center px-2" : "gap-2.5 px-4"
           }`}
         >
+          {/* The desk's own name, not the product's. A trader who has the
+              app open all day knows what it is; what the corner has to
+              confirm - especially for anyone who works across more than one
+              desk - is whose books they are looking at. */}
           <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-brand text-sm font-bold text-white">
-            S
+            {(organisation?.name ?? "Steel Desk").trim().charAt(0).toUpperCase()}
           </span>
           {!collapsed && (
-            <span className="truncate text-sm font-semibold text-rail-ink-strong">Steel Desk</span>
+            <span className="truncate text-sm font-semibold text-rail-ink-strong">
+              {organisation?.name ?? "Steel Desk"}
+            </span>
           )}
         </div>
 
@@ -653,25 +694,37 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           >
             {/* Collapsed the labels go but the dots stay, laid out in a row -
                 a red dot has to be visible whichever width the rail is at. */}
+            {/* One line, and it answers the only question this corner was
+                ever asked: is mail still coming in? The Gmail search string,
+                the LLM key and the send policy are configuration - they
+                belong on Settings, where they can be changed, not on every
+                screen where they are read past. What cannot be found
+                anywhere else is when the mailbox was last actually checked:
+                a desk with no new enquiries needs to tell "nobody wrote"
+                apart from "we stopped looking". */}
             <ul className={`flex ${collapsed ? "justify-center gap-1.5" : "flex-col gap-1.5"}`}>
-              <li className="flex items-center gap-2 text-[11px] text-rail-ink">
-                <StatusDot ok={status.email_source_available} label={status.email_source} />
-                {!collapsed && <span className="truncate">{status.email_source}</span>}
-              </li>
-              <li className="flex items-center gap-2 text-[11px] text-rail-ink">
+              <li
+                className="flex items-center gap-2 text-[11px] text-rail-ink"
+                title={
+                  status.last_polled_at
+                    ? `Mail last checked ${new Date(status.last_polled_at).toLocaleString("en-IN")}` +
+                      (status.poll_reason ? ` · ${status.poll_reason}` : "")
+                    : status.poll_reason ?? "Mail has not been checked yet."
+                }
+              >
                 <StatusDot
-                  ok={status.llm_configured}
-                  label={status.llm_configured ? "LLM configured" : "No API key"}
+                  ok={status.email_source_available}
+                  label={
+                    status.last_polled_at
+                      ? `Mail last checked ${ago(status.last_polled_at)}`
+                      : "Mail has not been checked yet"
+                  }
                 />
                 {!collapsed && (
-                  <span className="truncate">{status.llm_configured ? "AI ready" : "No API key"}</span>
-                )}
-              </li>
-              <li className="flex items-center gap-2 text-[11px] text-rail-ink">
-                <StatusDot ok={!status.auto_send_enabled} label="Approval required to send" />
-                {!collapsed && (
                   <span className="truncate">
-                    {status.auto_send_enabled ? "Auto-send on" : "Approval to send"}
+                    {status.last_polled_at
+                      ? `Mail checked ${ago(status.last_polled_at)}`
+                      : "Mail not checked yet"}
                   </span>
                 )}
               </li>
@@ -704,27 +757,30 @@ export default function Shell({ children }: { children: React.ReactNode }) {
         {/* Matches the rail's 3.5rem masthead so the two line up across the
             seam, and sits outside the scroll region rather than relying on
             sticky - `main` is the only thing that scrolls now. */}
-        <header className="z-20 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-rule bg-surface px-4 md:px-5">
+        <header
+          data-print-hide
+          className="z-20 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-rule bg-surface px-4 md:px-5"
+        >
           <div className="flex min-w-0 items-center gap-2">
             <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-brand text-xs font-bold text-white md:hidden">
               S
             </span>
+            {/* The page's own title. The desk name moved to the rail, where
+                it stays put; repeating it here would spend the header on a
+                word that never changes. The pricing version went with it -
+                it belongs on Pricing, where it can be acted on, not on every
+                screen. The one case still worth interrupting for is pricing
+                never having been set up, because nothing can be quoted until
+                it is. */}
             <div className="flex min-w-0 items-baseline gap-2">
-              <span className="truncate text-sm font-semibold text-ink">
-                {organisation?.name ?? "Steel Desk"}
-              </span>
-              {/* The published pricing version, not the business-rules file:
-                  this is the number that decides what a customer is quoted. */}
-              {status && (
-                <span className="hidden text-[11px] sm:inline">
-                  {status.pricing_version === null ? (
-                    <NavLink to="/pricing" className="text-attention hover:underline">
-                      pricing not set up
-                    </NavLink>
-                  ) : (
-                    <span className="text-ink-faint">pricing v{status.pricing_version}</span>
-                  )}
-                </span>
+              <h1 className="truncate text-sm font-semibold text-ink">{title}</h1>
+              {status?.pricing_version === null && (
+                <NavLink
+                  to="/pricing"
+                  className="hidden text-[11px] text-attention hover:underline sm:inline"
+                >
+                  pricing not set up
+                </NavLink>
               )}
             </div>
           </div>

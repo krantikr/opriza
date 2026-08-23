@@ -340,7 +340,12 @@ export function Input({
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className={`w-full rounded-lg border border-rule bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-brand focus:outline-none disabled:opacity-60 ${className}`}
+      /* `w-full` is the default, not a fixed rule: it is dropped when the
+         caller passes a width of its own. Both classes together do not
+         resolve to the caller's - they have equal specificity, so the one
+         emitted later in the stylesheet wins, and that is always `w-full`.
+         Callers passing `w-24` were silently getting a full-width field. */
+      className={`${/(?:^|\s)w-/.test(className) ? "" : "w-full"} rounded-lg border border-rule bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-brand focus:outline-none disabled:opacity-60 ${className}`}
     />
   );
 }
@@ -397,11 +402,27 @@ export function Toggle({
           layer, and without isolation that layer clipped the first glyph of
           the adjacent label - "Active" rendered as "\ctive". Confirmed by
           hiding the track, which made the label render correctly. */}
+      {/* Flex, not absolute positioning: the track lays the knob out with a
+          2px padding on every side, so the knob cannot leave the pill however
+          the sizes change. A previous version positioned it by `translate-x`
+          against a fixed track width - the two numbers had to agree by hand,
+          and when they drifted the knob rendered outside its own track.
+
+          `isolate` matters: the animated track paints into its own
+          compositing layer, and without isolation that layer clipped the
+          first glyph of the adjacent label - "Active" rendered as "\ctive". */}
       <span
-        className={`relative isolate h-4.5 w-8 shrink-0 rounded-full transition-colors ${checked ? "bg-brand" : "bg-rule-firm"}`}
+        className={`relative isolate flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors ${
+          checked ? "bg-brand-ink" : "bg-rule-firm"
+        }`}
       >
+        {/* The knob slides by its own width-relative distance rather than a
+            hand-tuned pixel figure: the track is 36px with 2px of padding and
+            the knob is 16px, so a full travel is exactly 100% of the knob. */}
         <span
-          className={`absolute top-0.5 size-3.5 rounded-full bg-white transition-transform ${checked ? "translate-x-4" : "translate-x-0.5"}`}
+          className={`size-4 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+            checked ? "translate-x-full" : "translate-x-0"
+          }`}
         />
       </span>
       {label && (
@@ -468,7 +489,13 @@ export function SectionLabel({ children }: { children: ReactNode }) {
 
 /** A wide element that must scroll on its own rather than the page. */
 export function Scroller({ children, className = "" }: { children: ReactNode; className?: string }) {
-  return <div className={`overflow-x-auto ${className}`}>{children}</div>;
+  // Tagged so the print stylesheet can unwrap it: a horizontally scrolling
+  // box clips its overflow on paper instead of scrolling it.
+  return (
+    <div data-scroller className={`overflow-x-auto ${className}`}>
+      {children}
+    </div>
+  );
 }
 
 export function Banner({

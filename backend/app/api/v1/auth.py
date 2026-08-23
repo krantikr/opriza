@@ -269,8 +269,8 @@ def crawl_status(user: CurrentUser, db: TenantDb) -> CrawlStatusOut:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
     decision = decide(organisation)
-    last = db.scalars(
-        select(Mailbox.last_polled_at).order_by(Mailbox.last_polled_at.desc()).limit(1)
+    mailbox = db.scalars(
+        select(Mailbox).order_by(Mailbox.last_polled_at.desc().nullslast()).limit(1)
     ).first()
 
     return CrawlStatusOut(
@@ -279,7 +279,9 @@ def crawl_status(user: CurrentUser, db: TenantDb) -> CrawlStatusOut:
         interval_minutes=decision.interval_minutes,
         reason=decision.reason,
         local_time=local_now(organisation).strftime("%H:%M"),
-        last_polled_at=last,
+        last_polled_at=mailbox.last_polled_at if mailbox else None,
+        poller_running=settings.polling_enabled,
+        mailbox_connected=mailbox is not None,
     )
 
 

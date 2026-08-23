@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from ai.classifier import classify_email
 from ai.extractor import extract_requirement
-from ai.llm.base import LLMClient, LLMError
+from ai.llm.base import LLMClient, LLMError, RateLimitedError
 from ai.reply_classifier import classify_reply
 from ai.schemas import EmailCategory, ReplyIntent
 from app.core.db import utcnow
@@ -387,6 +387,14 @@ class QuotationWorkflow:
                 sender_email=email.sender_email,
                 client=self.client,
             )
+        except RateLimitedError:
+            # Not this email's fault and not a permanent verdict, so it must
+            # not be buried as FAILED. PROCESSING was already committed above,
+            # so a rollback cannot restore PENDING on its own - put it back
+            # explicitly, or the email is stranded in a status the poller's
+            # PENDING query never selects again.
+            self._release_to_pending(email)
+            raise
         except LLMError as exc:
             telemetry.record_failure(
                 self.db, task="classify", model="unknown", error=str(exc), email_id=email.id
@@ -427,6 +435,9 @@ class QuotationWorkflow:
                 sender_email=email.sender_email,
                 client=self.client,
             )
+        except RateLimitedError:
+            self._release_to_pending(email)
+            raise
         except LLMError as exc:
             telemetry.record_failure(
                 self.db, task="classify_reply", model="unknown", error=str(exc), email_id=email.id
@@ -563,6 +574,9 @@ class QuotationWorkflow:
                 received_at=email.received_at.isoformat() if email.received_at else None,
                 client=self.client,
             )
+        except RateLimitedError:
+            self._release_to_pending(email)
+            raise
         except LLMError as exc:
             telemetry.record_failure(
                 self.db, task="extract", model="unknown", error=str(exc), email_id=email.id
@@ -890,6 +904,21 @@ class QuotationWorkflow:
             email.processed_at = utcnow()
             self.db.commit()
 
+    def _release_to_pending(self, email: Email) -> None:
+        """Return a throttled email to the queue, exactly as it arrived.
+
+        `_classify` and `_classify_reply` commit PROCESSING before making the
+        call, so by the time a 429 surfaces that status is already durable.
+        Rolling back only discards the uncommitted remainder - without this the
+        email sits in PROCESSING forever, invisible to the PENDING query that
+        drives the poller, and the enquiry is silently lost.
+        """
+        self.db.rollback()
+        fresh = self.db.get(Email, email.id)
+        if fresh is not None:
+            fresh.processing_status = ProcessingStatus.PENDING
+            self.db.commit()
+
 
 def process_pending_emails(
     db: Session, limit: int = 25, client: LLMClient | None = None
@@ -909,6 +938,19 @@ def process_pending_emails(
     for email_id in pending:
         try:
             results.append(workflow.run(email_id))
+        except RateLimitedError as exc:
+            # One 429 means the whole batch is over budget, not that this email
+            # is special. Carrying on would fire the remaining emails at a
+            # gateway that has already said no - which is how a brief limit
+            # turns into a sustained one. Everything untouched stays PENDING.
+            db.rollback()
+            logger.warning(
+                "Rate limited on email %s - stopping this batch, %s email(s) left pending: %s",
+                email_id,
+                len(pending) - len(results),
+                exc,
+            )
+            break
         except Exception as exc:  # noqa: BLE001 - one email must not stop the batch
             db.rollback()
             logger.exception("Workflow crashed on email %s", email_id)

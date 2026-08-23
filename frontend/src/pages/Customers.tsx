@@ -234,8 +234,7 @@ export default function Customers() {
     <div className="flex h-[calc(100vh-7rem)] flex-col md:h-[calc(100vh-3.25rem)]">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-rule px-5 py-3">
         <div>
-          <h1 className="text-lg font-semibold text-ink">Customers</h1>
-          <p className="text-sm text-ink-faint">
+          <p className="text-sm text-ink-soft">
             {data ? `${data.total} on file` : "…"}
             {unverified > 0 && ` · ${unverified} unconfirmed`}
           </p>

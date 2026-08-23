@@ -143,8 +143,7 @@ export default function Dashboard() {
     <div className="flex flex-col gap-4 p-4 sm:gap-5 sm:p-5">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-ink">Dashboard</h1>
-          <p className="text-sm text-ink-faint">
+          <p className="text-sm text-ink-soft">
             {t ? `${t.period_label} · compared with ${t.previous_label}` : "Loading…"}
           </p>
         </div>

@@ -142,12 +142,18 @@ export default function PricingCalculator({
   lineId,
   onChange,
   readOnly = false,
+  hideWarnings = false,
 }: {
   pricing: QuotationPricing;
   quotationId: number;
   lineId: number;
   onChange: () => void;
   readOnly?: boolean;
+  /** Set when the parent has already hoisted this line's warnings into one
+   *  banner for the whole quotation. Every line of a quotation usually fails
+   *  for the same reason, so rendering them per line repeats one fact once
+   *  per material and buries the calculator under its own error. */
+  hideWarnings?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -220,6 +226,7 @@ export default function PricingCalculator({
           figures below are out of date.
         </Banner>
       ) : (
+        !hideWarnings &&
         pricing.warnings.map((w) => (
           <Banner key={w} tone="attention">
             {w}

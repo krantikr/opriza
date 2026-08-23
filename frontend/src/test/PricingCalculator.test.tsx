@@ -134,6 +134,37 @@ describe("the build-up", () => {
     renderCalculator({ warnings: ["Distance to Patna is not configured."] });
     expect(screen.getByText("Distance to Patna is not configured.")).toBeInTheDocument();
   });
+
+  it("leaves warnings to the parent when it has hoisted them", () => {
+    /* Every line of a quotation usually fails for the same reason, so the
+       engine records the same warning on each. Rendered per line, one fact
+       became a stack of identical banners above the figures. */
+    render(
+      <PricingCalculator
+        pricing={{ ...pricing, warnings: ["No base price available."] }}
+        quotationId={9}
+        lineId={4}
+        onChange={vi.fn()}
+        hideWarnings
+      />,
+    );
+    expect(screen.queryByText("No base price available.")).toBeNull();
+  });
+
+  it("still shows the stale-rules notice when warnings are hoisted", () => {
+    /* Staleness is a fact about this line's own figures, not about the
+       quotation, so hoisting must not silence it. */
+    render(
+      <PricingCalculator
+        pricing={{ ...pricing, rules_stale: true, warnings: ["No base price available."] }}
+        quotationId={9}
+        lineId={4}
+        onChange={vi.fn()}
+        hideWarnings
+      />,
+    );
+    expect(screen.getByText(/priced before the current rules/)).toBeInTheDocument();
+  });
 });
 
 describe("overriding a figure", () => {

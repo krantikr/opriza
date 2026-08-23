@@ -219,3 +219,111 @@ body {
   z-index: 1;
   background: var(--color-sunk);
 }
+
+/* ===========================================================================
+   Print.
+
+   The period report is a document that is meant to leave the screen - printed
+   for a partner, saved as PDF for an accountant. Printing a screen layout
+   produces a navigation rail down the side of page one and statements split
+   across page breaks, so the rules here strip the application chrome and let
+   the sheet flow as pages.
+
+   `print:hidden` on a control is not enough on its own: the app shell renders
+   the rail and header outside the page component, so they are hidden here.
+   =========================================================================== */
+
+@media print {
+  /* The report is set on white; anything the app painted behind it goes. */
+  html,
+  body {
+    background: #FFFFFF !important;
+    color: #000000;
+  }
+
+  /* Application chrome. The shell renders its rail, top bar and mobile tabs
+     outside the page component, so they are hidden from here rather than with
+     a `print:hidden` utility on the page itself. */
+  aside,
+  nav,
+  [data-print-hide] {
+    display: none !important;
+  }
+
+  /* The shell scrolls an inner `main` rather than the window. A print flow
+     cannot paginate out of a scroll container - it clips at one viewport and
+     the rest of the document silently disappears - so every ancestor between
+     the paper and the report is unwound back to normal flow. */
+  #root,
+  #root > div,
+  main,
+  main > div,
+  [data-scroll-region] {
+    display: block !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  /* A statement broken across two sheets stops being readable as a statement. */
+  section,
+  table,
+  tr,
+  thead {
+    break-inside: avoid;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  /* Schedules are wide; let them shrink to the page instead of clipping. */
+  [data-scroller] {
+    overflow: visible !important;
+  }
+
+  table {
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+
+  /* On screen the three statements read across; on paper a three-column row
+     would set each statement in a 6cm column, so they stack. The report is
+     one measure wide on paper whatever the window was doing.
+     The contents cards are exempt - four one-line summaries stacked vertically
+     waste most of the first sheet, and they are short enough to stay in a row. */
+  [data-report] .grid:not([data-keep-columns]) {
+    display: block !important;
+  }
+
+  [data-report] [data-keep-columns] {
+    display: grid !important;
+    grid-template-columns: repeat(4, 1fr) !important;
+    gap: 8px !important;
+  }
+
+  /* At a quarter of the page a sparkline crowds the figure beside it until the
+     figure is what truncates - and the figure is the reason the card exists.
+     The trend is in the chart below anyway, so on paper the line goes. */
+  [data-keep-columns] svg {
+    display: none !important;
+  }
+
+  [data-report] section {
+    margin-bottom: 14px;
+    box-shadow: none !important;
+  }
+
+  /* Cards lose their fill on paper: a grey panel behind every statement is
+     a great deal of toner for no information. */
+  [data-report] section,
+  [data-report] header {
+    background: transparent !important;
+  }
+
+  @page {
+    margin: 14mm;
+  }
+}

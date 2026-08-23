@@ -258,10 +258,20 @@ export function ColumnChart({
   }
 
   return (
-    <div className="flex items-end gap-1.5" style={{ height }}>
+    // `items-stretch`, not `items-end`: the columns must take the full height
+    // of the row so the percentage-sized bars inside them have something
+    // definite to measure against. Aligning the row to the end instead
+    // shrink-wraps every column to its label, and the bars vanish while the
+    // axis still draws. Each column ends its own bars with `items-end`.
+    <div className="flex items-stretch gap-1.5" style={{ height }}>
       {points.map((p, i) => (
-        <div key={p.label} className="group flex min-w-0 flex-1 flex-col items-center gap-1">
-          <div className="flex h-full w-full items-end justify-center gap-0.5">
+        // `min-h-0 flex-1` on the column and `min-h-0 flex-1` on the plot area:
+        // the bars are sized as a percentage of their parent, so that parent
+        // needs a definite height. Without it `h-full` resolves against an
+        // auto-height flex item, collapses to zero, and every bar disappears
+        // while the axis labels still draw - a chart that looks merely empty.
+        <div key={p.label} className="group flex min-h-0 min-w-0 flex-1 flex-col items-center gap-1">
+          <div className="flex min-h-0 w-full flex-1 items-end justify-center gap-0.5">
             {p.previous !== undefined && (
               <div
                 title={`Previous: ${format(p.previous)}`}
@@ -307,12 +317,20 @@ export function DonutChart({
   size = 132,
   centerLabel,
   centerValue,
+  tones,
+  format,
 }: {
   data: BarDatum[];
   size?: number;
   centerLabel?: string;
   centerValue?: string;
+  /** Per-slice `text-*` classes, when the meaning of a slice fixes its colour -
+   *  deadstock is red wherever it happens to sit in the series. */
+  tones?: string[];
+  format?: (v: number) => string;
 }) {
+  const palette = (i: number) => tones?.[i] ?? DONUT_TONES[i % DONUT_TONES.length];
+  const show = format ?? ((v: number) => v.toLocaleString("en-IN"));
   const total = data.reduce((sum, d) => sum + d.value, 0);
   const radius = size / 2 - 10;
   const circumference = 2 * Math.PI * radius;
@@ -348,9 +366,9 @@ export function DonutChart({
               strokeWidth="12"
               strokeDasharray={`${dash} ${circumference - dash}`}
               strokeDashoffset={-offset}
-              className={DONUT_TONES[i % DONUT_TONES.length]}
+              className={palette(i)}
             >
-              <title>{`${d.label}: ${d.value} (${(fraction * 100).toFixed(0)}%)`}</title>
+              <title>{`${d.label}: ${show(d.value)} (${(fraction * 100).toFixed(0)}%)`}</title>
             </circle>
           );
           offset += dash;
@@ -367,11 +385,9 @@ export function DonutChart({
         )}
         {data.map((d, i) => (
           <div key={d.label} className="flex items-center gap-2 text-xs">
-            <span
-              className={`size-2 shrink-0 rounded-sm bg-current ${DONUT_TONES[i % DONUT_TONES.length]}`}
-            />
+            <span className={`size-2 shrink-0 rounded-sm bg-current ${palette(i)}`} />
             <span className="min-w-0 flex-1 truncate text-ink-soft">{d.label}</span>
-            <span className="tabular shrink-0 font-medium text-ink">{d.value}</span>
+            <span className="tabular shrink-0 font-medium text-ink">{show(d.value)}</span>
           </div>
         ))}
       </div>
@@ -413,6 +429,400 @@ export function FunnelChart({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   Stacked columns
+   --------------------------------------------------------------------------- */
+
+export interface StackSeries {
+  key: string;
+  label: string;
+  /** A `bg-*` utility. Kept as a class so the palette stays in the token file. */
+  fill: string;
+}
+
+export interface StackPoint {
+  label: string;
+  values: Record<string, number>;
+}
+
+/** Composition over time: several series stacked on a shared zero baseline.
+ *
+ *  A trading period is made of parts - what was quoted, what closed, what was
+ *  declined - and the question is nearly always "how did the mix change?".
+ *  Separate lines make the reader add the parts up mentally; stacking states
+ *  the total and the split in one mark.
+ *
+ *  Negative values stack downward from the baseline, so a loss reads as a
+ *  descent rather than as a bar that merely got shorter. */
+export function StackedBarChart({
+  points,
+  series,
+  height = 210,
+  format = (v: number) => v.toLocaleString("en-IN"),
+  emptyMessage = "Nothing recorded in this period.",
+}: {
+  points: StackPoint[];
+  series: StackSeries[];
+  height?: number;
+  format?: (v: number) => string;
+  emptyMessage?: string;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+
+  const totals = points.map((p) => {
+    let up = 0;
+    let down = 0;
+    for (const s of series) {
+      const v = p.values[s.key] ?? 0;
+      if (v >= 0) up += v;
+      else down += v;
+    }
+    return { up, down };
+  });
+
+  const ceiling = Math.max(0, ...totals.map((t) => t.up));
+  const floor = Math.min(0, ...totals.map((t) => t.down));
+  const span = ceiling - floor;
+
+  if (points.length === 0 || span === 0) {
+    return (
+      <div className="flex items-center justify-center text-sm text-ink-faint" style={{ height }}>
+        {emptyMessage}
+      </div>
+    );
+  }
+
+  // Where zero sits, as a share of the plot from the top. With no negative
+  // values this is the bottom edge and the chart looks like ordinary columns.
+  const zero = (ceiling / span) * 100;
+  const labelEvery = points.length > 8 ? Math.ceil(points.length / 6) : 1;
+
+  return (
+    <div>
+      <div className="relative flex items-stretch gap-1" style={{ height }}>
+        {/* The zero line is the reading anchor: above it is profit, below is loss. */}
+        <div
+          className="pointer-events-none absolute inset-x-0 border-t border-rule-firm"
+          style={{ top: `${zero}%` }}
+        />
+
+        {points.map((p, i) => {
+          const up = series.filter((s) => (p.values[s.key] ?? 0) > 0);
+          const down = series.filter((s) => (p.values[s.key] ?? 0) < 0);
+          const active = hover === i;
+
+          return (
+            <div
+              key={p.label}
+              className="group relative flex min-w-0 flex-1 flex-col"
+              onMouseEnter={() => setHover(i)}
+              onMouseLeave={() => setHover(null)}
+            >
+              {/* Above the baseline */}
+              {/* `justify-end` seats the stack on the zero line; without it the
+                  column floats above the axis with a gap beneath it. Series are
+                  declared bottom-up, so they are reversed here to paint from
+                  the top of a column-direction flex box downward. */}
+              <div
+                className="flex w-full flex-col justify-end"
+                style={{ height: `${zero}%` }}
+              >
+                {[...up].reverse().map((s) => (
+                  <div
+                    key={s.key}
+                    className={`${s.fill} mx-auto w-full max-w-8 transition-opacity ${
+                      hover !== null && !active ? "opacity-40" : ""
+                    }`}
+                    style={{ height: `${((p.values[s.key] ?? 0) / span) * 100}%` }}
+                    title={`${s.label}: ${format(p.values[s.key] ?? 0)}`}
+                  />
+                ))}
+              </div>
+
+              {/* Below the baseline */}
+              <div className="flex w-full flex-col" style={{ height: `${100 - zero}%` }}>
+                {down.map((s) => (
+                  <div
+                    key={s.key}
+                    className={`${s.fill} mx-auto w-full max-w-8 transition-opacity ${
+                      hover !== null && !active ? "opacity-40" : ""
+                    }`}
+                    style={{ height: `${(Math.abs(p.values[s.key] ?? 0) / span) * 100}%` }}
+                    title={`${s.label}: ${format(p.values[s.key] ?? 0)}`}
+                  />
+                ))}
+              </div>
+
+              {active && (
+                <div className="pointer-events-none absolute -top-1 left-1/2 z-10 min-w-36 -translate-x-1/2 -translate-y-full rounded-lg border border-rule bg-surface p-2 shadow-lg">
+                  <p className="mb-1 text-[11px] font-medium text-ink">{p.label}</p>
+                  {series.map((s) => (
+                    <div key={s.key} className="flex items-center gap-2 text-[11px]">
+                      <span className={`size-2 shrink-0 rounded-sm ${s.fill}`} />
+                      <span className="flex-1 text-ink-faint">{s.label}</span>
+                      <span className="tabular font-medium text-ink">
+                        {format(p.values[s.key] ?? 0)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-1.5 flex gap-1">
+        {points.map((p, i) => (
+          <span
+            key={p.label}
+            className="min-w-0 flex-1 truncate text-center text-[10px] text-ink-faint"
+          >
+            {i % labelEvery === 0 ? p.label : ""}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The key beneath a stacked chart. Separate from the chart so a caller can
+ *  place it where the layout wants it. */
+export function StackLegend({ series }: { series: StackSeries[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      {series.map((s) => (
+        <span key={s.key} className="flex items-center gap-1.5 text-[11px] text-ink-soft">
+          <span className={`size-2 shrink-0 rounded-sm ${s.fill}`} />
+          {s.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   Multi-line
+   --------------------------------------------------------------------------- */
+
+export interface LineSeries {
+  key: string;
+  label: string;
+  /** A CSS colour, not a class: the same series definitions are handed to the
+   *  server-rendered HTML report, which has no Tailwind. */
+  colour: string;
+  dashed?: boolean;
+}
+
+/** Two or more series against a shared scale.
+ *
+ *  Stacked columns answer "what is this total made of"; two lines answer
+ *  "did these two move together?" - which is the question behind quoted
+ *  against sold. Plotting them as one stack would hide the gap, and the gap
+ *  is the conversion story. */
+export function MultiLineChart({
+  points,
+  series,
+  height = 180,
+  format = (v: number) => v.toLocaleString("en-IN"),
+  emptyMessage = "Not enough history to plot a trend.",
+}: {
+  points: { label: string; values: Record<string, number> }[];
+  series: LineSeries[];
+  height?: number;
+  format?: (v: number) => string;
+  emptyMessage?: string;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+
+  const peak = Math.max(
+    1,
+    ...points.flatMap((p) => series.map((s) => p.values[s.key] ?? 0)),
+  );
+
+  if (points.length < 2) {
+    return (
+      <div className="flex items-center justify-center text-sm text-ink-faint" style={{ height }}>
+        {emptyMessage}
+      </div>
+    );
+  }
+
+  const W = 320;
+  const H = 120;
+  const pad = 4;
+  const x = (i: number) => pad + (i / (points.length - 1)) * (W - pad * 2);
+  const y = (v: number) => H - pad - (v / peak) * (H - pad * 2);
+
+  return (
+    <div>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full"
+        style={{ height }}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label="Trend"
+        onMouseLeave={() => setHover(null)}
+      >
+        {[0.25, 0.5, 0.75].map((f) => (
+          <line
+            key={f}
+            x1={0}
+            x2={W}
+            y1={pad + f * (H - pad * 2)}
+            y2={pad + f * (H - pad * 2)}
+            className="stroke-rule"
+            strokeWidth="0.5"
+          />
+        ))}
+
+        {series.map((s) => (
+          <polyline
+            key={s.key}
+            fill="none"
+            stroke={s.colour}
+            strokeWidth="1.5"
+            strokeDasharray={s.dashed ? "3 2" : undefined}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            vectorEffect="non-scaling-stroke"
+            points={points.map((p, i) => `${x(i)},${y(p.values[s.key] ?? 0)}`).join(" ")}
+          />
+        ))}
+
+        {points.map((p, i) => (
+          <rect
+            key={p.label}
+            x={x(i) - (W / points.length) / 2}
+            y={0}
+            width={W / points.length}
+            height={H}
+            fill="transparent"
+            onMouseEnter={() => setHover(i)}
+          />
+        ))}
+
+        {hover !== null && (
+          <line
+            x1={x(hover)}
+            x2={x(hover)}
+            y1={0}
+            y2={H}
+            className="stroke-rule-firm"
+            strokeWidth="0.5"
+          />
+        )}
+      </svg>
+
+      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+        {series.map((s) => (
+          <span key={s.key} className="flex items-center gap-1.5 text-[11px] text-ink-soft">
+            <span
+              className="inline-block h-0.5 w-3.5 shrink-0"
+              style={{
+                background: s.dashed ? "none" : s.colour,
+                borderTop: s.dashed ? `1.5px dashed ${s.colour}` : undefined,
+              }}
+            />
+            {s.label}
+            {hover !== null && (
+              <span className="tabular font-medium text-ink">
+                {format(points[hover].values[s.key] ?? 0)}
+              </span>
+            )}
+          </span>
+        ))}
+        {hover !== null && (
+          <span className="text-[11px] text-ink-faint">{points[hover].label}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   Waterfall
+   --------------------------------------------------------------------------- */
+
+export interface WaterfallStep {
+  label: string;
+  value: number;
+  /** A total rests on the baseline; a step floats where the running sum left it. */
+  total?: boolean;
+  colour: string;
+}
+
+/** How a starting figure becomes a finishing one.
+ *
+ *  Revenue less cost equals profit is a *subtraction*, and a waterfall is the
+ *  only common chart that draws subtraction: the deduction hangs below the bar
+ *  it came out of, so the eye sees the gross profit bar as the remainder rather
+ *  than as a third unrelated quantity. */
+export function WaterfallChart({
+  steps,
+  height = 180,
+  format = (v: number) => v.toLocaleString("en-IN"),
+}: {
+  steps: WaterfallStep[];
+  height?: number;
+  format?: (v: number) => string;
+}) {
+  let running = 0;
+  const bars = steps.map((s) => {
+    const start = s.total ? 0 : running;
+    const end = s.total ? s.value : running + s.value;
+    if (!s.total) running += s.value;
+    else running = s.value;
+    return { ...s, start, end };
+  });
+
+  const peak = Math.max(1, ...bars.map((b) => Math.max(b.start, b.end)));
+
+  if (peak <= 1) {
+    return (
+      <div className="flex items-center justify-center text-sm text-ink-faint" style={{ height }}>
+        Nothing to reconcile in this period.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* `items-stretch`, and the plot row carries the height: a
+          percentage-positioned bar needs an ancestor with a resolved height,
+          and a flex child sized by its content does not give it one. */}
+      <div className="flex items-stretch gap-2">
+        {bars.map((b) => {
+          const top = Math.max(b.start, b.end);
+          const bottom = Math.min(b.start, b.end);
+          return (
+            <div key={b.label} className="flex min-w-0 flex-1 flex-col items-center">
+              <div className="relative w-full" style={{ height }}>
+                <div
+                  className="absolute inset-x-0 mx-auto max-w-12"
+                  style={{
+                    background: b.colour,
+                    bottom: `${(bottom / peak) * 100}%`,
+                    height: `${Math.max(((top - bottom) / peak) * 100, 1)}%`,
+                  }}
+                  title={`${b.label}: ${format(b.value)}`}
+                />
+              </div>
+              <span className="tabular mt-1.5 w-full truncate text-center text-[11px] font-medium text-ink">
+                {format(b.value)}
+              </span>
+              <span className="w-full truncate text-center text-[10px] text-ink-faint">
+                {b.label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

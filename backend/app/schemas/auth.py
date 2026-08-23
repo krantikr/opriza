@@ -112,6 +112,17 @@ class CrawlStatusOut(BaseModel):
     reason: str
     local_time: str
     last_polled_at: datetime | None = None
+    #: Two things override this desk's schedule entirely, and neither is
+    #: visible from it. Without them the page describes a cadence that is
+    #: not running and gives no hint why - which is the one question the
+    #: screen exists to answer.
+    #:
+    #: The server-wide poller switch (`POLLING_ENABLED`). Off means nothing
+    #: is fetched on a timer for any desk, whatever this schedule says.
+    poller_running: bool = True
+    #: Whether this desk has a mailbox at all. A schedule with nothing to
+    #: poll is a schedule that will never fetch anything.
+    mailbox_connected: bool = False
 
 
 class CreateOrganisationIn(BaseModel):

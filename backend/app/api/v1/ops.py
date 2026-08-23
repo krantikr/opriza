@@ -64,7 +64,9 @@ from app.schemas.ops import (
     StockMovementOut,
     TimelineEntry,
 )
+from app.services import html_report, periods
 from app.services.chase import ChaseService
+from app.services.desk import DeskService
 from app.services.ingestion.excel_importer import ImportFailed, StockImporter
 from app.services.insights import InsightService
 from app.services.notifications import NotificationService
@@ -73,6 +75,7 @@ from app.services.quotations.followup import FollowUpError, FollowUpService
 from app.services.quotations.followup_rules import FollowUpScheduler
 from app.services.reports import DateRange, ReportService
 from app.services.stock.movements import StockMovementService
+from app.services.workbook import WorkbookBuilder
 
 router = APIRouter()
 
@@ -931,6 +934,120 @@ def funnel_report(
     }
 
 
+def _named_period(period: str, start: date | None, end: date | None):
+    """A named window, or an explicit range when both dates are given."""
+    if start and end:
+        return periods.custom(start, end)
+    return periods.resolve(period)
+
+
+@router.get("/reports/periods", tags=["reports"])
+def report_periods() -> dict:
+    """The named windows offered in the picker, resolved against today."""
+    return {
+        "choices": [
+            {
+                "key": key,
+                "label": label,
+                "range": periods.resolve(key).current.label(),
+            }
+            for key, label in periods.CHOICES
+        ]
+    }
+
+
+@router.get("/reports/desk", tags=["reports"])
+def desk_report(
+    db: TenantDb,
+    period: str = Query("this-month"),
+    start: date | None = None,
+    end: date | None = None,
+) -> dict:
+    """The trading view of a period: what was earned, lost, and left standing."""
+    return DeskService(db).build(_named_period(period, start, end)).to_dict()
+
+
+@router.get("/reports/pack", tags=["reports"], response_model=None)
+def report_pack(
+    db: TenantDb,
+    period: str = Query("this-month"),
+    start: date | None = None,
+    end: date | None = None,
+) -> Response:
+    """The whole period as one workbook - a summary sheet plus every table.
+
+    Built server-side rather than in the browser so the file that reaches an
+    accountant carries the same figures the page showed, formatted as numbers.
+    """
+    window = _named_period(period, start, end)
+    desk = DeskService(db).build(window)
+    service = ReportService(db)
+    span = window.current
+
+    builder = WorkbookBuilder(f"Trading report - {window.label}")
+    builder.write_summary(desk)
+    builder.add_rows("Won & lost by customer", desk.customers)
+    builder.add_rows("Product margins", desk.products)
+    builder.add_rows("Why we lost", desk.lost_reasons)
+    builder.add_rows("Stock ageing", desk.stock.get("oldest", []))
+    builder.add_rows("Quiet customers", desk.quiet_customers)
+    builder.add_report("Quotation detail", service.win_loss(span))
+    builder.add_report("Margin by line", service.margin(span))
+
+    slug = window.label.lower().replace(" ", "-")
+    return Response(
+        content=builder.to_bytes(),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": f'attachment; filename="trading-report-{slug}.xlsx"'
+        },
+    )
+
+
+@router.get("/reports/document", tags=["reports"], response_model=None)
+def report_document(
+    db: TenantDb,
+    user: CurrentUser,
+    period: str = Query("this-month"),
+    start: date | None = None,
+    end: date | None = None,
+    download: bool = True,
+) -> Response:
+    """The period report as one self-contained HTML file.
+
+    The workbook is for somebody who wants to sum a column; this is for somebody
+    who wants to read the report. Rendered server-side from the same figures the
+    page shows, with its stylesheet inlined, so the file survives being emailed
+    or archived and prints to the same pages.
+    """
+    window = _named_period(period, start, end)
+    desk = DeskService(db).build(window)
+    service = ReportService(db)
+    span = window.current
+
+    organisation = user.organisation.name if user.organisation else "Trading desk"
+    html = html_report.build(
+        desk,
+        organisation=organisation,
+        registers={
+            "Quotation register": service.win_loss(span),
+            "Margin by line": service.margin(span),
+        },
+    )
+
+    slug = window.label.lower().replace(" ", "-")
+    disposition = "attachment" if download else "inline"
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": f'{disposition}; filename="trading-report-{slug}.html"'
+        },
+    )
+
+
 @router.get("/reports/{name}", tags=["reports"], response_model=None)
 def report(
     name: str,
@@ -938,13 +1055,22 @@ def report(
     days: int = Query(30,
     ge=1,
     le=730),
+    period_key: str | None = Query(None, alias="period"),
     start: date | None = None,
     end: date | None = None,
     fmt: str = Query("json",
     pattern="^(json|csv)$"),
 ) -> Response | dict:
-    """One of: win-loss, margin, stock-ageing, customers, products."""
-    period = _period(days, start, end)
+    """One of: win-loss, margin, stock-ageing, customers, products.
+
+    Accepts either a named period ("last-month") or a rolling day count, so a
+    CSV pulled from the page covers exactly the window the page was showing.
+    """
+    period = (
+        _named_period(period_key, start, end).current
+        if period_key
+        else _period(days, start, end)
+    )
     service = ReportService(db)
 
     builders = {

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.api.deps import TenantDb
+from app.api.deps import CurrentUser, TenantDb
 from app.core.config import settings
 from app.core.rules import get_rules
 from app.models import (
@@ -18,6 +18,7 @@ from app.models import (
     AuditLog,
     Customer,
     Email,
+    Mailbox,
     ProcessingStatus,
     QuotationLineItem,
     QuotationRequest,
@@ -35,6 +36,7 @@ from app.schemas.dashboard import (
     SystemStatus,
 )
 from app.schemas.quotations import AuditLogOut
+from app.services.crawl_window import decide
 from app.services.email.factory import get_email_source
 from app.services.pricing import active_rule_set
 from app.services.telemetry import usage_summary
@@ -199,7 +201,7 @@ def list_audit_logs(
 
 
 @router.get("/system/status", response_model=SystemStatus, tags=["system"])
-def system_status(db: TenantDb) -> SystemStatus:
+def system_status(db: TenantDb, user: CurrentUser) -> SystemStatus:
     """What the system is configured to do, and whether it can do it.
 
     Surfaced in the UI so the state of the Gmail connection and the LLM key is
@@ -208,6 +210,23 @@ def system_status(db: TenantDb) -> SystemStatus:
     source = get_email_source()
     rules = get_rules()
     pricing = active_rule_set(db)
+
+    # When mail was last actually fetched, and the cadence in force right now.
+    # A desk that has stopped receiving enquiries needs to tell "nobody wrote"
+    # apart from "we stopped looking", and only a timestamp does that.
+    # Super admins span desks, so there is no single mailbox to report.
+    mailbox = (
+        None
+        if user.is_super_admin
+        else db.scalars(
+            select(Mailbox).order_by(Mailbox.last_polled_at.desc().nullslast())
+        ).first()
+    )
+    poll_reason = (
+        decide(mailbox.organisation).reason
+        if mailbox is not None and mailbox.organisation is not None
+        else None
+    )
 
     return SystemStatus(
         app_name=settings.app_name,
@@ -227,6 +246,8 @@ def system_status(db: TenantDb) -> SystemStatus:
         stock_lots=db.scalar(select(func.count()).select_from(StockItem)) or 0,
         stock_specs=_distinct_spec_count(db),
         customers=db.scalar(select(func.count()).select_from(Customer)) or 0,
+        last_polled_at=mailbox.last_polled_at if mailbox else None,
+        poll_reason=poll_reason,
     )
 
 

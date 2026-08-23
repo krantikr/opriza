@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.core.config import settings
 from app.models import (
     NotificationChannel,
     NotificationKind,
@@ -49,14 +50,27 @@ def device(db, default_user) -> PushDevice:
 # ---------------------------------------------------------------------------
 
 
-def test_an_unconfigured_desk_falls_back_to_local_files():
+@pytest.fixture()
+def no_firebase(monkeypatch):
+    """Pin the desk to *unconfigured*, whatever the developer's .env says.
+
+    These tests are about the before-Firebase state, so they must assert it
+    rather than inherit it. Reading ambient config meant they passed only on a
+    machine with no credentials and broke the moment a real project was wired
+    up - a failure that says nothing about the code under test.
+    """
+    monkeypatch.setattr(settings, "fcm_project_id", "")
+    monkeypatch.setattr(settings, "fcm_credentials_file", "")
+
+
+def test_an_unconfigured_desk_falls_back_to_local_files(no_firebase):
     """The whole push path stays exercisable before any Firebase project."""
     channel = get_channel(NotificationChannel.PUSH)
 
     assert isinstance(channel, LocalChannel)
 
 
-def test_sending_without_firebase_reports_why_rather_than_raising():
+def test_sending_without_firebase_reports_why_rather_than_raising(no_firebase):
     result = FcmChannel().send(destination="tok", title="Hi", body="There")
 
     assert result.sent is False
@@ -178,15 +192,49 @@ def test_re_registering_revives_a_retired_device(client, db, device):
     assert r.json()["disabled_reason"] is None
 
 
-def test_status_separates_desk_setup_from_device_count(client, device):
+def test_status_separates_desk_setup_from_device_count(client, device, no_firebase):
     """So the UI can say "ask your administrator" rather than prompting for a
     permission that could never deliver anything."""
     r = client.get("/api/v1/push/status")
 
     assert r.status_code == 200
     body = r.json()
-    assert body["configured"] is False  # no Firebase in tests
+    assert body["configured"] is False
     assert body["devices"] == 1
+
+
+def test_status_reports_a_configured_desk(client, device, monkeypatch, tmp_path):
+    """The other half of the same switch, which nothing covered before."""
+    creds = tmp_path / "fcm.json"
+    creds.write_text("{}")
+    monkeypatch.setattr(settings, "fcm_project_id", "tdesk-8a1b2")
+    monkeypatch.setattr(settings, "fcm_credentials_file", str(creds))
+
+    body = client.get("/api/v1/push/status").json()
+
+    assert body["configured"] is True
+
+
+def test_a_named_but_missing_credentials_file_is_not_configured(monkeypatch, tmp_path):
+    """Half-configured is worse than unconfigured, because nobody is warned.
+
+    Naming a service-account JSON that has not been downloaded yet used to read
+    as ready: Settings hid the "ask your administrator" banner, a trader
+    granted browser permission and registered a device, and every send failed
+    at runtime against a desk that claimed it could deliver.
+    """
+    monkeypatch.setattr(settings, "fcm_project_id", "tdesk-8a1b2")
+    monkeypatch.setattr(settings, "fcm_credentials_file", str(tmp_path / "not-downloaded.json"))
+
+    assert settings.fcm_configured is False
+
+
+def test_a_credentials_path_pointing_at_a_directory_is_not_configured(monkeypatch, tmp_path):
+    """`is_file`, not `exists` - a directory cannot be read as a key."""
+    monkeypatch.setattr(settings, "fcm_project_id", "tdesk-8a1b2")
+    monkeypatch.setattr(settings, "fcm_credentials_file", str(tmp_path))
+
+    assert settings.fcm_configured is False
 
 
 def test_a_device_can_be_turned_off(client, db, device):

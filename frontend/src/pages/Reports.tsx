@@ -1,140 +1,357 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 
 import { useApi } from "../api/client";
-import type { FunnelReport, Insights, ReportResult } from "../api/types";
-import { AreaChart, ColumnChart, DonutChart, FunnelChart, HBarChart } from "../components/charts";
+import type {
+  DeskCustomer,
+  DeskProduct,
+  DeskReport,
+  PeriodChoice,
+  ReportResult,
+} from "../api/types";
+import type { LineSeries } from "../components/charts";
+import { DonutChart, MultiLineChart } from "../components/charts";
 import {
-  Badge,
   Button,
-  Card,
-  Empty,
   ErrorNote,
   inr,
   inrShort,
   Loading,
   Scroller,
   Select,
+  Sparkline,
 } from "../components/ui";
+import { useAuth } from "../lib/auth";
 
 /* ---------------------------------------------------------------------------
-   Reports.
+   The period report.
 
-   Structured as three questions rather than as a list of tables:
+   This is a *document*, not a dashboard. The distinction is not cosmetic: a
+   dashboard answers "what is happening now" and is read at a glance, while a
+   report answers "what happened over this period, and does it reconcile" and
+   is read line by line, printed, signed, and sent to somebody. So the page is
+   set as a sheet - letterhead, numbered statements, ruled totals, footer - and
+   every statement is arranged so its lines add up to the total beneath them.
 
-   * **How are we doing?** Headline figures against the same window before,
-     with the movement that matters called out in words.
-   * **Where is the business?** Composition - which customers, which products,
-     which stage things stop at.
-   * **What needs me?** The quotations sitting still, ordered by what they are
-     worth, because that is the cost of leaving them.
+   Four statements, in the order a trader would work through them:
 
-   Every figure is counted from stored rows at the rules in force at the time,
-   so last quarter does not move when a trader edits a percentage today.
+     1. Enquiry and quotation - how much work came in, how much we answered.
+     2. Sales and realisation - what we sold, and at what rate.
+     3. Trading and profit    - what it cost, and what we kept.
+     4. Stock                 - opening, receipts, issues, closing.
+
+   Each line is a subset or a component of the one below it, so the gaps are
+   themselves information: mail that was not an enquiry, enquiries never quoted,
+   quotations never sent. A list of totals would hide exactly those gaps.
+
+   Figures come from stored rows at the rules in force at the time, so a
+   printed report does not change when somebody edits a percentage tomorrow.
    --------------------------------------------------------------------------- */
 
-const PERIODS = [
-  { value: "7", label: "Last 7 days" },
-  { value: "30", label: "Last 30 days" },
-  { value: "90", label: "Last quarter" },
-  { value: "365", label: "Last year" },
-];
-
 const DETAIL_REPORTS = [
-  { value: "win-loss", label: "Win / loss" },
-  { value: "margin", label: "Margin realised" },
+  { value: "win-loss", label: "Quotation register" },
+  { value: "margin", label: "Margin by line" },
   { value: "stock-ageing", label: "Stock ageing" },
-  { value: "customers", label: "Customer performance" },
-  { value: "products", label: "Product performance" },
+  { value: "customers", label: "Customer ledger" },
+  { value: "products", label: "Product ledger" },
 ];
 
-const SERIES = [
-  { key: "value", label: "Quoted value" },
-  { key: "quotations", label: "Quotations" },
-  { key: "sent", label: "Sent" },
-] as const;
+const FALLBACK_PERIODS: PeriodChoice[] = [
+  { key: "this-month", label: "This month", range: "" },
+  { key: "last-month", label: "Last month", range: "" },
+];
 
-type SeriesKey = (typeof SERIES)[number]["key"];
+const SALES_LINES: LineSeries[] = [
+  { key: "quoted", label: "Quoted", colour: "#94A3B8", dashed: true },
+  { key: "sold", label: "Sold", colour: "#2563EB" },
+];
 
-function Arrow({ direction }: { direction: "up" | "down" | "flat" }) {
-  if (direction === "flat") return <span aria-hidden="true">→</span>;
+const AGEING_TONE: Record<string, string> = {
+  "0-30 days": "text-brand",
+  "31-60 days": "text-brand-soft",
+  "61-90 days": "text-attention",
+  "Over 90 days": "text-danger",
+};
+
+/** Deadstock first, so the ring opens on the slice that matters. */
+const AGEING_ORDER = <T extends { label: string; value: number }>(buckets: T[]): T[] => [
+  ...buckets.filter((b) => b.label === "Over 90 days" && b.value > 0),
+  ...buckets.filter((b) => b.label !== "Over 90 days" && b.value > 0),
+];
+
+function mt(value: number): string {
+  return `${value.toLocaleString("en-IN", { maximumFractionDigits: 3 })}`;
+}
+
+function pct(value: number | null): string {
+  return value === null ? "—" : `${value.toFixed(1)}%`;
+}
+
+/* --- Document furniture ---------------------------------------------------- */
+
+/** One numbered statement, as a card.
+ *
+ *  The number is not decoration: these are meant to be referred to ("see
+ *  statement 3") the way a set of accounts is. The card gives each statement a
+ *  boundary so three can sit side by side and still read as three separate
+ *  documents rather than one long column of figures.
+ *
+ *  Statements carry no chart of their own. A figure exhibit squeezed into a
+ *  third of the width becomes decoration; the one chart that earns its place
+ *  runs full width beneath the row, where it can actually be read. */
+function Statement({
+  index,
+  title,
+  question,
+  children,
+}: {
+  index: number;
+  title: string;
+  question: string;
+  children: React.ReactNode;
+}) {
   return (
-    <svg viewBox="0 0 12 12" className="size-3" fill="none" stroke="currentColor" strokeWidth="2">
-      <path
-        d={direction === "up" ? "M6 10V2M2.5 5.5L6 2l3.5 3.5" : "M6 2v8M2.5 6.5L6 10l3.5-3.5"}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
+    <section className="flex min-w-0 break-inside-avoid flex-col rounded-card border border-rule bg-surface shadow-card">
+      <header className="border-b border-rule px-4 py-3">
+        <h2 className="flex items-baseline gap-2 text-sm font-bold text-ink">
+          <span className="tabular text-ink-faint">{index}.</span>
+          {title}
+        </h2>
+        <p className="mt-0.5 text-xs italic text-ink-faint">{question}</p>
+      </header>
+      <div className="flex-1 px-4 py-3">{children}</div>
+    </section>
   );
 }
 
-function format(value: number, unit: string): string {
-  if (unit === "INR") return inrShort(value);
-  if (unit === "%") return `${value}%`;
-  if (unit === "h") return value ? `${value}h` : "—";
-  return value.toLocaleString("en-IN");
-}
-
-/** A headline figure, its movement, and what it is measured against. */
-function MetricCard({
-  metric,
-  emphasis = false,
+/** A figure line: label on the left, value on the right, dot leaders between.
+ *
+ *  Leaders are what let the eye run from a label to a number twenty
+ *  centimetres away without losing the row - which is why every printed
+ *  statement has used them for a century, and why a plain two-column flexbox
+ *  reads worse the wider the page gets. */
+function Line({
+  label,
+  value,
+  unit,
+  note,
+  indent = false,
+  muted = false,
+  strong = false,
+  rule = false,
 }: {
-  metric: Insights["metrics"][number];
-  emphasis?: boolean;
+  label: string;
+  value: string;
+  unit?: string;
+  note?: string;
+  indent?: boolean;
+  muted?: boolean;
+  strong?: boolean;
+  rule?: boolean;
 }) {
-  const tone =
-    metric.good === null ? "text-ink-faint" : metric.good ? "text-settled" : "text-danger";
-
   return (
     <div
-      className={`flex flex-col gap-1.5 rounded-card border bg-surface px-4 py-3.5 shadow-card ${
-        emphasis ? "border-brand/50" : "border-rule"
+      className={`flex items-baseline gap-1.5 py-1 ${rule ? "border-t border-ink" : ""} ${
+        indent ? "pl-5" : ""
       }`}
-      title={metric.hint}
     >
-      <p className="text-xs font-medium text-ink-soft">{metric.label}</p>
-      <p className="tabular text-2xl font-bold leading-none text-ink">
-        {format(metric.current, metric.unit)}
-      </p>
-      <div className={`flex items-center gap-1 text-xs font-medium ${tone}`}>
-        <Arrow direction={metric.direction} />
-        <span className="tabular">
-          {metric.change_pct === null ? "no change" : `${Math.abs(metric.change_pct)}%`}
-        </span>
-        <span className="font-normal text-ink-faint">
-          from {format(metric.previous, metric.unit)}
-        </span>
-      </div>
+      <span
+        className={`shrink-0 text-[13px] ${strong ? "font-semibold text-ink" : ""} ${
+          muted ? "text-ink-faint" : "text-ink-soft"
+        }`}
+      >
+        {label}
+      </span>
+      {note && <span className="shrink-0 text-[11px] italic text-ink-faint">{note}</span>}
+      <span
+        aria-hidden="true"
+        className={`min-w-4 flex-1 translate-y-[-3px] border-b border-dotted ${
+          muted ? "border-rule" : "border-rule-firm"
+        }`}
+      />
+      <span
+        className={`tabular shrink-0 text-[13px] ${
+          strong ? "font-bold text-ink" : muted ? "text-ink-faint" : "font-medium text-ink"
+        }`}
+      >
+        {value}
+      </span>
+      {unit && (
+        <span className="w-8 shrink-0 text-left text-[11px] text-ink-faint">{unit}</span>
+      )}
     </div>
   );
 }
 
-const HIGHLIGHT_TONE = {
-  good: "border-settled/40 bg-settled-wash text-settled-ink",
-  warn: "border-attention/40 bg-attention-wash text-attention-ink",
-  bad: "border-danger/40 bg-danger-wash text-danger-ink",
-  info: "border-info/40 bg-info-wash text-info-ink",
-};
-
-function Highlight({ item }: { item: Insights["highlights"][number] }) {
-  const body = (
-    <>
-      <p className="text-sm font-semibold">{item.title}</p>
-      <p className="mt-0.5 text-xs opacity-90">{item.detail}</p>
-    </>
-  );
-  const className = `block rounded-card border px-4 py-3 ${HIGHLIGHT_TONE[item.tone]}`;
-
-  return item.link ? (
-    <Link to={item.link} className={`${className} transition-opacity hover:opacity-80`}>
-      {body}
-    </Link>
-  ) : (
-    <div className={className}>{body}</div>
+/** A note under a statement — the sentence an accountant would write in the
+ *  margin, explaining what the figures above do and do not include. */
+function Note({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="mt-2 border-l-2 border-rule pl-2.5 text-[11px] leading-relaxed text-ink-faint">
+      {children}
+    </p>
   );
 }
+
+/** A contents card: one per statement, at the head of the report.
+ *
+ *  A reader who has been handed four pages wants to know, before reading any
+ *  of it, whether this was a good period. These are that answer - and they
+ *  double as the report's contents page, each card naming the statement it
+ *  summarises. Deliberately quiet: a card here must never out-shout the
+ *  statement it points at. */
+function SummaryCard({
+  index,
+  title,
+  value,
+  hint,
+  spark,
+  tone = "text-ink",
+}: {
+  index: number;
+  title: string;
+  value: string;
+  hint: string;
+  spark?: number[];
+  tone?: string;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2 border border-rule bg-surface px-3.5 py-3">
+      <div className="flex items-baseline gap-1.5">
+        <span className="tabular text-[11px] font-semibold text-ink-faint">{index}</span>
+        <span className="truncate text-[11px] font-medium uppercase tracking-wider text-ink-soft">
+          {title}
+        </span>
+      </div>
+      <div className="flex items-end justify-between gap-2">
+        <p className={`tabular truncate text-xl font-bold leading-none ${tone}`}>{value}</p>
+        {spark && spark.length > 1 && (
+          <span className="shrink-0 text-ink-faint">
+            <Sparkline points={spark} />
+          </span>
+        )}
+      </div>
+      <p className="truncate text-[11px] text-ink-faint">{hint}</p>
+    </div>
+  );
+}
+
+/* --- Schedules (the tables at the back) ------------------------------------ */
+
+const TH = "px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-ink-soft";
+const TD = "tabular px-2 py-1.5 text-[12px]";
+
+function Schedule({
+  letter,
+  title,
+  note,
+  children,
+  minWidth = "26rem",
+}: {
+  letter: string;
+  title: string;
+  note?: string;
+  children: React.ReactNode;
+  minWidth?: string;
+}) {
+  return (
+    <div className="break-inside-avoid">
+      <h3 className="mb-1.5 flex items-baseline gap-2 text-xs font-bold text-ink">
+        <span className="text-ink-faint">Schedule {letter}</span>
+        {title}
+        {note && <span className="font-normal italic text-ink-faint">· {note}</span>}
+      </h3>
+      <Scroller>
+        <table className="w-full border-t border-ink text-sm" style={{ minWidth }}>
+          {children}
+        </table>
+      </Scroller>
+    </div>
+  );
+}
+
+function CustomerSchedule({ rows }: { rows: DeskCustomer[] }) {
+  return (
+    <Schedule letter="A" title="Customers" note="ranked by revenue" minWidth="30rem">
+      <thead>
+        <tr className="border-b border-rule-firm">
+          <th className={`${TH} text-left`}>Customer</th>
+          <th className={`${TH} text-right`}>Quoted</th>
+          <th className={`${TH} text-right`}>Revenue</th>
+          <th className={`${TH} text-right`}>Profit</th>
+          <th className={`${TH} text-right`}>Win rate</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length === 0 ? (
+          <tr>
+            <td colSpan={5} className="px-2 py-2 text-[12px] italic text-ink-faint">
+              No customer activity in this period.
+            </td>
+          </tr>
+        ) : (
+          rows.map((row) => (
+            <tr key={row.customer} className="border-b border-rule">
+              <td className="max-w-44 truncate px-2 py-1.5 text-[12px] text-ink">
+                {row.customer}
+              </td>
+              <td className={`${TD} text-right text-ink-soft`}>{inrShort(row.quoted_value)}</td>
+              <td className={`${TD} text-right font-medium text-ink`}>
+                {row.revenue ? inrShort(row.revenue) : "—"}
+              </td>
+              <td className={`${TD} text-right font-medium text-ink`}>
+                {row.profit ? inrShort(row.profit) : "—"}
+              </td>
+              <td className={`${TD} text-right text-ink-soft`}>{pct(row.win_rate)}</td>
+            </tr>
+          ))
+        )}
+      </tbody>
+    </Schedule>
+  );
+}
+
+function ProductSchedule({ rows }: { rows: DeskProduct[] }) {
+  return (
+    <Schedule letter="B" title="Products" note="tonnage and spread" minWidth="30rem">
+      <thead>
+        <tr className="border-b border-rule-firm">
+          <th className={`${TH} text-left`}>Product</th>
+          <th className={`${TH} text-right`}>Quoted MT</th>
+          <th className={`${TH} text-right`}>Sold MT</th>
+          <th className={`${TH} text-right`}>Profit</th>
+          <th className={`${TH} text-right`}>₹ / MT</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.length === 0 ? (
+          <tr>
+            <td colSpan={5} className="px-2 py-2 text-[12px] italic text-ink-faint">
+              No products quoted in this period.
+            </td>
+          </tr>
+        ) : (
+          rows.map((row) => (
+            <tr key={row.product} className="border-b border-rule">
+              <td className="max-w-44 truncate px-2 py-1.5 text-[12px] text-ink">
+                {row.product}
+              </td>
+              <td className={`${TD} text-right text-ink-soft`}>{mt(row.tonnes_quoted)}</td>
+              <td className={`${TD} text-right font-medium text-ink`}>{mt(row.tonnes_won)}</td>
+              <td className={`${TD} text-right font-medium text-ink`}>
+                {row.profit ? inrShort(row.profit) : "—"}
+              </td>
+              <td className={`${TD} text-right text-ink-soft`}>
+                {row.tonnes_won ? inr(row.profit_per_mt) : "—"}
+              </td>
+            </tr>
+          ))
+        )}
+      </tbody>
+    </Schedule>
+  );
+}
+
+/* --- Schedule E: the register behind any headline -------------------------- */
 
 function humanise(key: string): string {
   return key
@@ -152,339 +369,534 @@ function cell(key: string, value: string | number): string {
   return value;
 }
 
-/** The raw table behind a headline, for anyone who wants to check the working. */
-function DetailTable({ days }: { days: string }) {
+function Register({ period }: { period: string }) {
   const [name, setName] = useState("win-loss");
-  const { data, loading, error } = useApi<ReportResult>(`/reports/${name}?days=${days}`);
+  const { data, loading, error } = useApi<ReportResult>(`/reports/${name}?period=${period}`);
   const columns = data?.rows.length ? Object.keys(data.rows[0]) : [];
 
   return (
-    <Card
-      title="Detail"
-      subtitle={data?.period}
-      padded={false}
-      action={
-        <div className="flex items-center gap-2">
+    <div className="break-inside-avoid">
+      <div className="mb-1.5 flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="flex items-baseline gap-2 text-xs font-bold text-ink">
+          <span className="text-ink-faint">Schedule E</span>
+          {data?.title ?? "Register"}
+          <span className="font-normal italic text-ink-faint">· the working</span>
+        </h3>
+        <div className="flex items-center gap-2 print:hidden">
           <Select value={name} onChange={setName} options={DETAIL_REPORTS} />
-          <a href={`/api/v1/reports/${name}?days=${days}&fmt=csv`} download>
+          <a href={`/api/v1/reports/${name}?period=${period}&fmt=csv`} download>
             <Button compact>Export CSV</Button>
           </a>
         </div>
-      }
-    >
-      {error && <div className="p-4"><ErrorNote message={error} /></div>}
-      {loading && !data && <Loading label="Building the report" />}
+      </div>
 
-      {data && Object.keys(data.totals).length > 0 && (
-        <div className="flex flex-wrap gap-x-8 gap-y-2 border-b border-rule bg-sunk px-4 py-2.5">
-          {Object.entries(data.totals)
-            .filter(([, v]) => typeof v !== "object")
-            .map(([key, value]) => (
-              <div key={key}>
-                <p className="text-[11px] text-ink-faint">{humanise(key)}</p>
-                <p className="tabular text-sm font-semibold text-ink">
-                  {value === null || value === "" ? "—" : cell(key, value as string)}
-                </p>
-              </div>
-            ))}
-        </div>
-      )}
+      {error && <ErrorNote message={error} />}
+      {loading && !data && <Loading label="Building the register" />}
 
-      {data && data.rows.length === 0 ? (
-        <Empty message="Nothing in this period." />
-      ) : (
-        data && (
-          <Scroller>
-            <table className="w-full min-w-[40rem] text-sm">
-              <thead>
-                <tr className="border-b border-rule bg-sunk text-xs font-medium text-ink-soft">
-                  {columns.map((c) => (
-                    <th
-                      key={c}
-                      className={`px-3 py-2 ${
-                        /_inr$|_pct$|_mt$/.test(c) ? "text-right" : "text-left"
-                      }`}
-                    >
-                      {humanise(c)}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-rule">
-                {data.rows.map((row, i) => (
-                  <tr key={i} className="hover:bg-sunk/60">
-                    {columns.map((c) => (
-                      <td
-                        key={c}
-                        className={`tabular px-3 py-2 ${
-                          /_inr$|_pct$|_mt$/.test(c)
-                            ? "text-right text-ink"
-                            : "text-ink-soft"
-                        }`}
-                      >
-                        {cell(c, row[c])}
-                      </td>
-                    ))}
-                  </tr>
+      {data && (
+        <>
+          {Object.keys(data.totals).length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-x-6 gap-y-1 border-y border-rule bg-sunk px-2 py-1.5">
+              {Object.entries(data.totals)
+                .filter(([, v]) => typeof v !== "object")
+                .map(([key, value]) => (
+                  <span key={key} className="text-[11px] text-ink-soft">
+                    {humanise(key)}{" "}
+                    <span className="tabular font-semibold text-ink">
+                      {value === null || value === "" ? "—" : cell(key, value as string)}
+                    </span>
+                  </span>
                 ))}
-              </tbody>
-            </table>
-          </Scroller>
-        )
-      )}
-    </Card>
-  );
-}
-
-/** Group a daily series into at most `target` buckets, each paired with the
- *  one before it. Labels become ranges, which is what a comparison needs. */
-function bucketForComparison(
-  points: Insights["series"],
-  key: SeriesKey,
-  target = 6,
-): { label: string; current: number; previous?: number }[] {
-  if (points.length === 0) return [];
-
-  const width = Math.max(1, Math.ceil(points.length / target));
-  const groups: { label: string; total: number }[] = [];
-
-  for (let i = 0; i < points.length; i += width) {
-    const slice = points.slice(i, i + width);
-    const total = slice.reduce((sum, p) => sum + (p[key] as number), 0);
-    const from = slice[0].label;
-    const to = slice[slice.length - 1].label;
-    groups.push({ label: width === 1 || from === to ? from : `${from}–${to}`, total });
-  }
-
-  return groups.map((g, i) => ({
-    label: g.label,
-    current: g.total,
-    previous: i > 0 ? groups[i - 1].total : undefined,
-  }));
-}
-
-export default function Reports() {
-  const [days, setDays] = useState("30");
-  const [series, setSeries] = useState<SeriesKey>("value");
-
-  const { data, loading, error } = useApi<Insights>(`/reports/insights?days=${days}`);
-  const funnel = useApi<FunnelReport>(`/reports/funnel?days=${days}`);
-
-  if (loading && !data) return <Loading label="Building your reports" />;
-  if (error) return <div className="p-5"><ErrorNote message={error} /></div>;
-  if (!data) return null;
-
-  const headline = ["quoted_value", "win_rate", "margin_pct", "response_hours"];
-  const secondary = ["enquiries", "quotations", "sent", "avg_value", "override_rate"];
-
-  const points = data.series.map((p) => ({
-    label: p.label,
-    value: p[series] as number,
-  }));
-
-  // The comparison answers "is this stretch better than the one before?", so
-  // it needs a handful of wide buckets - not one column per day, whose labels
-  // collapse into "2.. 2.. 3.." and say nothing.
-  const columns = bucketForComparison(data.series, series);
-
-  return (
-    <div className="flex flex-col gap-4 p-4 sm:gap-5 sm:p-5">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold text-ink">Reports</h1>
-          <p className="text-sm text-ink-faint">
-            {data.period_label} · compared with {data.previous_label}
-          </p>
-        </div>
-        <Select value={days} onChange={setDays} options={PERIODS} />
-      </header>
-
-      {/* --- What changed, in words ---------------------------------------- */}
-      {data.highlights.length > 0 && (
-        <div className="grid gap-3 md:grid-cols-2">
-          {data.highlights.map((h) => (
-            <Highlight key={h.title} item={h} />
-          ))}
-        </div>
-      )}
-
-      {/* --- Headline figures ---------------------------------------------- */}
-      <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
-        {headline.map((key) => {
-          const metric = data.metrics.find((m) => m.key === key);
-          return metric ? (
-            <MetricCard key={key} metric={metric} emphasis={key === "quoted_value"} />
-          ) : null;
-        })}
-      </div>
-
-      <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-5">
-        {secondary.map((key) => {
-          const metric = data.metrics.find((m) => m.key === key);
-          return metric ? <MetricCard key={key} metric={metric} /> : null;
-        })}
-      </div>
-
-      {/* --- Trend and comparison ------------------------------------------- */}
-      <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
-        <Card
-          title="Trend"
-          subtitle={data.period_label}
-          action={
-            <div className="flex gap-0.5 rounded-lg bg-sunk p-0.5">
-              {SERIES.map((s) => (
-                <button
-                  key={s.key}
-                  type="button"
-                  onClick={() => setSeries(s.key)}
-                  className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                    series === s.key
-                      ? "bg-surface text-brand-soft-ink shadow-card"
-                      : "text-ink-faint hover:text-ink"
-                  }`}
-                >
-                  {s.label}
-                </button>
-              ))}
             </div>
-          }
-        >
-          <AreaChart
-            points={points}
-            format={(v) => (series === "value" ? inrShort(v) : v.toLocaleString("en-IN"))}
-          />
-        </Card>
+          )}
 
-        <Card title="Period on period" subtitle="Each bucket against the one before">
-          <ColumnChart
-            points={columns}
-            format={(v) => (series === "value" ? inrShort(v) : String(v))}
-          />
-          <div className="mt-3 flex items-center gap-4 text-[11px] text-ink-faint">
-            <span className="flex items-center gap-1.5">
-              <span className="size-2 rounded-sm bg-brand" /> This bucket
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="size-2 rounded-sm bg-rule-firm" /> Previous
-            </span>
-          </div>
-        </Card>
-      </div>
-
-      {/* --- Where the business is ------------------------------------------ */}
-      <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
-        <Card title="Enquiry to order" subtitle="Where enquiries stop">
-          {funnel.data ? <FunnelChart stages={funnel.data.stages} /> : <Loading />}
-        </Card>
-
-        <Card title="Quotations by status">
-          <DonutChart
-            data={data.by_status.map((s) => ({ label: s.label, value: s.value }))}
-            centerValue={String(data.by_status.reduce((sum, s) => sum + s.value, 0))}
-            centerLabel="raised this period"
-          />
-        </Card>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card title="Customers by quoted value" padded={false}>
-          {data.top_customers.length === 0 ? (
-            <Empty message="No customer activity in this period." />
+          {data.rows.length === 0 ? (
+            <p className="border-t border-ink px-2 py-2 text-[12px] italic text-ink-faint">
+              Nothing in this period.
+            </p>
           ) : (
             <Scroller>
-              <table className="w-full min-w-[26rem] text-sm">
+              <table className="w-full min-w-[40rem] border-t border-ink text-sm">
                 <thead>
-                  <tr className="border-b border-rule bg-sunk text-xs font-medium text-ink-soft">
-                    <th className="px-4 py-2 text-left">Customer</th>
-                    <th className="px-3 py-2 text-right">Quotes</th>
-                    <th className="px-3 py-2 text-right">Value</th>
-                    <th className="px-4 py-2 text-right">Win rate</th>
+                  <tr className="border-b border-rule-firm">
+                    {columns.map((c) => (
+                      <th
+                        key={c}
+                        className={`${TH} ${
+                          /_inr$|_pct$|_mt$/.test(c) ? "text-right" : "text-left"
+                        }`}
+                      >
+                        {humanise(c)}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-rule">
-                  {data.top_customers.map((c) => (
-                    <tr key={c.name} className="hover:bg-sunk/60">
-                      <td className="max-w-44 truncate px-4 py-2 text-ink">{c.name}</td>
-                      <td className="tabular px-3 py-2 text-right text-ink-soft">
-                        {c.quotations}
-                      </td>
-                      <td className="tabular px-3 py-2 text-right font-medium text-ink">
-                        {inr(c.value)}
-                      </td>
-                      <td className="tabular px-4 py-2 text-right text-ink-soft">
-                        {c.win_rate === null ? "—" : `${c.win_rate}%`}
-                      </td>
+                <tbody>
+                  {data.rows.map((row, i) => (
+                    <tr key={i} className="border-b border-rule">
+                      {columns.map((c) => (
+                        <td
+                          key={c}
+                          className={`${TD} ${
+                            /_inr$|_pct$|_mt$/.test(c)
+                              ? "text-right text-ink"
+                              : "text-ink-soft"
+                          }`}
+                        >
+                          {cell(c, row[c])}
+                        </td>
+                      ))}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </Scroller>
           )}
-        </Card>
+        </>
+      )}
+    </div>
+  );
+}
 
-        <Card title="Products by quoted value">
-          <HBarChart
-            data={data.top_products.map((p) => ({
-              label: p.name,
-              value: Math.round(p.value),
-              tone: "brand" as const,
-            }))}
-            emptyMessage="No products quoted in this period."
-          />
-        </Card>
+/* --- Page ------------------------------------------------------------------ */
+
+export default function Reports() {
+  const [period, setPeriod] = useState("this-month");
+  const { organisation } = useAuth();
+
+  const { data, loading, error } = useApi<DeskReport>(`/reports/desk?period=${period}`);
+  const choices = useApi<{ choices: PeriodChoice[] }>("/reports/periods");
+
+  if (loading && !data) return <Loading label="Preparing the report" />;
+  if (error)
+    return (
+      <div className="p-5">
+        <ErrorNote message={error} />
+      </div>
+    );
+  if (!data) return null;
+
+  const periodOptions = (choices.data?.choices ?? FALLBACK_PERIODS).map((c) => ({
+    value: c.key,
+    label: c.label,
+  }));
+
+  const { won, quoted, open_book: open, enquiries: enq, stock, stock_movement: sm } = data;
+  const generated = new Date().toLocaleDateString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+
+  return (
+    <div className="flex flex-col gap-4 p-4 sm:gap-5 sm:p-5">
+      {/* The controls are chrome, not part of the report, so they disappear
+          when it is printed or saved to PDF. */}
+      <div className="flex flex-wrap items-center justify-between gap-3 print:hidden">
+        <Select value={period} onChange={setPeriod} options={periodOptions} />
+        {/* Three ways out, for three readers: an accountant who wants to sum a
+            column, a partner who wants a file to keep, and anyone who just
+            wants it on paper. PDF goes through the browser's own print-to-PDF
+            rather than a server-side renderer - it produces the same pages the
+            print stylesheet already lays out, without adding a dependency
+            whose output would then have to be kept in step with this page. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <a href={`/api/v1/reports/pack?period=${period}`} download>
+            <Button>Excel</Button>
+          </a>
+          <a href={`/api/v1/reports/document?period=${period}`} download>
+            <Button>HTML</Button>
+          </a>
+          <Button variant="primary" onClick={() => window.print()}>
+            Download PDF
+          </Button>
+        </div>
       </div>
 
-      {/* --- What needs a person -------------------------------------------- */}
-      <Card
-        title="Waiting on you"
-        subtitle="Open quotations, largest first — the cost of leaving them"
-        padded={false}
-      >
-        {data.attention.length === 0 ? (
-          <Empty message="Nothing is sitting still. Every quotation has been actioned." />
-        ) : (
-          <Scroller>
-            <table className="w-full min-w-[38rem] text-sm">
-              <thead>
-                <tr className="border-b border-rule bg-sunk text-xs font-medium text-ink-soft">
-                  <th className="px-4 py-2 text-left">Quotation</th>
-                  <th className="px-3 py-2 text-left">Customer</th>
-                  <th className="px-3 py-2 text-right">Value</th>
-                  <th className="px-3 py-2 text-right">Waiting</th>
-                  <th className="px-4 py-2 text-left">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-rule">
-                {data.attention.map((row) => (
-                  <tr key={row.id} className="hover:bg-sunk/60">
-                    <td className="px-4 py-2">
-                      <Link to={row.link} className="font-medium text-brand hover:underline">
-                        {row.number}
-                      </Link>
-                    </td>
-                    <td className="max-w-40 truncate px-3 py-2 text-ink-soft">{row.customer}</td>
-                    <td className="tabular px-3 py-2 text-right font-medium text-ink">
-                      {inr(row.value)}
-                    </td>
-                    <td
-                      className={`tabular px-3 py-2 text-right ${
-                        row.age_days >= 3 ? "font-medium text-attention" : "text-ink-soft"
-                      }`}
-                    >
-                      {row.age_days}d
-                    </td>
-                    <td className="px-4 py-2">
-                      <Badge value={row.status} dot={false} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Scroller>
-        )}
-      </Card>
+      <div data-report className="flex flex-col gap-4 sm:gap-5">
+        {/* --- Letterhead ------------------------------------------------- */}
+        <header className="border-b-2 border-ink pb-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-lg font-bold tracking-tight text-ink">
+                {organisation?.name ?? "Trading desk"}
+              </p>
+              <h1 className="mt-0.5 text-sm font-semibold uppercase tracking-[0.14em] text-ink-soft">
+                Trading period report
+              </h1>
+            </div>
+            <dl className="shrink-0 text-right text-[11px] leading-relaxed">
+              <div className="flex justify-end gap-2">
+                <dt className="text-ink-faint">Period</dt>
+                <dd className="font-semibold text-ink">{data.period_label}</dd>
+              </div>
+              <div className="flex justify-end gap-2">
+                <dt className="text-ink-faint">Covering</dt>
+                <dd className="tabular text-ink-soft">{data.period_range}</dd>
+              </div>
+              <div className="flex justify-end gap-2">
+                <dt className="text-ink-faint">Compared with</dt>
+                <dd className="tabular text-ink-soft">{data.previous_label}</dd>
+              </div>
+              <div className="flex justify-end gap-2">
+                <dt className="text-ink-faint">Prepared</dt>
+                <dd className="tabular text-ink-soft">{generated}</dd>
+              </div>
+            </dl>
+          </div>
+        </header>
 
-      <DetailTable days={days} />
+        {/* Contents: one card per statement, so a reader knows before page two
+            whether this was a good period. */}
+        <div data-keep-columns className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
+          <SummaryCard
+            index={1}
+            title="Enquiry"
+            value={String(enq.identified)}
+            hint={`${enq.raised} quoted · ${enq.sent} sent`}
+            spark={data.trend.map((p) => p.quoted)}
+          />
+          <SummaryCard
+            index={2}
+            title="Sales"
+            value={inrShort(won.revenue)}
+            hint={`${mt(won.tonnes)} MT over ${won.deals} orders`}
+            spark={data.trend.map((p) => p.revenue)}
+          />
+          <SummaryCard
+            index={3}
+            title="Gross profit"
+            value={inrShort(won.profit)}
+            hint={`${won.margin_pct.toFixed(1)}% margin`}
+            tone={won.profit > 0 ? "text-settled" : "text-ink"}
+            spark={data.trend.map((p) => p.profit)}
+          />
+          <SummaryCard
+            index={4}
+            title="Stock"
+            value={inrShort(stock.total_value)}
+            hint={`${stock.deadstock_pct}% over 90 days`}
+            tone={stock.deadstock_pct > 20 ? "text-danger" : "text-ink"}
+          />
+        </div>
+
+        <div className="mt-6 flex flex-col gap-6">
+          {/* Statements 1-3 read across, because a trader compares them:
+              work in, what it sold for, what was kept. Stock is a different
+              question - what the floor holds today - so it stands apart. */}
+          {/* No `items-start`: three cards of different lengths ending at three
+              different heights read as unfinished. Stretching them to a common
+              height is what makes them a set - the body is `flex-1`, so the
+              slack falls below the last figure instead of stretching the rows. */}
+          <div className="grid gap-4 xl:grid-cols-3">
+          {/* --- 1. Enquiry and quotation --------------------------------- */}
+          <Statement
+            index={1}
+            title="Enquiry and quotation"
+            question="How much work came in, and how much of it did we answer?"
+          >
+            <Line label="Mail received" value={String(enq.received)} unit="no." />
+            <Line
+              label="Not an enquiry"
+              value={`(${enq.not_enquiries})`}
+              unit="no."
+              indent
+              muted
+            />
+            <Line label="Enquiries identified" value={String(enq.identified)} unit="no." rule />
+            <Line label="Not quoted" value={`(${enq.not_raised})`} unit="no." indent muted />
+            <Line label="Quotations raised" value={String(enq.raised)} unit="no." rule />
+            <Line label="Not yet sent" value={`(${enq.not_sent})`} unit="no." indent muted />
+            <Line label="Quotations sent" value={String(enq.sent)} unit="no." strong rule />
+            <div className="mt-2.5 border-t border-rule pt-1.5">
+              <Line label="Accepted" value={String(enq.won)} unit="no." />
+              <Line label="Declined" value={String(enq.lost)} unit="no." />
+              <Line label="Awaiting reply" value={String(enq.awaiting)} unit="no." muted />
+              <Line label="Win rate on decided" value={pct(enq.win_rate)} strong rule />
+            </div>
+            <Note>
+              Each line is a subset of the one above it. A quotation counts in the period it
+              was raised, not the period it was answered, so an enquiry from last month that
+              closed this month is reported against last month.
+            </Note>
+          </Statement>
+
+          {/* --- 2. Sales and realisation --------------------------------- */}
+          <Statement
+            index={2}
+            title="Sales and realisation"
+            question="What did we sell, and at what rate?"
+          >
+            <Line label="Tonnage quoted" value={mt(quoted.tonnes)} unit="MT" />
+            <Line label="Tonnage sold" value={mt(won.tonnes)} unit="MT" strong rule />
+            <div className="mt-2.5">
+              <Line label="Value quoted" value={inr(quoted.revenue)} />
+              <Line label="Value sold" value={inr(won.revenue)} strong rule />
+              <Line
+                label="Average realisation"
+                value={won.tonnes ? inr(won.revenue / won.tonnes) : "—"}
+                note="per MT"
+              />
+              <Line
+                label="Orders"
+                value={String(won.deals)}
+                unit="no."
+                muted
+              />
+            </div>
+            <div className="mt-2.5 border-t border-rule pt-1.5">
+              <Line label="Still with customers" value={inr(open.revenue)} muted />
+              <Line
+                label="Conversion on value"
+                value={
+                  quoted.revenue ? `${((won.revenue / quoted.revenue) * 100).toFixed(1)}%` : "—"
+                }
+                muted
+              />
+            </div>
+            <Note>
+              Sold means a customer accepted the quotation. Value is counted at the rate that
+              was quoted, and does not include tax or freight billed separately.
+            </Note>
+          </Statement>
+
+          {/* --- 3. Trading and profit ------------------------------------ */}
+          <Statement
+            index={3}
+            title="Trading and profit"
+            question="What did it cost, and what did we keep?"
+          >
+            <Line label="Revenue from sales" value={inr(won.revenue)} />
+            <Line label="Less: cost of goods sold" value={`(${inr(won.cost)})`} indent />
+            <Line label="Gross profit" value={inr(won.profit)} strong rule />
+            <div className="mt-2.5">
+              <Line label="Gross margin" value={`${won.margin_pct.toFixed(2)}%`} />
+              <Line
+                label="Profit per tonne"
+                value={won.tonnes ? inr(won.profit_per_mt) : "—"}
+                note="per MT"
+              />
+              <Line
+                label="Gross profit, previous period"
+                value={inr(data.won_previous.profit)}
+                muted
+              />
+              <Line
+                label="Movement"
+                value={
+                  data.won_previous.profit
+                    ? `${(
+                        ((won.profit - data.won_previous.profit) /
+                          Math.abs(data.won_previous.profit)) *
+                        100
+                      ).toFixed(1)}%`
+                    : "—"
+                }
+                muted
+              />
+            </div>
+            {data.lost_reasons.length > 0 && (
+              <div className="mt-3 border-t border-rule pt-2">
+                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-soft">
+                  Business declined, by reason
+                </p>
+                {data.lost_reasons.map((r) => (
+                  <Line
+                    key={r.reason}
+                    label={r.label}
+                    value={inr(r.value)}
+                    note={`${r.count} quotation${r.count === 1 ? "" : "s"}`}
+                  />
+                ))}
+              </div>
+            )}
+            <Note>
+              Cost of goods is the landed cost recorded against each line when it was priced,
+              under the rules then in force. Lines priced without a recorded cost are excluded
+              from both figures rather than being treated as pure profit.
+            </Note>
+          </Statement>
+          </div>
+
+          {/* The one chart that earns full width. Quoted against sold over the
+              period answers the question the three cards raise between them -
+              did the work coming in turn into money? - and needs the measure to
+              show a shape rather than a squiggle. */}
+          <section className="rounded-card border border-rule bg-surface shadow-card">
+            <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-rule px-4 py-3">
+              <div>
+                <h2 className="text-sm font-bold text-ink">Quoted against sold</h2>
+                <p className="mt-0.5 text-xs italic text-ink-faint">
+                  Did the work coming in turn into money?
+                </p>
+              </div>
+              <p className="text-xs text-ink-faint">
+                {data.period_range} · bucketed by {data.grain}
+              </p>
+            </header>
+            <div className="px-4 py-4">
+              <MultiLineChart
+                points={data.trend.map((p) => ({
+                  label: p.label,
+                  values: { quoted: p.quoted, sold: p.revenue },
+                }))}
+                series={SALES_LINES}
+                format={inrShort}
+                height={220}
+                emptyMessage={`${data.period_label} holds a single bucket — a trend needs two.`}
+              />
+            </div>
+          </section>
+
+          {/* --- 4. Stock -------------------------------------------------- */}
+          <Statement
+            index={4}
+            title="Stock"
+            question="What did the floor hold, and what moved?"
+          >
+            {/* Two columns, because a dot leader running the width of a
+                27-inch monitor is exactly the row the eye loses. */}
+            <div className="grid items-start gap-6 lg:grid-cols-[1.4fr_1fr]">
+            <div className="min-w-0">
+            <Line label="Opening stock" value={mt(sm.opening_mt)} unit="MT" />
+            <Line
+              label="Add: receipts"
+              value={mt(sm.receipts_mt)}
+              unit="MT"
+              indent
+              note={`${sm.receipt_count} movement${sm.receipt_count === 1 ? "" : "s"}`}
+            />
+            <Line
+              label="Less: issues"
+              value={`(${mt(sm.issues_mt)})`}
+              unit="MT"
+              indent
+              note={`${sm.issue_count} movement${sm.issue_count === 1 ? "" : "s"}`}
+            />
+            <Line label="Closing stock" value={mt(sm.closing_mt)} unit="MT" strong rule />
+
+            <div className="mt-2.5">
+              <Line label="Closing stock at landed cost" value={inr(stock.total_value)} />
+              <Line
+                label="Of which ageing over 90 days"
+                value={inr(stock.deadstock_value)}
+                note={`${stock.deadstock_pct}% · ${stock.deadstock_lots} lots`}
+                indent
+              />
+            </div>
+            <Note>
+              Closing stock is taken from the current stock sheet; opening is derived backwards
+              from it using the movement ledger, so the statement always reconciles against
+              what the floor actually holds. Reservations and blocks are holds, not movements
+              of ownership, and are excluded.
+            </Note>
+
+            </div>
+
+            {/* The floor is a whole and the question asked of it is a share. */}
+            <div className="min-w-0 lg:border-l lg:border-rule lg:pl-6">
+              <DonutChart
+                data={AGEING_ORDER(stock.buckets).map((b) => ({
+                  label: b.label,
+                  value: Math.round(b.value),
+                }))}
+                tones={AGEING_ORDER(stock.buckets).map(
+                  (b) => AGEING_TONE[b.label] ?? "text-brand",
+                )}
+                format={inrShort}
+                size={104}
+                centerValue={inrShort(stock.deadstock_value)}
+                centerLabel={`over 90 days · ${stock.deadstock_pct}%`}
+              />
+            </div>
+            </div>
+          </Statement>
+
+          {/* --- Schedules ------------------------------------------------- */}
+          <section className="break-before-page border-t-2 border-ink pt-3">
+            <h2 className="mb-3 text-sm font-bold text-ink">Schedules</h2>
+            <div className="flex flex-col gap-5">
+              {/* Schedules run the full measure. Two five-column tables side by
+                  side inside a 60rem sheet clip their right-hand columns, and a
+                  schedule whose last column is cut off is not a schedule. */}
+              <CustomerSchedule rows={data.customers} />
+              <ProductSchedule rows={data.products} />
+
+              {stock.oldest.length > 0 && (
+                <Schedule letter="C" title="Oldest lots" note="longest standing first" minWidth="28rem">
+                  <thead>
+                    <tr className="border-b border-rule-firm">
+                      <th className={`${TH} text-left`}>Specification</th>
+                      <th className={`${TH} text-left`}>Location</th>
+                      <th className={`${TH} text-right`}>Age</th>
+                      <th className={`${TH} text-right`}>Balance MT</th>
+                      <th className={`${TH} text-right`}>Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stock.oldest.slice(0, 8).map((lot) => (
+                      <tr key={`${lot.spec}-${lot.ageing_days}`} className="border-b border-rule">
+                        <td className="max-w-56 truncate px-2 py-1.5 text-[12px] text-ink">
+                          {lot.spec}
+                        </td>
+                        <td className="px-2 py-1.5 text-[12px] text-ink-soft">
+                          {lot.location || "—"}
+                        </td>
+                        <td className={`${TD} text-right text-ink`}>{lot.ageing_days}d</td>
+                        <td className={`${TD} text-right text-ink-soft`}>{mt(lot.tonnes)}</td>
+                        <td className={`${TD} text-right font-medium text-ink`}>
+                          {inrShort(lot.value)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Schedule>
+              )}
+
+              {data.quiet_customers.length > 0 && (
+                <Schedule letter="D" title="Customers gone quiet" note="no enquiry in 60 days">
+                  <thead>
+                    <tr className="border-b border-rule-firm">
+                      <th className={`${TH} text-left`}>Customer</th>
+                      <th className={`${TH} text-right`}>Last seen</th>
+                      <th className={`${TH} text-right`}>Orders</th>
+                      <th className={`${TH} text-right`}>Lifetime revenue</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.quiet_customers.map((c) => (
+                      <tr key={c.customer} className="border-b border-rule">
+                        <td className="max-w-44 truncate px-2 py-1.5 text-[12px] text-ink">
+                          {c.customer}
+                        </td>
+                        <td className={`${TD} text-right text-ink-soft`}>{c.days_quiet}d ago</td>
+                        <td className={`${TD} text-right text-ink-soft`}>{c.orders}</td>
+                        <td className={`${TD} text-right font-medium text-ink`}>
+                          {inrShort(c.lifetime_revenue)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </Schedule>
+              )}
+
+              <Register period={period} />
+            </div>
+          </section>
+        </div>
+
+        {/* --- Footer ------------------------------------------------------ */}
+        <footer className="mt-7 border-t border-rule pt-3 text-[10px] leading-relaxed text-ink-faint">
+          <p>
+            Prepared from stored records for {data.period_range}. Figures are counted at the
+            pricing rules in force when each quotation was raised, so this report does not
+            change if the rules are edited later.
+          </p>
+          <p className="mt-1">
+            {organisation?.name ?? "Trading desk"} · {data.period_label} · Prepared {generated}
+          </p>
+        </footer>
+      </div>
     </div>
   );
 }

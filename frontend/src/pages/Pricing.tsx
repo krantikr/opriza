@@ -20,6 +20,7 @@ import {
   SectionLabel,
   Select,
   Toggle,
+  when,
 } from "../components/ui";
 
 /* ---------------------------------------------------------------------------
@@ -486,6 +487,8 @@ export default function Pricing() {
 
   const dirty = JSON.stringify(rules) !== JSON.stringify(active?.rules ?? []);
 
+
+
   // The engine always runs margin, floor and rounding last whatever their
   // priority. Showing them anywhere else would misrepresent the build-up.
   const GROUP_ORDER = { base: 0, cost: 1, margin: 2 };
@@ -526,23 +529,26 @@ export default function Pricing() {
 
   return (
     <div className="flex flex-col gap-4 p-5">
+      {/* What saving will actually do, rather than a description of the page.
+          Publishing writes a new immutable version, so the two facts worth
+          carrying here are which version is quoting customers right now and
+          whether what is on screen still matches it. */}
       <header className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold text-ink">Pricing</h1>
-          <p className="text-sm text-ink-faint">
-            The cost build-up applied to every enquiry. Version {active?.version} is live.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {dirty && <Badge value="UNPUBLISHED" />}
-          <Button
-            variant="primary"
-            disabled={!dirty || publishing}
-            onClick={publish}
-          >
-            {publishing ? "Publishing…" : "Publish new version"}
-          </Button>
-        </div>
+        <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+          <span className="text-ink-soft">
+            {active?.published_at
+              ? `Last updated ${when(active.published_at)}`
+              : "Not published yet"}
+          </span>
+          {dirty && (
+            <span className="rounded-full bg-attention-wash px-2 py-0.5 text-[11px] font-medium text-attention-ink">
+              unsaved changes
+            </span>
+          )}
+        </p>
+        <Button variant="primary" disabled={!dirty || publishing} onClick={publish}>
+          {publishing ? "Saving…" : "Save changes"}
+        </Button>
       </header>
 
       {message && <Banner tone={message.startsWith("Published") ? "settled" : "danger"}>{message}</Banner>}

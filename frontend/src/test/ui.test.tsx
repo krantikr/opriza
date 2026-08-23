@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { Badge, Button, Pagination, Tabs } from "../components/ui";
+import { Badge, Button, Input, Pagination, Tabs, Toggle } from "../components/ui";
 
 /* ---------------------------------------------------------------------------
    Shared controls.
@@ -131,5 +131,82 @@ describe("Pagination", () => {
 
     rerender(<Pagination page={4} pageCount={4} onChange={vi.fn()} />);
     expect(screen.getByLabelText("Next page")).toBeDisabled();
+  });
+});
+
+
+describe("Input width", () => {
+  /* `w-full` and `w-56` have equal specificity, so the winner is whichever
+     Tailwind emits later - and that is always `w-full`. Passing a width used
+     to do nothing, which is how the Inbox search field grew to fill its row
+     and wrapped the Refresh button onto a second line. */
+
+  it("is full width by default", () => {
+    render(<Input value="" onChange={() => {}} placeholder="p" />);
+    expect(screen.getByPlaceholderText("p").className).toContain("w-full");
+  });
+
+  it("drops w-full when the caller sets a width", () => {
+    render(<Input value="" onChange={() => {}} placeholder="p" className="w-56" />);
+    const cls = screen.getByPlaceholderText("p").className;
+    expect(cls).toContain("w-56");
+    expect(cls).not.toContain("w-full");
+  });
+
+  it("keeps w-full alongside a min- or max- constraint", () => {
+    /* `min-w-24` and `max-w-full` are not widths: they bound one. A field
+       given only those still needs its own width to fill the space. */
+    render(
+      <Input value="" onChange={() => {}} placeholder="p" className="min-w-24 flex-1" />,
+    );
+    expect(screen.getByPlaceholderText("p").className).toContain("w-full");
+  });
+
+  it("does not mistake a non-width class for a width", () => {
+    render(<Input value="" onChange={() => {}} placeholder="p" className="shadow-card" />);
+    expect(screen.getByPlaceholderText("p").className).toContain("w-full");
+  });
+});
+
+
+describe("Toggle", () => {
+  /* The knob is laid out by flex inside a padded track, not positioned by a
+     `translate-x` figure matched to the track width by hand. When those two
+     numbers drifted apart the knob rendered outside its own pill. */
+
+  const track = (el: HTMLElement) => el.querySelector("span")!;
+  const knob = (el: HTMLElement) => el.querySelector("span > span")!;
+
+  it("keeps the knob inside the track in both states", () => {
+    for (const checked of [true, false]) {
+      const { unmount } = render(<Toggle checked={checked} onChange={() => {}} />);
+      const sw = screen.getByRole("switch");
+      // Padding on the track is what contains the knob; absolute positioning
+      // would let it escape.
+      expect(track(sw).className).toContain("p-0.5");
+      expect(knob(sw).className).not.toContain("absolute");
+      unmount();
+    }
+  });
+
+  it("slides the knob by its own width rather than a fixed pixel figure", () => {
+    const { rerender } = render(<Toggle checked={false} onChange={() => {}} />);
+    expect(knob(screen.getByRole("switch")).className).toContain("translate-x-0");
+
+    rerender(<Toggle checked onChange={() => {}} />);
+    expect(knob(screen.getByRole("switch")).className).toContain("translate-x-full");
+  });
+
+  it("reports its state to assistive tech", () => {
+    render(<Toggle checked onChange={() => {}} />);
+    expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("fills the track when on and greys it when off", () => {
+    const { rerender } = render(<Toggle checked onChange={() => {}} />);
+    expect(track(screen.getByRole("switch")).className).toContain("bg-brand-ink");
+
+    rerender(<Toggle checked={false} onChange={() => {}} />);
+    expect(track(screen.getByRole("switch")).className).toContain("bg-rule-firm");
   });
 });

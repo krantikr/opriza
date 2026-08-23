@@ -231,26 +231,26 @@ export default function Stock() {
 
   return (
     <div className="flex flex-col gap-4 p-4 sm:p-5">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold text-ink">Stock on hand</h1>
-          <p className="text-sm text-ink-faint">
-            {data ? `${data.length} spec${data.length === 1 ? "" : "s"}` : "…"} across{" "}
-            {data ? `${lotTotal} lot${lotTotal === 1 ? "" : "s"}` : "…"} · balance after existing
-            orders. Expand a row for the individual lots.
+      {/* Search left, actions right - the same shape as the Inbox and the
+          quotations list. What is left of the old subtitle is the count
+          itself, kept because nothing else on this page states how much
+          stock there is; the sentence around it went. */}
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        {/* Search leads, as on every other list screen. It is also the only
+            element that gives up width, flexing down to a usable minimum so a
+            narrow window shortens the input rather than breaking the buttons
+            apart. */}
+        <Input
+          value={search}
+          onChange={setSearch}
+          placeholder="Search grade, type, location, mill or coil"
+          className="w-full min-w-40 max-w-72 flex-1"
+        />
+        <div className="flex shrink-0 items-center gap-2">
+          <p className="text-sm text-ink-soft">
+            {data ? `${data.length} spec${data.length === 1 ? "" : "s"}` : "…"} ·{" "}
+            {data ? `${lotTotal} lot${lotTotal === 1 ? "" : "s"}` : "…"}
           </p>
-        </div>
-        {/* The search field is the only element here that may give up width:
-            it flexes down to a usable minimum while the two buttons keep their
-            natural size, so a narrow window shortens the input instead of
-            breaking the buttons apart. */}
-        <div className="flex flex-1 items-center justify-end gap-2">
-          <Input
-            value={search}
-            onChange={setSearch}
-            placeholder="Search grade, type, location, mill or coil"
-            className="w-full min-w-40 max-w-72"
-          />
           <StockUpload busy={importing} onPicked={importStock} />
           <Button onClick={reload}>Refresh</Button>
         </div>

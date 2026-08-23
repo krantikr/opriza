@@ -12,6 +12,7 @@ import {
   Input,
   inrShort,
   Loading,
+  SearchInput,
   Select,
   Toggle,
 } from "../components/ui";
@@ -875,15 +876,27 @@ function Row({
 
 export default function FollowUps() {
   const board = useApi<ChaseBoard>("/follow-ups/board", 60_000);
-  const [tab, setTab] = useState<Turn>("YOURS");
+  /* Their turn, not yours. "Your turn" is empty on a desk that is keeping up,
+     so opening there shows an empty screen most days; the quotations sitting
+     with a customer are the ones a trader actually works down. */
+  const [tab, setTab] = useState<Turn>("THEIRS");
+  const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState<number | null>(null);
   const [showRules, setShowRules] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
 
-  const rows = useMemo(
-    () => board.data?.rows.filter((r) => r.turn === tab) ?? [],
-    [board.data, tab],
-  );
+  const rows = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    return (
+      board.data?.rows.filter(
+        (r) =>
+          r.turn === tab &&
+          (term === "" ||
+            [r.customer_name, r.material, r.quotation_number, r.customer_email]
+              .some((field) => field?.toLowerCase().includes(term))),
+      ) ?? []
+    );
+  }, [board.data, tab, search]);
   const openRow = board.data?.rows.find((r) => r.quotation_id === openId) ?? null;
 
   const onActed = useCallback(
@@ -904,78 +917,55 @@ export default function FollowUps() {
   if (board.error) return <ErrorNote message={board.error} />;
 
   const counts = board.data?.counts ?? {};
-  const yours = counts.YOURS ?? 0;
   const hint = TABS.find((t) => t.key === tab)?.hint;
 
   return (
     <div className="flex flex-col gap-3 p-5">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold text-ink">Follow-ups</h1>
-          <p className="mt-0.5 max-w-[62ch] text-sm text-ink-soft">
-            {yours === 0 ? (
-              "Nobody is waiting on you. Anything below is with the customer."
-            ) : (
-              <>
-                <span className="font-semibold tabular-nums text-ink">
-                  {inrShort(board.data?.value_awaiting_you ?? 0)}
-                </span>{" "}
-                across {yours} quotation{yours === 1 ? "" : "s"} is waiting on you.
-                {(board.data?.quiet_over_a_week ?? 0) > 0 && (
-                  <span className="font-medium text-danger-ink">
-                    {" "}
-                    {board.data?.quiet_over_a_week} quiet more than a week.
-                  </span>
-                )}
-              </>
-            )}
-          </p>
+      {/* Search left, filter and Rules right - the same toolbar as the
+          quotations list, because a trader crosses between the two screens
+          all day. */}
+      <header className="flex flex-wrap items-center gap-2">
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Search by customer, material or number…"
+          className="w-full sm:w-72"
+        />
+        <div className="ml-auto flex items-center gap-2">
+          <Select
+            value={tab}
+            onChange={(v) => setTab(v as Turn)}
+            options={TABS.map((t) => ({
+              value: t.key,
+              // The count rides on the option: a filter that hides how much it
+              // is hiding makes an empty table look like a broken one.
+              label: `${t.label} (${counts[t.key] ?? 0})`,
+            }))}
+            className="py-1.5"
+          />
+          <Button onClick={() => setShowRules(true)}>Rules</Button>
         </div>
-        <Button onClick={() => setShowRules(true)}>Rules</Button>
       </header>
 
       {flash && <Banner tone="settled">{flash}</Banner>}
 
-      <nav className="flex gap-1 overflow-x-auto border-b border-rule" role="tablist">
-        {TABS.map((t) => {
-          const active = t.key === tab;
-          const count = counts[t.key] ?? 0;
-          return (
-            <button
-              key={t.key}
-              role="tab"
-              aria-selected={active}
-              onClick={() => setTab(t.key)}
-              className={`flex shrink-0 items-center gap-2 border-b-2 px-3.5 py-2.5 text-[13.5px] transition-colors ${
-                active
-                  ? "border-brand-soft font-semibold text-ink"
-                  : "border-transparent font-medium text-ink-faint hover:text-ink"
-              }`}
-            >
-              {t.label}
-              <span
-                className={`rounded-full px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ${
-                  t.key === "YOURS" && count > 0
-                    ? "bg-danger-wash text-danger-ink"
-                    : "bg-sunk text-ink-soft"
-                }`}
-              >
-                {count}
-              </span>
-            </button>
-          );
-        })}
-      </nav>
-
+      {/* What the selected filter means. Carried the tab strip's weight once
+          the strip became a dropdown - "Their turn" alone does not say the
+          ball is with the customer and has gone quiet. */}
       <p className="text-xs text-ink-faint">{hint}</p>
 
       <div className="overflow-hidden rounded-card border border-rule bg-surface shadow-card">
         {rows.length === 0 ? (
           <Empty
             message={
-              tab === "YOURS"
-                ? "Nothing is waiting on you. That is the whole point of this screen."
-                : "Nothing here."
+              /* A search that found nothing is not the same as a filter with
+                 nothing in it: one is fixed by changing the term, the other by
+                 changing the filter. */
+              search.trim()
+                ? `No ${(TABS.find((t) => t.key === tab)?.label ?? "").toLowerCase()} quotation matches “${search.trim()}”.`
+                : tab === "YOURS"
+                  ? "Nothing is waiting on you. That is the whole point of this screen."
+                  : "Nothing here."
             }
           />
         ) : (

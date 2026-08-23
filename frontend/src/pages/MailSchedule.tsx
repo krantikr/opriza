@@ -20,6 +20,10 @@ interface CrawlStatus {
   reason: string;
   local_time: string;
   last_polled_at: string | null;
+  /** The server-wide poller switch. Off means no desk is checked on a timer. */
+  poller_running: boolean;
+  /** Whether this desk has a mailbox to poll at all. */
+  mailbox_connected: boolean;
 }
 
 interface MailboxSetup {
@@ -188,30 +192,64 @@ export default function MailSchedule() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-5">
-      <div>
-        <h1 className="text-xl font-semibold text-ink">Mail checking</h1>
-        <p className="mt-0.5 text-sm text-ink-soft">
-          How often Steel Desk looks for new enquiries.
-        </p>
-      </div>
+      <p className="text-sm text-ink-soft">
+        How often Steel Desk looks for new enquiries.
+      </p>
 
-      {status && (
-        <div
-          className={`rounded-xl border px-4 py-3 ${
-            status.enabled
-              ? status.active_now
-                ? "border-good-line bg-good-wash"
-                : "border-rule bg-sunk"
-              : "border-attention-line bg-attention-wash"
-          }`}
-        >
-          <p className="text-sm font-medium text-ink">{status.reason}</p>
-          <p className="mt-0.5 text-xs text-ink-faint">
-            It is {status.local_time} at your desk
-            {status.last_polled_at && ` · last checked ${new Date(status.last_polled_at).toLocaleTimeString()}`}
-          </p>
-        </div>
-      )}
+      {status &&
+        (() => {
+          /* Three things stop mail arriving, and the schedule below is only
+             the last of them. Stated in the order they take effect, because
+             a card that reads "checking every 10 minutes" while nothing is
+             connected describes an intention, not what is happening - and
+             leaves the trader with no way to find out why. */
+          const halt = !status.poller_running
+            ? {
+                headline: "Mail checking is switched off on the server.",
+                detail:
+                  "This schedule is saved but nothing is being fetched. An administrator " +
+                  "needs to enable the poller (POLLING_ENABLED).",
+              }
+            : !status.mailbox_connected
+              ? {
+                  headline: "No mailbox is connected, so nothing is being fetched.",
+                  detail: "Connect the enquiry mailbox below and this schedule takes effect.",
+                }
+              : !status.enabled
+                ? {
+                    headline: "Mail checking is paused for this desk.",
+                    detail: "Resume it below to start checking again.",
+                  }
+                : null;
+
+          return (
+            <div
+              className={`rounded-xl border px-4 py-3 ${
+                halt
+                  ? "border-attention-line bg-attention-wash"
+                  : status.active_now
+                    ? "border-good-line bg-good-wash"
+                    : "border-rule bg-sunk"
+              }`}
+            >
+              <p className="text-sm font-medium text-ink">
+                {halt ? halt.headline : status.reason}
+              </p>
+              <p className="mt-0.5 text-xs text-ink-faint">
+                {halt ? (
+                  halt.detail
+                ) : (
+                  <>
+                    It is {status.local_time} at your desk
+                    {status.last_polled_at
+                      ? ` · last checked ${new Date(status.last_polled_at).toLocaleTimeString()}`
+                      : " · not checked yet"}
+                  </>
+                )}
+              </p>
+            </div>
+          );
+        })()}
 
       <Card
         title="Working hours"

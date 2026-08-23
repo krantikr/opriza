@@ -373,3 +373,45 @@ def test_a_new_desk_starts_on_the_requested_schedule(platform_db):
     assert org.crawl_active_to == time(22, 0)
     assert org.crawl_active_minutes == 10
     assert org.crawl_quiet_minutes == 60
+
+
+# --- What the schedule screen reports --------------------------------------
+
+
+def test_crawl_status_names_the_server_switch_before_the_schedule(client, db, desk, monkeypatch):
+    """A saved schedule is not a running one.
+
+    The desk can hold a perfectly good 10-minute window while the poller is
+    switched off server-wide, and the screen that shows the window is the one
+    place a trader would look to find that out.
+    """
+    monkeypatch.setattr("app.api.v1.auth.settings.polling_enabled", False)
+
+    body = client.get("/api/v1/organisation/crawl-status").json()
+
+    assert body["poller_running"] is False
+    # The schedule itself is still reported - it is saved and correct. Which
+    # interval applies depends on the hour the suite runs at, so this asserts
+    # that one of the desk's two configured cadences came back, not a
+    # particular one.
+    assert body["interval_minutes"] in {
+        desk.crawl_active_minutes,
+        desk.crawl_quiet_minutes,
+    }
+
+
+def test_crawl_status_reports_whether_a_mailbox_exists(client, db, desk, monkeypatch):
+    """A schedule with nothing to poll will never fetch anything."""
+    from app.models import Mailbox
+
+    monkeypatch.setattr("app.api.v1.auth.settings.polling_enabled", True)
+
+    body = client.get("/api/v1/organisation/crawl-status").json()
+    assert body["mailbox_connected"] is False
+    assert body["last_polled_at"] is None
+
+    db.add(Mailbox(organisation_id=desk.id, email_address="desk@example.com"))
+    db.commit()
+
+    body = client.get("/api/v1/organisation/crawl-status").json()
+    assert body["mailbox_connected"] is True

@@ -59,13 +59,10 @@ export default function Account() {
   return (
     <div className="mx-auto max-w-2xl space-y-5 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-ink">Your account</h1>
-          <p className="mt-0.5 text-sm text-ink-soft">
-            {user.email}
-            {organisation && ` · ${organisation.name}`}
-          </p>
-        </div>
+        <p className="text-sm text-ink-soft">
+          {user.email}
+          {organisation && ` · ${organisation.name}`}
+        </p>
         {/* The operator sees this page outside the Shell, so it needs its own
             way back to the console. */}
         {user.is_super_admin && (

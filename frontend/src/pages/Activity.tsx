@@ -17,8 +17,7 @@ export default function Activity() {
     <div className="space-y-4 p-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold text-ink">Activity</h1>
-          <p className="text-sm text-ink-faint">
+          <p className="text-sm text-ink-soft">
             Every state change, in order. {data ? `${data.total} entries.` : ""}
           </p>
         </div>

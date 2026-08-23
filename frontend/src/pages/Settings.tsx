@@ -2,7 +2,9 @@ import { useState } from "react";
 
 import { api, useApi } from "../api/client";
 import type { NotificationRule, PushDevice, SystemStatus } from "../api/types";
+import { playChime } from "../lib/chime";
 import { enablePush, type PushStatus } from "../lib/push";
+import { setSoundEnabled, soundEnabled } from "../lib/sound-preference";
 import {
   ago,
   Badge,
@@ -121,6 +123,42 @@ function RuleRow({ rule, onChanged }: { rule: NotificationRule; onChanged: () =>
   );
 }
 
+/** Whether notifications chime on this device.
+ *
+ *  Per-device rather than per-account, and deliberately so: the same trader
+ *  wants sound on their phone and silence on a shared desk machine. Playing
+ *  the chime as you switch it on is the only honest preview - "mild" is not
+ *  something a label can settle, and someone deciding whether to keep it on
+ *  should hear exactly what they are agreeing to.
+ */
+function SoundToggle() {
+  const [on, setOn] = useState(soundEnabled);
+
+  function toggle() {
+    const next = !on;
+    setOn(next);
+    setSoundEnabled(next);
+    if (next) playChime("info");
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-rule bg-sunk px-3 py-2">
+      <span className="min-w-0">
+        <span className="block text-sm font-medium text-ink">Notification sound</span>
+        <span className="block text-[11.5px] text-ink-faint">
+          {on
+            ? "A short chime plays when a notification arrives on this device."
+            : "Notifications appear silently on this device."}
+        </span>
+      </span>
+      <Button compact variant={on ? "secondary" : "ghost"} onClick={toggle}>
+        {on ? "Turn sound off" : "Turn sound on"}
+      </Button>
+    </div>
+  );
+}
+
+
 /** Turning system push on for this device, and seeing the others.
  *
  *  Separate from the rule table below because it answers a different
@@ -206,10 +244,12 @@ function PushSection() {
         )}
         {note && <Banner tone={note.bad ? "danger" : "settled"}>{note.text}</Banner>}
 
+        <SoundToggle />
+
         {devices.loading && !devices.data ? (
           <Loading label="Loading your devices" />
         ) : active.length === 0 ? (
-          <p className="text-sm text-ink-faint">
+          <p className="text-sm text-ink-soft">
             No devices registered yet. Turn it on to receive notifications on this one.
           </p>
         ) : (
@@ -249,12 +289,9 @@ export default function Settings() {
 
   return (
     <div className="flex flex-col gap-4 p-5">
-      <header>
-        <h1 className="text-lg font-semibold text-ink">Settings</h1>
-        <p className="text-sm text-ink-faint">
-          What the system is configured to do, and who it tells.
-        </p>
-      </header>
+      <p className="text-sm text-ink-soft">
+        What the system is configured to do, and who it tells.
+      </p>
 
       {s && !s.auto_send_enabled && (
         <Banner tone="settled">

@@ -111,7 +111,21 @@ class Settings(BaseSettings):
 
     @property
     def fcm_configured(self) -> bool:
-        return bool(self.fcm_project_id and self.fcm_credentials_file)
+        """Whether a push can actually be sent, not merely whether it was asked for.
+
+        The file must exist, not just be named. A path pointing at a
+        service-account JSON nobody has downloaded yet reads as configured to
+        every check above it: Settings hides the "ask your administrator"
+        banner, a trader grants browser permission and registers a device, and
+        every send then fails at runtime against a desk that claimed it was
+        ready. Half-configured is the one state worse than unconfigured,
+        because it is the one nobody is warned about.
+        """
+        from pathlib import Path
+
+        if not (self.fcm_project_id and self.fcm_credentials_file):
+            return False
+        return Path(self.fcm_credentials_file).is_file()
 
     # --- Follow-ups -------------------------------------------------------
     # The scheduler decides when a nudge is *due*; sending stays a human
@@ -121,7 +135,6 @@ class Settings(BaseSettings):
 
     # --- Polling ----------------------------------------------------------
     polling_enabled: bool = False
-    polling_interval_seconds: int = 120
     #: How often the poller wakes to *consider* each desk. Whether any given
     #: desk is checked is decided from its own crawl window, so this only
     #: bounds how precisely those windows are honoured.

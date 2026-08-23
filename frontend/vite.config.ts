@@ -5,6 +5,12 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // The desk keeps one `.env` at the repository root, shared by the backend and
+  // this app. Vite otherwise looks only in its own root (`frontend/`), finds
+  // nothing, and silently serves an empty `import.meta.env` - so every
+  // `VITE_*` value reads as undefined and features like push report themselves
+  // unconfigured with no error to explain why.
+  envDir: "..",
   server: {
     port: 5173,
     // The dashboard calls the API on a relative path, so the backend origin

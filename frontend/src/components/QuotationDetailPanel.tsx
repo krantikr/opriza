@@ -481,6 +481,13 @@ export default function QuotationDetailPanel({
     draft && (subject !== (draft.subject ?? "") || body !== (draft.body ?? "")),
   );
   const sendable = ["READY_FOR_REVIEW", "EDITED", "NEEDS_INFORMATION"].includes(data.status);
+  /* Once a quotation has gone to the customer it is a record of what was
+     said, not a document to keep working on. The API already refuses to
+     approve, regenerate or redraft it - `test_a_quotation_cannot_be_sent_twice`
+     pins the 409 - so offering the buttons only invites an error message.
+     Rejected and failed are settled the same way. */
+  const settled = ["SENT", "APPROVED", "CUSTOMER_ACCEPTED", "CUSTOMER_DECLINED",
+    "REJECTED", "FAILED"].includes(data.status);
   const stale = data.line_items.some((i) => i.pricing?.draft_stale);
   const totalValue = data.line_items.reduce(
     (sum, i) => sum + Number(i.pricing?.line_total ?? 0),
@@ -506,21 +513,55 @@ export default function QuotationDetailPanel({
   /* What is actually stopping a price, in the order a trader would clear it.
      Derived from the current record rather than from `review_notes`, which is
      a snapshot taken at processing time and goes stale the moment somebody
-     publishes rules or receives stock. */
-  const blockers = [
-    data.line_items.some((i) => i.match_status === "NO_MATCH")
-      ? "no matching stock"
-      : null,
-    data.line_items.some((i) => i.match_status === "MULTIPLE_MATCHES")
-      ? "more than one spec fits — pick one"
-      : null,
-    !data.delivery_location ? "add a delivery location for freight" : null,
-  ].filter(Boolean) as string[];
+     publishes rules or receives stock.
+
+     Silent once every line carries a rate. A quotation that has been priced
+     has, by definition, nothing standing in the way of pricing it - and a
+     warning strip above a working figure teaches the desk to read past the
+     strip. A missing delivery location is not a blocker at all: the freight
+     component treats it as an ex-works quote, which is a real basis a trader
+     chooses, so it is reported below as a term rather than as a fault. */
+  const priced =
+    data.line_items.length > 0 &&
+    data.line_items.every((i) => i.pricing?.quote_rate != null);
+  const blockers = priced
+    ? []
+    : ([
+        data.line_items.some((i) => i.match_status === "NO_MATCH")
+          ? "no matching stock"
+          : null,
+        data.line_items.some((i) => i.match_status === "MULTIPLE_MATCHES")
+          ? "more than one spec fits — pick one"
+          : null,
+      ].filter(Boolean) as string[]);
+
+  /* Every line of a quotation usually fails for the same reason - the same
+     missing mill offer, the same unpublished rule - so the engine records an
+     identical warning on each one. Rendered per line that is one fact stated
+     once per material. Hoisted here, deduped, and stated once.
+
+     Warnings from a line whose rules have since moved on are dropped: that
+     line already shows "priced before the current rules were published", and
+     its stored warnings describe a state that no longer exists. */
+  const pricingWarnings = [
+    ...new Set(
+      data.line_items.flatMap((i) =>
+        i.pricing && !i.pricing.rules_stale ? i.pricing.warnings : [],
+      ),
+    ),
+  ];
 
   /* Stock figures worth printing. A cell reading "—" tells a trader nothing
      he did not already know from "no matching stock" above. */
   const availability = headline?.stock_availability;
   const stockFacts: [string, string][] = [];
+  /* Where it is going decides whether freight is in the number at all, so the
+     basis is stated on a priced quotation instead of being flagged as a
+     missing field. "Ex-works" is an answer, not a gap. */
+  stockFacts.push([
+    "Delivery",
+    data.delivery_location ? data.delivery_location : "ex-works",
+  ]);
   if (availability?.available_qty_mt != null) {
     stockFacts.push(["In stock", `${num(availability.available_qty_mt)} MT`]);
   }
@@ -575,9 +616,14 @@ export default function QuotationDetailPanel({
           <h2 className="truncate text-base font-semibold text-ink">Quotation details</h2>
         </div>
         <div className="flex w-full items-center gap-2 sm:w-auto">
+          {/* A sent quotation is a record, not a draft. The controls stay
+              visible but inert, with the reason on hover - hiding them
+              entirely would leave a reviewer hunting for an action that is
+              simply no longer available. */}
           <Button
             className="flex-1 sm:flex-none"
-            disabled={busy !== null}
+            disabled={settled || busy !== null}
+            title={settled ? "This quotation has already been sent." : undefined}
             onClick={() => act("regen", () => api.post(`/quotations/${data.id}/regenerate`))}
           >
             {busy === "regen" ? "Regenerating…" : "Regenerate"}
@@ -585,7 +631,8 @@ export default function QuotationDetailPanel({
           <Button
             variant="danger"
             className="flex-1 sm:flex-none"
-            disabled={busy !== null}
+            disabled={settled || busy !== null}
+            title={settled ? "This quotation has already been sent." : undefined}
             onClick={() => act("reject", () => api.post(`/quotations/${data.id}/reject`, {}))}
           >
             Reject
@@ -593,7 +640,8 @@ export default function QuotationDetailPanel({
           <Button
             variant="primary"
             className="flex-1 sm:flex-none"
-            disabled={!sendable || busy !== null}
+            title={settled ? "This quotation has already been sent." : undefined}
+            disabled={!sendable || settled || busy !== null}
             onClick={() =>
               act("send", () =>
                 api.post(`/quotations/${data.id}/approve`, {
@@ -824,6 +872,12 @@ export default function QuotationDetailPanel({
         {/* --- Pricing ------------------------------------------------------ */}
         {tab === "pricing" && (
           <div className="flex flex-col gap-4">
+            {/* Stated once for the quotation rather than once per line. */}
+            {pricingWarnings.map((w) => (
+              <Banner key={w} tone="attention">
+                {w}
+              </Banner>
+            ))}
             {data.line_items.map((item) => (
               <div key={item.id} className="flex flex-col gap-2">
                 {data.line_items.length > 1 && (
@@ -837,6 +891,7 @@ export default function QuotationDetailPanel({
                     pricing={item.pricing}
                     quotationId={data.id}
                     lineId={item.id}
+                    hideWarnings
                     onChange={() => {
                       reload();
                       onChanged();
@@ -875,29 +930,38 @@ export default function QuotationDetailPanel({
                   <span className="w-16 shrink-0 text-xs font-medium text-ink-faint">Subject</span>
                   <input
                     value={subject}
+                    readOnly={settled}
                     onChange={(e) => setSubject(e.target.value)}
                     className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none"
                   />
                 </label>
+                {/* Read-only once sent, for the same reason the save button
+                    goes: text that can be typed into but not saved is a trap. */}
                 <textarea
                   value={body}
+                  readOnly={settled}
                   onChange={(e) => setBody(e.target.value)}
                   rows={24}
                   spellCheck
                   className="w-full resize-y bg-transparent px-4 py-3 font-sans text-sm leading-relaxed text-ink outline-none"
                 />
-                <div className="flex justify-end gap-2 border-t border-rule bg-sunk px-4 py-2.5">
-                  <Button
-                    disabled={!edited || busy !== null}
-                    onClick={() =>
-                      act("save", () =>
-                        api.put(`/quotations/${data.id}/draft`, { subject, body }),
-                      )
-                    }
-                  >
-                    Save edits
-                  </Button>
-                </div>
+                {/* Hidden rather than disabled once sent: this is the text
+                    that actually went to the customer, and a save control
+                    beside it suggests it can still be changed. */}
+                {!settled && (
+                  <div className="flex justify-end gap-2 border-t border-rule bg-sunk px-4 py-2.5">
+                    <Button
+                      disabled={!edited || busy !== null}
+                      onClick={() =>
+                        act("save", () =>
+                          api.put(`/quotations/${data.id}/draft`, { subject, body }),
+                        )
+                      }
+                    >
+                      Save edits
+                    </Button>
+                  </div>
+                )}
               </Card>
             ) : (
               <Card>

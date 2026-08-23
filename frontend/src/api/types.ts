@@ -347,6 +347,10 @@ export interface SystemStatus {
   stock_lots: number;
   stock_specs: number;
   customers: number;
+  /** When this desk's mailbox was last checked. Null before the first poll. */
+  last_polled_at: string | null;
+  /** The cadence in force right now, in the poller's own words. */
+  poll_reason: string | null;
 }
 
 export interface AuditEntry {
@@ -803,4 +807,156 @@ export interface Insights {
   top_products: InsightProduct[];
   ageing_buckets: { label: string; lots: number; value: number }[];
   attention: AttentionRow[];
+}
+
+/* ---------------------------------------------------------------------------
+   Desk report — the trading view of a period.
+
+   Activity counts say how busy the desk was; these say whether it made money.
+   --------------------------------------------------------------------------- */
+
+export interface DeskMoney {
+  revenue: number;
+  cost: number;
+  profit: number;
+  margin_pct: number;
+  tonnes: number;
+  profit_per_mt: number;
+  deals: number;
+}
+
+export interface DeskTrendPoint {
+  label: string;
+  revenue: number;
+  profit: number;
+  quoted: number;
+  tonnes: number;
+}
+
+export interface DeskLostReason {
+  reason: string;
+  label: string;
+  action: string;
+  count: number;
+  value: number;
+  profit_missed: number;
+}
+
+export interface DeskCustomer {
+  customer: string;
+  quotes: number;
+  won: number;
+  lost: number;
+  win_rate: number | null;
+  quoted_value: number;
+  revenue: number;
+  profit: number;
+  margin_pct: number;
+  tonnes: number;
+}
+
+export interface DeskProduct {
+  product: string;
+  lines: number;
+  won_lines: number;
+  quoted_value: number;
+  tonnes_quoted: number;
+  tonnes_won: number;
+  revenue: number;
+  profit: number;
+  margin_pct: number;
+  profit_per_mt: number;
+}
+
+export interface DeskStock {
+  buckets: { label: string; lots: number; value: number; tonnes: number }[];
+  total_value: number;
+  deadstock_value: number;
+  deadstock_pct: number;
+  deadstock_lots: number;
+  oldest: {
+    spec: string;
+    location: string;
+    ageing_days: number;
+    tonnes: number;
+    value: number;
+  }[];
+}
+
+export interface DeskDelivery {
+  on_time: number;
+  late: number;
+  on_time_pct: number | null;
+  avg_days_late: number;
+  overdue_now: number;
+}
+
+export interface DeskQuietCustomer {
+  customer: string;
+  last_seen: string;
+  days_quiet: number;
+  lifetime_revenue: number;
+  lifetime_profit: number;
+  orders: number;
+}
+
+export interface DeskEnquiries {
+  received: number;
+  identified: number;
+  not_enquiries: number;
+  raised: number;
+  not_raised: number;
+  sent: number;
+  not_sent: number;
+  awaiting: number;
+  won: number;
+  lost: number;
+  win_rate: number | null;
+  conversion_rate: number | null;
+}
+
+export interface DeskStockMovement {
+  opening_mt: number;
+  receipts_mt: number;
+  issues_mt: number;
+  closing_mt: number;
+  receipts_value: number;
+  issues_value: number;
+  closing_value: number;
+  receipt_count: number;
+  issue_count: number;
+  movements: number;
+}
+
+export interface DeskReport {
+  period_key: string;
+  period_label: string;
+  period_range: string;
+  previous_label: string;
+  grain: string;
+  won: DeskMoney;
+  won_previous: DeskMoney;
+  open_book: DeskMoney;
+  quoted: DeskMoney;
+  trend: DeskTrendPoint[];
+  lost_reasons: DeskLostReason[];
+  customers: DeskCustomer[];
+  products: DeskProduct[];
+  concentration: {
+    top_1_pct: number;
+    top_3_pct: number;
+    top_5_pct: number;
+    customers: number;
+  };
+  stock: DeskStock;
+  delivery: DeskDelivery;
+  quiet_customers: DeskQuietCustomer[];
+  enquiries: DeskEnquiries;
+  stock_movement: DeskStockMovement;
+}
+
+export interface PeriodChoice {
+  key: string;
+  label: string;
+  range: string;
 }

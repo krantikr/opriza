@@ -13,6 +13,7 @@ import {
   Loading,
   Pagination,
   SearchInput,
+  Select,
   when,
 } from "../components/ui";
 
@@ -89,38 +90,6 @@ function initials(name: string): string {
     .map((w) => w[0] ?? "")
     .join("")
     .toUpperCase();
-}
-
-/** A figure that is also its own filter: the number you noticed is the one you
- *  want to see, so it is the control rather than a label beside one. */
-function Stat({
-  label,
-  value,
-  tone = "",
-  active,
-  onClick,
-}: {
-  label: string;
-  value: number;
-  tone?: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={`flex items-baseline gap-1.5 rounded-lg px-2.5 py-1 transition-colors ${
-        active ? "bg-brand-wash" : "hover:bg-sunk"
-      }`}
-    >
-      <span className={`text-[15px] font-semibold tabular-nums ${tone || "text-ink"}`}>
-        {value}
-      </span>
-      <span className="text-[12px] text-ink-faint">{label}</span>
-    </button>
-  );
 }
 
 function Row({
@@ -226,7 +195,10 @@ export default function Quotations() {
   const { id } = useParams();
   const navigate = useNavigate();
 
-  const [tab, setTab] = useState("all");
+  /* Draft, not All. A quotation the desk has already sent needs nothing from
+     anybody; the ones still unsent are the work. Opening on All buries four
+     rows that need action under two that do not. */
+  const [tab, setTab] = useState("draft");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
@@ -272,11 +244,6 @@ export default function Quotations() {
 
   useEffect(() => setPage(1), [tab, search]);
 
-  const totalValue = filtered.reduce(
-    (sum, q) => sum + Number(q.total_suggested_value ?? 0),
-    0,
-  );
-
   async function exportXlsx() {
     setExporting(true);
     setExportError(null);
@@ -296,66 +263,37 @@ export default function Quotations() {
 
   return (
     <div className="flex flex-col gap-3 p-5">
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold text-ink">Quotations</h1>
-          <p className="mt-0.5 text-sm text-ink-soft">
-            <span className="font-semibold tabular-nums text-ink">
-              {inrShort(totalValue)}
-            </span>{" "}
-            across {filtered.length} quotation{filtered.length === 1 ? "" : "s"}.
-          </p>
-        </div>
-        <Button onClick={exportXlsx} disabled={exporting}>
-          {exporting ? "Preparing…" : "Export to Excel"}
-        </Button>
-      </header>
-
-      {exportError && <ErrorNote message={exportError} />}
-
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex flex-wrap items-center gap-0.5">
-          <Stat
-            label="All"
-            value={countFor("all")}
-            active={tab === "all"}
-            onClick={() => setTab("all")}
-          />
-          <Stat
-            label="Draft"
-            value={countFor("draft")}
-            tone="text-attention"
-            active={tab === "draft"}
-            onClick={() => setTab("draft")}
-          />
-          <Stat
-            label="Sent"
-            value={countFor("sent")}
-            tone="text-brand-soft-ink"
-            active={tab === "sent"}
-            onClick={() => setTab("sent")}
-          />
-          <Stat
-            label="Replied"
-            value={countFor("replied")}
-            tone="text-settled"
-            active={tab === "replied"}
-            onClick={() => setTab("replied")}
-          />
-          <Stat
-            label="Closed"
-            value={countFor("closed")}
-            active={tab === "closed"}
-            onClick={() => setTab("closed")}
-          />
-        </div>
+      {/* The page title now lives in the app header, so this line carries
+          only what changes with the filter: what is being looked at, and how
+          much of it. Search left, filter and export right - the two controls
+          that narrow the table sit beside the button that exports exactly
+          what the table is showing. */}
+      <header className="flex flex-wrap items-center gap-2">
         <SearchInput
           value={search}
           onChange={setSearch}
           placeholder="Search by customer, material or number…"
-          className="ml-auto w-full sm:w-72"
+          className="w-full sm:w-72"
         />
-      </div>
+        <div className="ml-auto flex items-center gap-2">
+          <Select
+            value={tab}
+            onChange={setTab}
+            options={TABS.map((t) => ({
+              value: t.key,
+              // The count belongs on the option: a filter that hides how much
+              // it is hiding makes an empty table look like a broken one.
+              label: `${t.label} (${countFor(t.key)})`,
+            }))}
+            className="py-1.5"
+          />
+          <Button onClick={exportXlsx} disabled={exporting}>
+            {exporting ? "Preparing…" : "Export to Excel"}
+          </Button>
+        </div>
+      </header>
+
+      {exportError && <ErrorNote message={exportError} />}
 
       {error && <ErrorNote message={error} />}
 

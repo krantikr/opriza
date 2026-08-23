@@ -14,7 +14,7 @@ from decimal import Decimal
 
 import pytest
 
-from ai.llm.base import LLMClient, LLMError
+from ai.llm.base import LLMClient, LLMError, RateLimitedError
 from ai.schemas import (
     AIOutcome,
     ClassificationResult,
@@ -607,3 +607,63 @@ def test_notes_are_capped_newest_first():
 
     assert len(lines) == MAX_REVIEW_NOTES
     assert lines[-1] == "note 29"
+
+
+# --- Rate limiting ---------------------------------------------------------
+#
+# A 429 says "not now", not "never". Treating it like any other LLMError marked
+# the email FAILED, which is a permanent verdict on a temporary condition: the
+# enquiry stopped being retried and a real customer went unanswered because the
+# gateway was briefly busy.
+
+
+def test_a_rate_limited_email_stays_pending_rather_than_failing(db, inbound):
+    email = inbound()
+    llm = FakeLLM(classify=[RateLimitedError("429 too many requests")])
+
+    with pytest.raises(RateLimitedError):
+        QuotationWorkflow(db, client=llm).run(email.id)
+
+    db.refresh(email)
+    # Not FAILED, and crucially not stranded in PROCESSING either - the poller
+    # only ever selects PENDING, so anything else means the email is lost.
+    assert email.processing_status is ProcessingStatus.PENDING
+
+
+def test_a_rate_limit_during_extraction_also_returns_the_email(db, inbound):
+    email = inbound()
+    llm = FakeLLM(classify=[classified()], extract=[RateLimitedError("429")])
+
+    with pytest.raises(RateLimitedError):
+        QuotationWorkflow(db, client=llm).run(email.id)
+
+    db.refresh(email)
+    assert email.processing_status is ProcessingStatus.PENDING
+
+
+def test_the_batch_stops_on_a_rate_limit_instead_of_burning_the_rest(db, inbound):
+    """The behaviour that turns a brief limit into a sustained one."""
+    first, second, third = inbound(), inbound(), inbound()
+    llm = FakeLLM(classify=[RateLimitedError("429")])
+
+    results = process_pending_emails(db, client=llm)
+
+    # The batch stopped at the first 429 rather than firing the other two at a
+    # gateway that had already refused us.
+    assert results == []
+    for email in (first, second, third):
+        db.refresh(email)
+        assert email.processing_status is ProcessingStatus.PENDING
+
+
+def test_an_ordinary_failure_still_only_stops_its_own_email(db, inbound):
+    """The batch guard must not have made every error fatal to the run."""
+    first = inbound()
+    inbound()
+    llm = FakeLLM(classify=[LLMError("model refused"), classified(category="OTHER")])
+
+    results = process_pending_emails(db, client=llm)
+
+    assert len(results) == 2
+    db.refresh(first)
+    assert first.processing_status is ProcessingStatus.FAILED

@@ -6,8 +6,10 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
+from ai.llm.base import RateLimitedError
 from app.api.deps import TenantDb
 from app.api.serializers import email_detail_out, email_out
+from app.core.config import settings
 from app.core.db import utcnow
 from app.models import Email, EmailCategory, ProcessingStatus
 from app.schemas.common import Page
@@ -161,3 +163,64 @@ def mark_needs_reply(email_id: int, db: TenantDb) -> EmailDetailOut:
     email.answered_at = None
     db.commit()
     return email_detail_out(email)
+
+
+@router.post("/{email_id}/retry", response_model=EmailDetailOut)
+def retry_email(email_id: int, db: TenantDb) -> EmailDetailOut:
+    """Run the workflow over one email again, whatever state it ended in.
+
+    This exists because "Try again" used to post to `/pipeline/process`, which
+    only ever selects PENDING emails - the exact status a failed email does
+    not have. The button fired a request, the request did nothing, and the
+    same error came back: the one case the button exists for was the one case
+    it could not fix.
+
+    Resetting to PENDING first is what makes the retry real rather than
+    cosmetic, and it is also why this is a POST on a specific email instead of
+    a batch trigger: a person retrying the enquiry in front of them should not
+    set every other desk's failed mail running.
+    """
+    from app.workflows.quotation import QuotationWorkflow
+
+    email = db.get(Email, email_id)
+    if email is None:
+        raise HTTPException(status_code=404, detail=f"Email {email_id} not found")
+
+    if not settings.llm_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "OPENROUTER_API_KEY is not set, so the AI steps cannot run. "
+                "Add it to .env and restart."
+            ),
+        )
+
+    previous = email.processing_status
+    email.processing_status = ProcessingStatus.PENDING
+    email.error_message = None
+    audit.record(
+        db,
+        entity_type="email",
+        entity_id=email.id,
+        action="RETRIED",
+        details={"subject": email.subject, "previous_status": previous.value},
+    )
+    db.commit()
+
+    try:
+        QuotationWorkflow(db).run(email.id)
+    except RateLimitedError as exc:
+        # Still throttled. `_release_to_pending` has already put the email back,
+        # so it stays retryable - but the caller must be told the difference
+        # between "we tried and the provider is busy" and "we did nothing",
+        # which is what the silent no-op used to look like.
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="The AI provider is still rate-limiting us. Wait a moment and try again.",
+        ) from exc
+
+    db.expire_all()
+    refreshed = db.get(Email, email_id)
+    if refreshed is None:  # pragma: no cover - deleted mid-retry
+        raise HTTPException(status_code=404, detail=f"Email {email_id} not found")
+    return email_detail_out(refreshed)

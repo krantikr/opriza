@@ -23,6 +23,17 @@ class LLMError(RuntimeError):
     """Any failure calling the language model."""
 
 
+class RateLimitedError(LLMError):
+    """The gateway refused the call for load, not for content.
+
+    Distinct from every other `LLMError` because the correct response is
+    different in kind: nothing about the request needs changing, so retrying
+    variations of it only deepens the overload. Callers should stop, leave the
+    work in a retryable state, and let the next scheduled pass pick it up once
+    the window has reset.
+    """
+
+
 class StructuredOutputError(LLMError):
     """The model could not produce output matching the required schema.
 

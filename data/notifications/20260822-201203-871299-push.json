@@ -1,0 +1,6 @@
+{
+  "channel": "PUSH",
+  "to": "tok-live-test-abcdefghijklmnop",
+  "title": "Steel Desk",
+  "body": "Push notifications are working."
+}

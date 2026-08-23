@@ -252,19 +252,30 @@ function Reading({ id, onProcessed }: { id: number; onProcessed: () => void }) {
     };
   }, [id, data?.state]);
   const [busy, setBusy] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
 
   if (loading && !data) return <Loading label="Opening" />;
   if (error) return <div className="p-4"><ErrorNote message={error} /></div>;
   if (!data) return null;
 
+  /* Retry this one email, not "whatever happens to be pending".
+     `/pipeline/process` only selects PENDING emails, so posting to it from a
+     FAILED message did nothing at all - the request went out, the same error
+     came back, and the button looked broken because it was. The per-email
+     endpoint resets the status first, so the retry actually runs. */
   async function reprocess() {
     setBusy(true);
+    setRetryError(null);
     try {
-      await api.post("/pipeline/process");
-      setTimeout(() => {
-        reload();
-        onProcessed();
-      }, 2000);
+      await api.post(`/emails/${data!.id}/retry`);
+      reload();
+      onProcessed();
+    } catch (err) {
+      // Awaiting the real call means a still-throttled provider can say so,
+      // rather than the old fire-and-forget timeout implying success.
+      setRetryError(
+        err instanceof Error ? err.message : "Could not retry. Try again shortly.",
+      );
     } finally {
       setBusy(false);
     }
@@ -356,21 +367,15 @@ function Reading({ id, onProcessed }: { id: number; onProcessed: () => void }) {
               <Banner
                 tone="danger"
                 action={
-                  <Button
-                    compact
-                    onClick={async () => {
-                      await api.post("/pipeline/process");
-                      setTimeout(() => {
-                        reload();
-                        onProcessed();
-                      }, 2500);
-                    }}
-                  >
-                    Try again
+                  <Button compact disabled={busy} onClick={reprocess}>
+                    {busy ? "Retrying..." : "Try again"}
                   </Button>
                 }
               >
                 <p className="font-medium">{summariseError(data.error_message)}</p>
+                {retryError && (
+                  <p className="mt-1 text-xs font-medium">{retryError}</p>
+                )}
                 <details className="mt-1">
                   <summary className="cursor-pointer text-xs opacity-80">
                     Technical detail
@@ -385,7 +390,7 @@ function Reading({ id, onProcessed }: { id: number; onProcessed: () => void }) {
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">
                   Why it was filed here
                 </p>
-                <p className="mt-0.5 text-sm text-ink-soft">{data.classification_reason}</p>
+                <p className="text-sm text-ink-soft">{data.classification_reason}</p>
                 {data.classification_confidence != null && (
                   <p className="mt-1 text-[11px] text-ink-faint">
                     Confidence {(data.classification_confidence * 100).toFixed(0)}%
@@ -480,26 +485,18 @@ export default function Inbox() {
 
   return (
     <div className="flex h-[calc(100vh-7rem)] flex-col md:h-[calc(100vh-3.25rem)]">
+      {/* Search left, refresh right. The message count moved to the "All
+          mail" tab below, where every other folder already carries one -
+          "13 messages" under a title the app header now prints was the same
+          fact stated twice. */}
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-rule px-5 py-3">
-        <div>
-          <h1 className="text-lg font-semibold text-ink">Inbox</h1>
-          <p className="text-sm text-ink-faint">
-            {data
-              ? `${rows.length} message${rows.length === 1 ? "" : "s"}${
-                  active.key ? ` in ${active.label.toLowerCase()}` : ""
-                }`
-              : "Loading…"}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Input
-            value={search}
-            onChange={setSearch}
-            placeholder="Search sender or subject"
-            className="w-56"
-          />
-          <Button onClick={reload}>Refresh</Button>
-        </div>
+        <Input
+          value={search}
+          onChange={setSearch}
+          placeholder="Search sender or subject"
+          className="w-64 max-w-[55%]"
+        />
+        <Button onClick={reload}>Refresh</Button>
       </header>
 
       <nav className="flex gap-1 overflow-x-auto border-b border-rule px-4 py-1.5">
@@ -519,7 +516,9 @@ export default function Inbox() {
             }`}
           >
             {f.label}
-            {f.key && counts[f.key] > 0 && (
+            {/* "All mail" counts too - it is where the total lives now that
+                the header no longer prints it. */}
+            {counts[f.key] > 0 && (
               <span
                 className={`tabular rounded px-1 text-[10px] ${
                   f.state

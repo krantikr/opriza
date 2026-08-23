@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from ai.config import LLMConfig
-from ai.llm.base import LLMError, StructuredOutputError
+from ai.llm.base import LLMError, RateLimitedError, StructuredOutputError
 from ai.llm.openrouter import OpenRouterClient
 from ai.llm.schema import extract_json, to_strict_schema
 from ai.schemas import ClassificationResult, EmailCategory, ExtractedEnquiry
@@ -207,3 +207,83 @@ def test_extract_json_recovers_from_common_wrappings(raw):
 def test_extract_json_rejects_unrecoverable_text(raw):
     with pytest.raises(ValueError):
         extract_json(raw)
+
+
+# --- Rate limiting --------------------------------------------------------
+#
+# A 429 is not a formatting problem, but it used to be mistaken for one: the
+# gateway echoes the rejected request in its error body, `response_format` and
+# all, which tripped the substring match in `_is_unsupported_format`. The
+# client then "fell back" to a weaker mode and tried again - three modes, two
+# repair rounds each, on top of the SDK's own retries. One throttled enquiry
+# became a burst of doomed calls at a gateway that had already said no.
+
+
+def rate_limited(message: str = "rate limit exceeded") -> Exception:
+    """A genuine openai.RateLimitError, as the SDK would raise it."""
+    from openai import RateLimitError
+
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    return RateLimitError(message, response=httpx.Response(429, request=request), body=None)
+
+
+def test_a_rate_limit_stops_the_ladder_instead_of_downgrading():
+    client = ScriptedClient([rate_limited(), VALID, VALID, VALID, VALID, VALID])
+
+    with pytest.raises(RateLimitedError):
+        client.structured(task="classify", messages=messages(), schema=ClassificationResult)
+
+    # The single most important assertion in this file: one call, not six.
+    assert len(client.calls) == 1
+
+
+def test_a_rate_limit_mentioning_response_format_is_still_a_rate_limit():
+    """The exact shape that caused the original burst."""
+    client = ScriptedClient(
+        [rate_limited("response_format: upstream provider is not supported right now"), VALID]
+    )
+
+    with pytest.raises(RateLimitedError):
+        client.structured(task="classify", messages=messages(), schema=ClassificationResult)
+
+    assert len(client.calls) == 1
+
+
+def test_rate_limiting_is_distinguishable_from_a_schema_failure():
+    """Callers branch on this: one is retryable, the other needs a human."""
+    assert issubclass(RateLimitedError, LLMError)
+    assert not issubclass(RateLimitedError, StructuredOutputError)
+
+
+def test_a_server_overload_is_not_read_as_a_format_problem():
+    from openai import InternalServerError
+
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    overloaded = InternalServerError(
+        "upstream overloaded", response=httpx.Response(503, request=request), body=None
+    )
+    client = ScriptedClient([overloaded, VALID])
+
+    with pytest.raises(RateLimitedError):
+        client.structured(task="classify", messages=messages(), schema=ClassificationResult)
+
+    assert len(client.calls) == 1
+
+
+def test_completion_calls_surface_rate_limits_too():
+    client = ScriptedClient([rate_limited()])
+
+    with pytest.raises(RateLimitedError):
+        client.complete(task="draft", messages=messages())
+
+
+def test_a_genuine_format_rejection_still_falls_back():
+    """The guard must not have broken the behaviour it sits in front of."""
+    client = ScriptedClient([bad_request("response_format json_schema is not supported"), VALID])
+
+    outcome = client.structured(
+        task="classify", messages=messages(), schema=ClassificationResult
+    )
+
+    assert outcome.value.category is EmailCategory.QUOTATION_REQUEST
+    assert len(client.calls) == 2

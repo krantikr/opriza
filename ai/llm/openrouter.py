@@ -28,7 +28,15 @@ from typing import Any, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from ai.config import LLMConfig
-from ai.llm.base import LLMClient, LLMError, Messages, StructuredOutputError, assistant, user
+from ai.llm.base import (
+    LLMClient,
+    LLMError,
+    Messages,
+    RateLimitedError,
+    StructuredOutputError,
+    assistant,
+    user,
+)
 from ai.llm.schema import describe_schema, extract_json, schema_name, to_strict_schema
 from ai.schemas import AIOutcome, LLMUsage
 
@@ -126,12 +134,38 @@ class OpenRouterClient(LLMClient):
         return text, meta
 
     @staticmethod
+    def _is_rate_limited(exc: Exception) -> bool:
+        """True when the gateway is refusing us for load, not for shape.
+
+        Checked *before* `_is_unsupported_format`, because a 429 body often
+        echoes the rejected request - `response_format` and all - and would
+        otherwise trip that function's text match. Reading a rate limit as
+        "this model cannot do strict schema" is the worst possible response
+        to it: the ladder walks down through every weaker mode, each with its
+        own repair round, and fires a burst of doomed calls at a gateway that
+        just asked us to slow down.
+        """
+        try:
+            from openai import APIStatusError, RateLimitError
+        except ImportError:  # pragma: no cover - dependency is declared
+            return False
+
+        if isinstance(exc, RateLimitError):
+            return True
+        # Some gateways surface overload as 5xx rather than 429; those are
+        # equally not about output format.
+        if isinstance(exc, APIStatusError):
+            return exc.status_code == 429 or exc.status_code >= 500
+        return False
+
+    @staticmethod
     def _is_unsupported_format(exc: Exception) -> bool:
         """True when the failure looks like 'this model cannot do that format'.
 
         Deliberately broad: falling back to a weaker output mode costs one extra
         call, whereas failing hard would drop an enquiry the business cares
-        about.
+        about. Callers must rule out `_is_rate_limited` first - breadth here is
+        only safe once load errors have been taken off the table.
         """
         try:
             from openai import BadRequestError, NotFoundError, UnprocessableEntityError
@@ -169,6 +203,8 @@ class OpenRouterClient(LLMClient):
             usage.latency_ms = int((time.perf_counter() - started) * 1000)
             usage.succeeded = False
             usage.error = str(exc)
+            if self._is_rate_limited(exc):
+                raise RateLimitedError(f"{task} rate-limited by the gateway: {exc}") from exc
             raise LLMError(f"{task} completion failed: {exc}") from exc
 
         self._apply(usage, meta)
@@ -267,6 +303,13 @@ class OpenRouterClient(LLMClient):
                     max_tokens=max_tokens,
                 )
             except Exception as exc:
+                if self._is_rate_limited(exc):
+                    # Abandon the whole ladder, not just this mode. The gateway
+                    # is not going to like a weaker output mode any better, and
+                    # retrying is what caused the overload.
+                    raise RateLimitedError(
+                        f"{task} rate-limited by the gateway in {mode.value} mode: {exc}"
+                    ) from exc
                 if self._is_unsupported_format(exc) and mode is not OutputMode.PROMPT_ONLY:
                     failures.append(f"{mode.value}: {exc}")
                     return None  # try a weaker mode

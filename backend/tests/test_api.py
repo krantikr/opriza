@@ -6,9 +6,19 @@ customer, so most of what is asserted here is about what it refuses to do.
 
 from __future__ import annotations
 
-import pytest
+from datetime import UTC, datetime
 
-from app.models import Approval, ApprovalAction, DraftStatus, QuotationDraft, QuotationStatus
+import pytest
+from sqlalchemy import select
+
+from app.models import (
+    Approval,
+    ApprovalAction,
+    DraftStatus,
+    Organisation,
+    QuotationDraft,
+    QuotationStatus,
+)
 
 
 @pytest.fixture()
@@ -229,6 +239,42 @@ def test_system_status_reports_what_is_configured(client, plate):
     assert "classify" in body["llm_models"]
 
 
+def test_system_status_reports_when_mail_was_last_checked(client, db):
+    """The rail shows this instead of the static configuration.
+
+    A desk with no new enquiries has to tell "nobody wrote" apart from "we
+    stopped looking", and only the timestamp of the last actual poll does
+    that. Null before the first poll rather than absent, so the UI can say
+    "not checked yet" instead of rendering a blank.
+    """
+    from app.models import Mailbox
+
+    # Before any mailbox is connected there is nothing to report, and the
+    # field is null rather than absent so the UI renders "not checked yet".
+    body = client.get("/api/v1/system/status").json()
+    assert body["last_polled_at"] is None
+
+    db.add(
+        Mailbox(
+            organisation_id=db.scalars(select(Organisation)).one().id,
+            email_address="desk@example.com",
+            last_polled_at=datetime(2026, 8, 22, 9, 30, tzinfo=UTC),
+        )
+    )
+    db.commit()
+
+    body = client.get("/api/v1/system/status").json()
+    # Compared as an instant, not as a string: the response carries the desk's
+    # own offset, so asserting on the rendering would pass or fail depending on
+    # where the test runs.
+    assert datetime.fromisoformat(body["last_polled_at"]) == datetime(
+        2026, 8, 22, 9, 30, tzinfo=UTC
+    )
+    # The cadence comes from the poller's own decision, so the rail and the
+    # scheduler can never disagree about how often this desk is checked.
+    assert body["poll_reason"]
+
+
 def test_business_rules_are_inspectable(client):
     body = client.get("/api/v1/system/rules").json()
     assert body["stock_pricing"]["markup_pct"] == 8.0
@@ -261,3 +307,113 @@ def test_an_email_carries_its_quotation_status(client, db, quoted_quotation):
 
     assert row["quotation_number"] == quoted_quotation.quotation_number
     assert row["quotation_status"] == "READY_FOR_REVIEW"
+
+
+# --- Retrying a failed email -----------------------------------------------
+#
+# "Try again" used to post to /pipeline/process, which selects PENDING emails
+# only - the one status a failed email does not have. The request went out, did
+# nothing, and the same error came back, so the button appeared dead in exactly
+# the situation it exists for.
+
+
+def _failed_email(db):
+    from datetime import UTC, datetime
+
+    from app.models import Email, EmailSourceType, ProcessingStatus
+
+    email = Email(
+        message_id="local:retry-me",
+        thread_id="local-thread:retry",
+        source=EmailSourceType.LOCAL,
+        sender_email="buyer@example.com",
+        sender_name="Buyer",
+        subject="Availability of C-45 Plates",
+        body_text="Please quote 20 MT of 10mm plate.",
+        received_at=datetime.now(UTC),
+        processing_status=ProcessingStatus.FAILED,
+        error_message="classification failed: 429 rate limited",
+    )
+    db.add(email)
+    db.commit()
+    return email
+
+
+def test_retrying_a_failed_email_actually_runs_the_workflow(client, db, monkeypatch):
+    from app.models import ProcessingStatus
+
+    email = _failed_email(db)
+    ran: list[int] = []
+
+    class Ran:
+        def __init__(self, db, **kw):
+            pass
+
+        def run(self, email_id):
+            ran.append(email_id)
+            fresh = db.get(type(email), email_id)
+            fresh.processing_status = ProcessingStatus.PROCESSED
+            db.commit()
+
+    monkeypatch.setattr("app.workflows.quotation.QuotationWorkflow", Ran)
+    response = client.post(f"/api/v1/emails/{email.id}/retry")
+
+    assert response.status_code == 200
+    # The whole point: the workflow saw this email, which the old batch
+    # endpoint could never have done.
+    assert ran == [email.id]
+
+
+def test_retrying_clears_the_stale_error_message(client, db, monkeypatch):
+    from app.models import ProcessingStatus
+
+    email = _failed_email(db)
+
+    class NoOp:
+        def __init__(self, db, **kw):
+            pass
+
+        def run(self, email_id):
+            pass
+
+    monkeypatch.setattr("app.workflows.quotation.QuotationWorkflow", NoOp)
+    client.post(f"/api/v1/emails/{email.id}/retry")
+
+    db.expire_all()
+    fresh = db.get(type(email), email.id)
+    assert fresh.error_message is None
+    assert fresh.processing_status is not ProcessingStatus.FAILED
+
+
+def test_a_still_throttled_retry_says_so_rather_than_failing_silently(client, db, monkeypatch):
+    """The user must be able to tell "provider busy" from "button broken"."""
+    from ai.llm.base import RateLimitedError
+
+    email = _failed_email(db)
+
+    class StillLimited:
+        def __init__(self, db, **kw):
+            pass
+
+        def run(self, email_id):
+            raise RateLimitedError("429 too many requests")
+
+    monkeypatch.setattr("app.workflows.quotation.QuotationWorkflow", StillLimited)
+    response = client.post(f"/api/v1/emails/{email.id}/retry")
+
+    assert response.status_code == 429
+    assert "rate-limiting" in response.json()["detail"]
+
+
+def test_retrying_a_missing_email_is_a_404(client):
+    assert client.post("/api/v1/emails/999999/retry").status_code == 404
+
+
+def test_retry_refuses_to_run_without_an_api_key(client, db, monkeypatch):
+    email = _failed_email(db)
+    monkeypatch.setattr("app.api.v1.emails.settings.openrouter_api_key", "")
+
+    response = client.post(f"/api/v1/emails/{email.id}/retry")
+
+    assert response.status_code == 503
+    assert "OPENROUTER_API_KEY" in response.json()["detail"]
