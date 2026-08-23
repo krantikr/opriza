@@ -118,7 +118,10 @@ function Statement({
         </h2>
         <p className="mt-0.5 text-xs italic text-ink-faint">{question}</p>
       </header>
-      <div className="flex-1 px-4 py-3">{children}</div>
+      {/* A column, so the note can be pushed to the bottom: with the cards
+          stretched to a common height, notes left in the flow would float at
+          three different heights and undo the alignment. */}
+      <div className="flex flex-1 flex-col px-4 py-3">{children}</div>
     </section>
   );
 }
@@ -185,8 +188,10 @@ function Line({
 /** A note under a statement — the sentence an accountant would write in the
  *  margin, explaining what the figures above do and do not include. */
 function Note({ children }: { children: React.ReactNode }) {
+  // `mt-auto` seats the note on the floor of its card, so the notes of three
+  // statements of different lengths still line up with each other.
   return (
-    <p className="mt-2 border-l-2 border-rule pl-2.5 text-[11px] leading-relaxed text-ink-faint">
+    <p className="mt-auto border-l-2 border-rule pl-2.5 pt-3 text-[11px] leading-relaxed text-ink-faint">
       {children}
     </p>
   );
@@ -804,7 +809,7 @@ export default function Reports() {
                   (b) => AGEING_TONE[b.label] ?? "text-brand",
                 )}
                 format={inrShort}
-                size={104}
+                size={188}
                 centerValue={inrShort(stock.deadstock_value)}
                 centerLabel={`over 90 days · ${stock.deadstock_pct}%`}
               />

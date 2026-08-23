@@ -332,7 +332,10 @@ export function DonutChart({
   const palette = (i: number) => tones?.[i] ?? DONUT_TONES[i % DONUT_TONES.length];
   const show = format ?? ((v: number) => v.toLocaleString("en-IN"));
   const total = data.reduce((sum, d) => sum + d.value, 0);
-  const radius = size / 2 - 10;
+  // The band scales with the ring. A fixed 12px stroke on a large donut turns
+  // it into a thin hoop, and the slices stop being comparable by area.
+  const stroke = Math.max(10, Math.round(size * 0.16));
+  const radius = size / 2 - stroke / 2;
   const circumference = 2 * Math.PI * radius;
 
   if (total === 0) {
@@ -350,7 +353,7 @@ export function DonutChart({
           r={radius}
           fill="none"
           className="stroke-sunk"
-          strokeWidth="12"
+          strokeWidth={stroke}
         />
         {data.map((d, i) => {
           const fraction = d.value / total;
@@ -363,7 +366,7 @@ export function DonutChart({
               r={radius}
               fill="none"
               stroke="currentColor"
-              strokeWidth="12"
+              strokeWidth={stroke}
               strokeDasharray={`${dash} ${circumference - dash}`}
               strokeDashoffset={-offset}
               className={palette(i)}
