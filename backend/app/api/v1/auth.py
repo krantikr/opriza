@@ -33,7 +33,9 @@ from app.schemas.auth import (
     LoginIn,
     MailboxOut,
     OrganisationOut,
+    EmailTemplatesOut,
     OrganisationUpdateIn,
+    PlaceholderOut,
     SessionOut,
     UserOut,
 )
@@ -248,11 +250,46 @@ def update_organisation(
             ) from exc
 
     for field, value in payload.model_dump(exclude_unset=True).items():
+        # An emptied template box means "go back to the built-in wording", not
+        # "send an empty email". Stored as NULL so the default is read at send
+        # time and a later change to it reaches every desk that never edited.
+        if field.endswith("_template") and isinstance(value, str) and not value.strip():
+            value = None
         setattr(organisation, field, value)
     organisation.updated_at = utcnow()
     db.commit()
     db.refresh(organisation)
     return OrganisationOut.model_validate(organisation)
+
+
+@router.get("/organisation/email-templates", response_model=EmailTemplatesOut)
+def email_templates(user: CurrentUser, db: TenantDb) -> EmailTemplatesOut:
+    """The desk's follow-up wording, plus what it may use and the default.
+
+    The placeholder list is served rather than hardcoded in the frontend: it
+    is derived from the same table the substitution reads, so the help beside
+    the editor cannot promise a placeholder that does not resolve.
+    """
+    from app.services.quotations.templates import (
+        DEFAULT_FOLLOWUP_BODY,
+        DEFAULT_FOLLOWUP_SUBJECT,
+        PLACEHOLDERS,
+    )
+
+    organisation = db.get(Organisation, user.organisation_id)
+    if organisation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    return EmailTemplatesOut(
+        followup_subject_template=organisation.followup_subject_template,
+        followup_body_template=organisation.followup_body_template,
+        default_followup_subject=DEFAULT_FOLLOWUP_SUBJECT,
+        default_followup_body=DEFAULT_FOLLOWUP_BODY,
+        placeholders=[
+            PlaceholderOut(name=name, description=description)
+            for name, description in PLACEHOLDERS
+        ],
+    )
 
 
 @router.get("/organisation/crawl-status", response_model=CrawlStatusOut)

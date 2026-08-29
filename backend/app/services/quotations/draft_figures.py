@@ -24,8 +24,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
-from app.models import DraftStatus, QuotationDraft, QuotationRequest
+from app.models import DraftStatus, Organisation, QuotationDraft, QuotationRequest
 from ai.guards import find_stale_prices
+from app.services.quotations.templates import render_quotation_body
 from app.services.quotations.table import (
     build_rows,
     prose_only,
@@ -70,7 +71,32 @@ def refresh_draft_figures(
         return None
 
     rows = build_rows(quotation)
-    updated = retable_text(draft.body or "", rows)
+
+    # Two paths, and which one applies is decided by whether the draft still
+    # has the template it was generated from.
+    #
+    # With one, every figure re-renders - the rate in a sentence as much as
+    # the one in the table - because the model's prose was stored with the
+    # money held behind placeholders. That is the whole point: the LLM ran
+    # once, to answer what this customer asked, and no later price change
+    # needs it again.
+    #
+    # Without one - a draft written before this existed, or a body a reviewer
+    # has since edited by hand - only the table is re-spliced, as before.
+    # Re-rendering someone's edited text from a template they never saw would
+    # discard their wording, which is worse than leaving a figure for the
+    # stale-price check to flag.
+    if draft.body_template:
+        organisation = (
+            db.get(Organisation, quotation.organisation_id)
+            if quotation.organisation_id
+            else None
+        )
+        rendered = render_quotation_body(draft.body_template, quotation, organisation)
+        updated = retable_text(rendered, rows)
+    else:
+        updated = retable_text(draft.body or "", rows)
+
     if updated == draft.body:
         return None
 

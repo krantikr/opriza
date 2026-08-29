@@ -408,13 +408,19 @@ def approve_quotation(
             detail=f"Approved, but sending failed: {result.send.error if result.send else 'unknown error'}",
             quotation_id=quotation.id,
             status=quotation.status.value,
-            warnings=["The approval is recorded. Retry sending once the problem is resolved."],
+            warnings=[
+                "The approval is recorded. Retry sending once the problem is resolved.",
+                *result.warnings,
+            ],
         )
 
     return ActionResult(
         detail=f"{quotation.quotation_number} sent to {quotation.customer_email}.",
         quotation_id=quotation.id,
         status=quotation.status.value,
+        # A price in the wording that the calculator does not hold. The mail
+        # has gone; naming the figure is what lets the desk follow it up.
+        warnings=result.warnings,
     )
 
 

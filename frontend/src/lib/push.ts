@@ -89,16 +89,70 @@ let registration: ServiceWorkerRegistration | null = null;
  *
  *  The config travels by postMessage rather than living in the worker file,
  *  so one static file serves every environment and no key is committed. */
+/** Reject if `promise` has not settled within `ms`.
+ *
+ *  Used to bound calls that can otherwise wait for ever. A rejection the
+ *  caller can show beats a spinner that never stops: the first tells someone
+ *  what to check, the second is indistinguishable from a broken button. */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(message)), ms)),
+  ]);
+}
+
+/** Resolve once this registration has a worker that can receive a message.
+ *
+ *  `navigator.serviceWorker.ready` is not enough on a first install: it
+ *  resolves for whatever registration currently controls the page, which on
+ *  the very first visit is not the one just created. The config was then
+ *  posted to an `installing` worker that had no `message` listener yet, the
+ *  worker never called `start()`, and `getToken` hung or failed with nothing
+ *  on screen to explain it - which is exactly "clicking does nothing".
+ */
+function activeWorker(reg: ServiceWorkerRegistration): Promise<ServiceWorker> {
+  if (reg.active) return Promise.resolve(reg.active);
+
+  return new Promise((resolve, reject) => {
+    const pending = reg.installing ?? reg.waiting;
+    if (!pending) {
+      reject(new Error("The service worker registered but produced no worker."));
+      return;
+    }
+    const timer = setTimeout(
+      () => reject(new Error("The notification service worker did not start in time.")),
+      10_000,
+    );
+    pending.addEventListener("statechange", () => {
+      if (pending.state === "activated") {
+        clearTimeout(timer);
+        resolve(pending);
+      }
+      if (pending.state === "redundant") {
+        clearTimeout(timer);
+        reject(new Error("The notification service worker failed to install."));
+      }
+    });
+  });
+}
+
 async function ensureWorker(): Promise<ServiceWorkerRegistration> {
   if (registration) return registration;
 
-  registration = await navigator.serviceWorker.register("/firebase-messaging-sw.js");
-  await navigator.serviceWorker.ready;
+  const reg = await withTimeout(
+    navigator.serviceWorker.register("/firebase-messaging-sw.js"),
+    10_000,
+    "The notification service worker could not be registered.",
+  );
 
-  const target = registration.active ?? registration.waiting ?? registration.installing;
-  target?.postMessage({ type: "FIREBASE_CONFIG", config: CONFIG });
+  // Wait for a worker that is actually running before handing it the config,
+  // and confirm it received it. The worker also asks on its own activation,
+  // so the two approaches cover each other whichever wins the race.
+  const worker = await activeWorker(reg);
+  worker.postMessage({ type: "FIREBASE_CONFIG", config: CONFIG });
 
-  return registration;
+  registration = reg;
+  return reg;
 }
 
 /** Ask for permission, get a token, and register it with the desk.
@@ -106,6 +160,20 @@ async function ensureWorker(): Promise<ServiceWorkerRegistration> {
  *  Safe to call on every load once permission exists, and the app does: FCM
  *  rotates tokens on its own schedule, so a browser that registered once and
  *  never again would quietly stop receiving anything. */
+/** Answer a worker that starts up and asks which project it belongs to.
+ *
+ *  A service worker is stopped and restarted freely by the browser, and it
+ *  loses `messaging` every time. Without this it would stay uninitialised
+ *  until the next `ensureWorker`, and a background notification arriving in
+ *  between would be dropped. */
+if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type === "FIREBASE_CONFIG_REQUEST") {
+      event.source?.postMessage({ type: "FIREBASE_CONFIG", config: CONFIG });
+    }
+  });
+}
+
 export async function enablePush(): Promise<PushOutcome> {
   if (!isConfigured()) {
     return { ok: false, reason: "Push is not configured for this desk." };
@@ -136,10 +204,21 @@ export async function enablePush(): Promise<PushOutcome> {
 
     const app = getApps().length ? getApps()[0] : initializeApp(CONFIG);
     const worker = await ensureWorker();
-    const token = await getToken(getMessaging(app), {
-      vapidKey: VAPID_KEY,
-      serviceWorkerRegistration: worker,
-    });
+
+    // `getToken` can hang indefinitely - a blocked push service, a VAPID key
+    // the project does not recognise, a network that accepts the connection
+    // and never answers. It has no timeout of its own, so without this the
+    // whole call never settles, the caller's `finally` never runs, and the
+    // button sits on "Working…" for ever with nothing to explain why.
+    const token = await withTimeout(
+      getToken(getMessaging(app), {
+        vapidKey: VAPID_KEY,
+        serviceWorkerRegistration: worker,
+      }),
+      15_000,
+      "Firebase did not return a token in time. Check the VAPID key and that "
+        + "notifications are reachable from this network.",
+    );
 
     if (!token) return { ok: false, reason: "The browser did not return a token." };
 

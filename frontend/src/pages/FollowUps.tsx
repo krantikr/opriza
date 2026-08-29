@@ -346,7 +346,9 @@ function ChaseDrawer({
 }) {
   const thread = useApi<ThreadData>(`/quotations/${row.quotation_id}/thread`);
   const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
+  /* Which action is running: Send, Snooze and Won/Lost share this drawer, and
+     one boolean put every one of them into its loading label. */
+  const [busy, setBusy] = useState<"send" | "act" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState(false);
   const [asking, setAsking] = useState<"none" | "snooze" | "lost">("none");
@@ -372,7 +374,7 @@ function ChaseDrawer({
   }, [row]);
 
   async function send() {
-    setBusy(true);
+    setBusy("send");
     setError(null);
     try {
       await api.post(`/follow-ups/quotation/${row.quotation_id}/send`, {
@@ -387,12 +389,12 @@ function ChaseDrawer({
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   async function act(path: string, payload: unknown, message: string) {
-    setBusy(true);
+    setBusy("act");
     setError(null);
     try {
       await api.post(`/follow-ups/quotation/${row.quotation_id}/${path}`, payload);
@@ -400,7 +402,7 @@ function ChaseDrawer({
       onClose();
     } catch (e) {
       setError((e as Error).message);
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -568,7 +570,7 @@ function ChaseDrawer({
               </label>
               <Button
                 variant="primary"
-                disabled={busy || !snoozeDate}
+                disabled={busy !== null || !snoozeDate}
                 onClick={() =>
                   act("snooze", { until: snoozeDate }, `${row.customer_name} parked.`)
                 }
@@ -593,7 +595,7 @@ function ChaseDrawer({
               </label>
               <Button
                 variant="danger"
-                disabled={busy}
+                disabled={busy !== null}
                 onClick={() =>
                   act("lost", { reason: lostReason }, `${row.customer_name} marked lost.`)
                 }
@@ -637,10 +639,10 @@ function ChaseDrawer({
                   <Button
                     compact
                     variant="primary"
-                    disabled={busy || !body.trim()}
+                    disabled={busy !== null || !body.trim()}
                     onClick={send}
                   >
-                    {busy ? "Sending…" : "Send follow-up"}
+                    {busy === "send" ? "Sending…" : "Send follow-up"}
                   </Button>
                 </span>
               </div>

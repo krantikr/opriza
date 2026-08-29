@@ -310,10 +310,10 @@ class FollowUpScheduler:
             schedule.status = FollowUpStatus.DUE
             schedule.subject = _render(
                 rule.subject_template if rule else None, quotation
-            ) or default_subject(quotation)
+            ) or default_subject(quotation, self.db)
             schedule.body = _render(
                 rule.body_template if rule else None, quotation
-            ) or default_body(quotation)
+            ) or default_body(quotation, self.db)
 
             audit.record(
                 self.db,

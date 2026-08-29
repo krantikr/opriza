@@ -106,6 +106,19 @@ class ApprovalService:
         original_subject, original_body = draft.subject, draft.body
         draft.subject = subject
         draft.body = body
+        # Re-derived from what the reviewer actually saved, rather than
+        # dropped. Dropping it would cost the auto-update on the next price
+        # change for the sake of a typo fix; keeping the *old* template would
+        # overwrite their edit the moment a price moved. Re-templatising the
+        # new text keeps both: their wording, and figures that still follow
+        # the calculator.
+        #
+        # A figure they typed by hand that matches nothing simply stays
+        # literal - it is their number, and `find_stale_prices` reports it at
+        # send time rather than this quietly adopting it.
+        from app.services.quotations.templates import templatise
+
+        draft.body_template = templatise(body, quotation)
         draft.status = DraftStatus.EDITED
         quotation.status = QuotationStatus.EDITED
 

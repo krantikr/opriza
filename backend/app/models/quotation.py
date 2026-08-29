@@ -275,7 +275,20 @@ class QuotationDraft(Base, TimestampMixin, TenantMixin):
     is_current: Mapped[bool] = mapped_column(default=True, nullable=False)
 
     subject: Mapped[str | None] = mapped_column(String(500))
+    #: What is actually sent: `body_template` with every figure filled in.
     body: Mapped[str | None] = mapped_column(Text)
+    #: The same text with the money still held as `{{placeholders}}`.
+    #:
+    #: The model writes the prose once, to answer what this customer actually
+    #: asked; the figures were never its to author. Keeping the unresolved
+    #: form means a price change re-renders the body deterministically instead
+    #: of needing a second generation - the reviewer's wording survives, and
+    #: no figure reaches a customer by a route nothing verifies.
+    #:
+    #: Null for drafts written before this existed, and for a body a reviewer
+    #: has edited by hand: once the text is theirs, re-rendering it from a
+    #: template they never saw would silently discard their edit.
+    body_template: Mapped[str | None] = mapped_column(Text)
     status: Mapped[DraftStatus] = mapped_column(
         enum_col(DraftStatus), default=DraftStatus.GENERATED, nullable=False
     )

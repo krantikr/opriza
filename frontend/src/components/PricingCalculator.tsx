@@ -155,14 +155,17 @@ export default function PricingCalculator({
    *  per material and buries the calculator under its own error. */
   hideWarnings?: boolean;
 }) {
-  const [busy, setBusy] = useState(false);
+  /* Which action is running. A bare boolean meant that saving one component's
+     override put the Recalculate button into "Recalculating…" as well, which
+     claims something is happening to a control the trader never pressed. */
+  const [busy, setBusy] = useState<"override" | "recalc" | "clear" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const costs = pricing.components.filter((c) => !MARGIN_KINDS.has(c.kind));
   const margins = pricing.components.filter((c) => MARGIN_KINDS.has(c.kind));
 
   async function override(code: string, amount: string) {
-    setBusy(true);
+    setBusy("override");
     setError(null);
     try {
       await api.post(`/quotations/${quotationId}/lines/${lineId}/pricing/override`, {
@@ -173,14 +176,14 @@ export default function PricingCalculator({
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   /** Re-run the live rules over this quotation. The endpoint keeps overrides
    *  by default, so a figure a human deliberately set is not discarded. */
   async function recalculate() {
-    setBusy(true);
+    setBusy("recalc");
     setError(null);
     try {
       await api.post(`/quotations/${quotationId}/pricing/recalculate`);
@@ -188,12 +191,12 @@ export default function PricingCalculator({
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   async function clearOverride(code: string) {
-    setBusy(true);
+    setBusy("clear");
     setError(null);
     try {
       await api.del(`/quotations/${quotationId}/lines/${lineId}/pricing/override/${code}`);
@@ -201,7 +204,7 @@ export default function PricingCalculator({
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -217,8 +220,8 @@ export default function PricingCalculator({
         <Banner
           tone="attention"
           action={
-            <Button variant="primary" disabled={busy} onClick={recalculate}>
-              {busy ? "Recalculating…" : "Recalculate"}
+            <Button variant="primary" disabled={busy !== null} onClick={recalculate}>
+              {busy === "recalc" ? "Recalculating…" : "Recalculate"}
             </Button>
           }
         >
@@ -263,7 +266,7 @@ export default function PricingCalculator({
                   component={c}
                   index={i + 1}
                   readOnly={readOnly}
-                  busy={busy}
+                  busy={busy !== null}
                   onSave={(amount) => override(c.code, amount)}
                   onClear={() => clearOverride(c.code)}
                 />
@@ -284,7 +287,7 @@ export default function PricingCalculator({
                   component={c}
                   index={costs.length + i + 1}
                   readOnly={readOnly}
-                  busy={busy}
+                  busy={busy !== null}
                   onSave={(amount) => override(c.code, amount)}
                   onClear={() => clearOverride(c.code)}
                 />

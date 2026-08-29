@@ -15,9 +15,10 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
-from app.models import FollowUp, QuotationRequest, QuotationStatus
+from app.models import FollowUp, Organisation, QuotationRequest, QuotationStatus
 from app.services import audit
 from app.services.email.sender import EmailSender, SendResult, get_sender, reply_to
+from app.services.quotations.templates import followup_body, followup_subject
 
 logger = get_logger(__name__)
 
@@ -26,29 +27,29 @@ class FollowUpError(RuntimeError):
     """The requested follow-up is not valid for this quotation's current state."""
 
 
-def default_subject(quotation: QuotationRequest) -> str:
-    original = quotation.email.subject if quotation.email else None
-    if original and not original.lower().startswith("re:"):
-        return f"Re: {original}"
-    return original or f"Following up on {quotation.quotation_number}"
+def _organisation(db: Session, quotation: QuotationRequest) -> Organisation | None:
+    """The desk this quotation belongs to, for its own wording and sign-off."""
+    if quotation.organisation_id is None:
+        return None
+    return db.get(Organisation, quotation.organisation_id)
 
 
-def default_body(quotation: QuotationRequest) -> str:
-    from app.core.config import settings
+def default_subject(quotation: QuotationRequest, db: Session | None = None) -> str:
+    """The desk's follow-up subject, or the built-in default."""
+    organisation = _organisation(db, quotation) if db is not None else None
+    return followup_subject(quotation, organisation)
 
-    name = quotation.customer_name_raw or quotation.customer_company_raw or "there"
-    sent_date = quotation.sent_at.strftime("%d %b %Y") if quotation.sent_at else "recently"
 
-    return (
-        f"Dear {name},\n\n"
-        f"Following up on quotation {quotation.quotation_number}, sent on {sent_date}. "
-        "Wanted to check if you had a chance to review it and see if you have any "
-        "questions, or would like to go ahead.\n\n"
-        "Happy to help with anything you need.\n\n"
-        "Regards,\n"
-        f"{settings.company_signatory}\n"
-        f"{settings.company_name}"
-    )
+def default_body(quotation: QuotationRequest, db: Session | None = None) -> str:
+    """The desk's follow-up wording, with this quotation's figures filled in.
+
+    No model is called: a follow-up says the same thing every time and only
+    the reference and the money change. The figures come from the same
+    `build_rows`/`totals` pair that renders the quotation itself, so the nudge
+    cannot quote a different total from the document it is chasing.
+    """
+    organisation = _organisation(db, quotation) if db is not None else None
+    return followup_body(quotation, organisation)
 
 
 @dataclass(slots=True)
@@ -80,8 +81,10 @@ class FollowUpService:
                 "A follow-up can only be sent after the quotation itself has gone out."
             )
 
-        final_subject = subject if subject is not None else default_subject(quotation)
-        final_body = body if body is not None else default_body(quotation)
+        final_subject = (
+            subject if subject is not None else default_subject(quotation, self.db)
+        )
+        final_body = body if body is not None else default_body(quotation, self.db)
 
         result = reply_to(
             quotation.email, subject=final_subject, body=final_body, sender=self.sender

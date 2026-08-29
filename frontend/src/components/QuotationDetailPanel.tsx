@@ -616,7 +616,15 @@ export default function QuotationDetailPanel({
     setNote(null);
     try {
       const result = await run();
-      setNote({ text: result.detail, bad: !result.ok });
+      /* Warnings ride with the detail rather than being dropped. The send
+         path can report a price in the wording that the calculator does not
+         hold - the mail has already gone, so naming the figure on screen is
+         the only thing that lets the desk follow it up. */
+      const warnings = result.warnings ?? [];
+      setNote({
+        text: [result.detail, ...warnings].join(" "),
+        bad: !result.ok || warnings.length > 0,
+      });
       reload();
       onChanged();
     } catch (e) {

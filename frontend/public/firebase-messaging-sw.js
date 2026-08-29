@@ -54,6 +54,32 @@ self.addEventListener("message", (event) => {
   }
 });
 
+/* Take over straight away rather than waiting for every tab to close.
+ *
+ * Without these, a newly installed worker sits in `waiting` until the last
+ * tab using the old one goes away - so the first time a trader turns
+ * notifications on, the worker they just registered is not the one running,
+ * and nothing they do reaches it. */
+self.addEventListener("install", () => self.skipWaiting());
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    self.clients.claim().then(function () {
+      /* Ask for the config rather than only waiting to be told.
+       *
+       * The browser stops and restarts a service worker whenever it likes,
+       * and `messaging` does not survive that - so a worker can wake to
+       * handle a push with no idea which project it belongs to. Asking any
+       * open page on every activation is what makes it self-healing. */
+      return self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    }).then(function (tabs) {
+      tabs.forEach(function (tab) {
+        tab.postMessage({ type: "FIREBASE_CONFIG_REQUEST" });
+      });
+    }),
+  );
+});
+
 /* Tapping a notification should land on the thing it is about.
  *
  * An already-open tab is focused and navigated rather than a second one

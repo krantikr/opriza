@@ -79,12 +79,18 @@ export function playChime(tone: ChimeTone): void {
   try {
     const [first, second] = NOTES[tone];
     const now = ctx.currentTime;
-    // Deliberately quiet. This sits under conversation in an office, and a
-    // notification that makes people flinch gets muted permanently.
-    const peak = tone === "danger" ? 0.09 : 0.06;
+    // Audible across a desk without being startling. The first values here
+    // were tuned on headphones and turned out to be inaudible over an office
+    // - a chime nobody hears is the same as no chime, and the trader ends up
+    // watching the screen instead, which is what the sound existed to avoid.
+    //
+    // Still bounded well under 1.0: this is a chime under conversation, not
+    // an alarm, and a notification that makes people flinch gets muted
+    // permanently - at which point it is worth nothing again.
+    const peak = tone === "danger" ? 0.22 : 0.16;
 
-    note(ctx, first, now, 0.16, peak);
-    note(ctx, second, now + 0.13, 0.22, peak);
+    note(ctx, first, now, 0.18, peak);
+    note(ctx, second, now + 0.14, 0.28, peak);
   } catch {
     // An audio failure must never take a notification down with it.
   }

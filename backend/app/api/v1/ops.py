@@ -430,6 +430,7 @@ def send_test_push(db: TenantDb, user: User | None = Depends(current_user)) -> A
 
     channel = get_channel(NotificationChannel.PUSH)
     sent = 0
+    retired = 0
     errors: list[str] = []
     for device in devices:
         outcome = channel.send(
@@ -440,14 +441,28 @@ def send_test_push(db: TenantDb, user: User | None = Depends(current_user)) -> A
         )
         if outcome.sent:
             sent += 1
+            device.last_seen_at = utcnow()
         elif outcome.error:
             errors.append(outcome.error)
+            # A token Firebase has retired stays in the list for ever
+            # otherwise, and one browser that re-registered a few times then
+            # reads as several devices - so "Sent to 1 of 3" looks like a
+            # failure when every live device was actually reached. Retiring
+            # it here is the same rule the notification service already
+            # applies; only this endpoint was missing it.
+            if getattr(channel, "is_dead_token", None) and channel.is_dead_token(outcome.error):
+                device.is_active = False
+                device.disabled_reason = "Firebase no longer recognises this device."
+                retired += 1
 
     db.commit()
+    reached = f"Sent to {sent} of {len(devices)} device(s)."
+    if retired:
+        reached += f" Removed {retired} device(s) Firebase no longer recognises."
     return ActionResult(
         ok=sent > 0,
         detail=(
-            f"Sent to {sent} of {len(devices)} device(s)."
+            reached
             if sent
             else (errors[0] if errors else "Delivery failed.")
         ),

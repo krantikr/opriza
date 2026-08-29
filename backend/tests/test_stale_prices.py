@@ -22,7 +22,7 @@ from app.models import (
     QuotationDraft,
 )
 from app.services.pricing.service import PricingService
-from app.services.quotations.approval import ApprovalError, ApprovalService
+from app.services.quotations.approval import ApprovalService
 from app.services.quotations.draft_figures import (
     refresh_draft_figures,
     stale_prices_in_draft,
@@ -146,7 +146,7 @@ def test_a_component_figure_in_prose_is_allowed(db, quoted_quotation, live_rules
 # --- The send block ---------------------------------------------------------
 
 
-def test_sending_is_refused_while_a_stale_price_remains(db, quoted_quotation, live_rules, default_user):
+def test_sending_warns_when_a_stale_price_remains(db, quoted_quotation, live_rules, default_user):
     q = _priced(db, quoted_quotation)
     rate_before = q.line_items[0].pricing.quote_rate
     _draft(
@@ -162,19 +162,22 @@ def test_sending_is_refused_while_a_stale_price_remains(db, quoted_quotation, li
     refresh_draft_figures(db, q)
     db.commit()
 
-    with pytest.raises(ApprovalError) as excinfo:
-        ApprovalService(db).approve_and_send(q, user_id=default_user.id)
+    # The send proceeds - a reviewer may legitimately state a negotiated
+    # figure - but the discrepancy is named rather than passing silently.
+    result = ApprovalService(db).approve_and_send(q, user_id=default_user.id)
 
-    message = str(excinfo.value)
-    assert "no longer holds" in message
-    # The reviewer is told which figure to fix - the one in the wording.
+    assert result.warnings, "a superseded prose price should have been reported"
+    message = " ".join(result.warnings)
+    assert "does not hold" in message
+    # The reviewer is told which figure to check - the one in the wording.
     assert f"{rate_before:.2f}" in message.replace(",", "")
 
 
-def test_a_clean_draft_still_sends(db, quoted_quotation, live_rules, default_user):
-    """The guard must not stand in the way of an ordinary correct quotation."""
+def test_a_clean_draft_sends_without_warnings(db, quoted_quotation, live_rules, default_user):
+    """The check must not shout about an ordinary correct quotation."""
     q = _priced(db, quoted_quotation)
     _draft(db, q, f"Dear Sir,\n\n{TABLE_PLACEHOLDER}\n\nRegards")
 
     result = ApprovalService(db).approve_and_send(q, user_id=default_user.id)
     assert result.draft is not None
+    assert result.warnings == []

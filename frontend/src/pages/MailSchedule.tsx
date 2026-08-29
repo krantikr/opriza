@@ -72,7 +72,12 @@ export default function MailSchedule() {
   const [status, setStatus] = useState<CrawlStatus | null>(null);
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [draft, setDraft] = useState<Partial<Organisation>>({});
-  const [busy, setBusy] = useState(false);
+  /* The name of the running action, not a bare boolean: with one flag per
+     screen, starting any action put every button into its loading label, which
+     reads as the page having hung rather than one request being in flight. */
+  const [busy, setBusy] = useState<
+    "save" | "connect" | "sample" | "disconnect" | "check" | null
+  >(null);
   const [setup, setSetup] = useState<MailboxSetup | null>(null);
 
   const load = useCallback(async () => {
@@ -112,7 +117,7 @@ export default function MailSchedule() {
   const dirty = Object.keys(draft).length > 0;
 
   async function save() {
-    setBusy(true);
+    setBusy("save");
     try {
       const updated = await api.patch<Organisation>("/organisation", draft);
       setOrganisation(updated);
@@ -122,12 +127,12 @@ export default function MailSchedule() {
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "That could not be saved.");
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   async function connectGmail() {
-    setBusy(true);
+    setBusy("connect");
     try {
       const { url } = await api.get<{ url: string }>(
         "/organisation/mailbox/connect-url",
@@ -139,34 +144,34 @@ export default function MailSchedule() {
       toast.error(
         err instanceof ApiError ? err.message : "Connecting is not available yet.",
       );
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   async function connectSample() {
-    setBusy(true);
+    setBusy("sample");
     try {
       await api.post("/organisation/mailbox/sample");
       await load();
       toast.success("Sample enquiries connected. Check for mail to load them.");
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   async function disconnect(box: Mailbox) {
-    setBusy(true);
+    setBusy("disconnect");
     try {
       await api.del(`/organisation/mailbox/${box.id}`);
       await load();
       toast.success("Disconnected. Mail already received is kept.");
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
   async function checkNow() {
-    setBusy(true);
+    setBusy("check");
     try {
       const result = await api.post<{ ingested: number; failures: string[] }>(
         "/organisation/mailbox/check-now",
@@ -184,7 +189,7 @@ export default function MailSchedule() {
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "The check did not run.");
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -320,11 +325,11 @@ export default function MailSchedule() {
 
         {canAdminister && (
           <div className="mt-5 flex items-center gap-2 border-t border-rule pt-4">
-            <Button variant="primary" onClick={save} disabled={!dirty || busy}>
-              {busy ? "Saving…" : "Save schedule"}
+            <Button variant="primary" onClick={save} disabled={!dirty || busy !== null}>
+              {busy === "save" ? "Saving…" : "Save schedule"}
             </Button>
             {dirty && (
-              <Button onClick={() => setDraft({})} disabled={busy}>
+              <Button onClick={() => setDraft({})} disabled={busy !== null}>
                 Discard
               </Button>
             )}
@@ -363,11 +368,11 @@ export default function MailSchedule() {
                   <Button
                     variant="primary"
                     onClick={connectGmail}
-                    disabled={busy || setup?.ready === false}
+                    disabled={busy !== null || setup?.ready === false}
                   >
                     Connect your Google account
                   </Button>
-                  <Button onClick={connectSample} disabled={busy}>
+                  <Button onClick={connectSample} disabled={busy !== null}>
                     Use sample enquiries instead
                   </Button>
                 </div>
@@ -427,7 +432,7 @@ export default function MailSchedule() {
                     {box.status === "CONNECTED" ? "connected" : "needs attention"}
                   </span>
                   {canAdminister && (
-                    <Button compact onClick={() => disconnect(box)} disabled={busy}>
+                    <Button compact onClick={() => disconnect(box)} disabled={busy !== null}>
                       Disconnect
                     </Button>
                   )}
@@ -437,10 +442,10 @@ export default function MailSchedule() {
 
             {canAdminister && (
               <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-rule pt-4">
-                <Button onClick={checkNow} disabled={busy}>
-                  {busy ? "Checking…" : "Check for mail now"}
+                <Button onClick={checkNow} disabled={busy !== null}>
+                  {busy === "check" ? "Checking…" : "Check for mail now"}
                 </Button>
-                <Button compact onClick={connectGmail} disabled={busy}>
+                <Button compact onClick={connectGmail} disabled={busy !== null}>
                   Connect another mailbox
                 </Button>
                 <span className="text-xs text-ink-faint">

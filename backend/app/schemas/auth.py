@@ -56,6 +56,28 @@ class OrganisationOut(BaseModel):
     crawl_active_minutes: int
     crawl_quiet_minutes: int
     crawl_enabled: bool
+    #: Null means the desk has not overridden the built-in wording. The editor
+    #: shows the default in that case rather than an empty box, so what is on
+    #: screen is always what would actually be sent.
+    followup_subject_template: str | None = None
+    followup_body_template: str | None = None
+
+
+class PlaceholderOut(BaseModel):
+    """One substitution a template may use, and what it means."""
+
+    name: str
+    description: str
+
+
+class EmailTemplatesOut(BaseModel):
+    """The desk's wording, the built-in default, and what may be used."""
+
+    followup_subject_template: str | None = None
+    followup_body_template: str | None = None
+    default_followup_subject: str
+    default_followup_body: str
+    placeholders: list[PlaceholderOut]
 
 
 class SessionOut(BaseModel):
@@ -101,6 +123,11 @@ class OrganisationUpdateIn(BaseModel):
     crawl_active_minutes: int | None = Field(default=None, ge=5, le=1440)
     crawl_quiet_minutes: int | None = Field(default=None, ge=10, le=1440)
     crawl_enabled: bool | None = None
+    #: Follow-up wording. An empty string clears the override and restores the
+    #: built-in default - distinct from `None`, which means "leave unchanged",
+    #: so a desk can undo an edit without being able to send a blank email.
+    followup_subject_template: str | None = Field(default=None, max_length=500)
+    followup_body_template: str | None = Field(default=None, max_length=8000)
 
 
 class CrawlStatusOut(BaseModel):

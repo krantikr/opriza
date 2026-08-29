@@ -30,6 +30,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -70,6 +71,18 @@ class Organisation(Base, TimestampMixin):
     company_email: Mapped[str | None] = mapped_column(String(255))
     company_phone: Mapped[str | None] = mapped_column(String(40))
     company_signatory: Mapped[str | None] = mapped_column(String(120))
+
+    # --- Outgoing email templates ---------------------------------------
+    # Stored per desk rather than in code: the wording of a follow-up is a
+    # commercial decision belonging to whoever signs it, and changing it must
+    # not require a deploy. Null means "use the built-in default", so a desk
+    # that never opens the editor still sends something sensible, and clearing
+    # the box restores the default rather than sending an empty email.
+    #
+    # Placeholders are filled deterministically - no model is involved - so
+    # the figures in a follow-up always match the quotation it chases.
+    followup_subject_template: Mapped[str | None] = mapped_column(Text)
+    followup_body_template: Mapped[str | None] = mapped_column(Text)
 
     # --- Mail crawl window ----------------------------------------------
     # A desk's working day is local to that desk. Storing an IANA zone rather

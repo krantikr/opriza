@@ -26,6 +26,7 @@ from app.models import DraftStatus, QuotationDraft, QuotationRequest
 from app.services import audit, telemetry
 from app.services.quotations.draft_context import build_draft_context
 from app.services.quotations.table import build_rows, splice_text
+from app.services.quotations.templates import templatise
 
 logger = get_logger(__name__)
 
@@ -130,10 +131,17 @@ class DraftingService:
         # only be checking this code against itself.
         body = splice_text(draft_email.body, build_rows(quotation))
 
+        # The model reproduced the figures it was given; putting them back
+        # behind placeholders means the next price change re-renders this text
+        # instead of needing a second generation. The prose is untouched -
+        # only the money moves behind a name.
+        body_template = templatise(body, quotation)
+
         draft = self._store(
             quotation,
             subject=subject,
             body=body,
+            body_template=body_template,
             model=model_used,
             user_id=user_id,
             violations=violations,
@@ -216,6 +224,7 @@ class DraftingService:
         subject: str,
         body: str,
         model: str,
+        body_template: str | None = None,
         user_id: int | None,
         violations: list[str],
         warnings: list[str],
@@ -247,6 +256,7 @@ class DraftingService:
             is_current=True,
             subject=subject,
             body=body,
+            body_template=body_template,
             status=DraftStatus.GENERATED,
             generated_by=model,
         )

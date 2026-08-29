@@ -1,18 +1,16 @@
 import { useState } from "react";
 
 import { api, useApi } from "../api/client";
-import type { NotificationRule, PushDevice, SystemStatus } from "../api/types";
+import type { EmailTemplates, NotificationRule, PushDevice } from "../api/types";
 import { playChime } from "../lib/chime";
 import { enablePush, type PushStatus } from "../lib/push";
 import { setSoundEnabled, soundEnabled } from "../lib/sound-preference";
 import {
   ago,
-  Badge,
   Banner,
   Button,
   Card,
   Empty,
-  Field,
   Input,
   Loading,
   SectionLabel,
@@ -167,36 +165,52 @@ function SoundToggle() {
 function PushSection() {
   const status = useApi<PushStatus>("/push/status");
   const devices = useApi<PushDevice[]>("/push/devices");
-  const [busy, setBusy] = useState(false);
+  /* One flag per button rather than one for the section: sharing it meant
+     clicking either control put *both* into "Working…", which reads as the
+     page having hung rather than one action being in flight. */
+  const [busy, setBusy] = useState<"turnOn" | "test" | null>(null);
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null);
 
   const permission =
     typeof Notification === "undefined" ? "unsupported" : Notification.permission;
 
   async function turnOn() {
-    setBusy(true);
+    setBusy("turnOn");
     setNote(null);
-    const result = await enablePush();
-    setNote(
-      result.ok
-        ? { text: "This device will now receive notifications." }
-        : { text: result.reason, bad: true },
-    );
-    status.reload();
-    devices.reload();
-    setBusy(false);
+    try {
+      const result = await enablePush();
+      setNote(
+        result.ok
+          ? { text: "This device will now receive notifications." }
+          : { text: result.reason, bad: true },
+      );
+      status.reload();
+      devices.reload();
+    } catch (e) {
+      /* `enablePush` is written to return a reason rather than throw, but a
+         service worker or Firebase failure can still escape it. Without this
+         the rejection went to the console and the button simply went quiet -
+         which is indistinguishable, to the person clicking it, from nothing
+         being wired up at all. */
+      setNote({ text: (e as Error).message || "Could not turn on notifications.", bad: true });
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function test() {
-    setBusy(true);
+    setBusy("test");
     setNote(null);
     try {
       const r = await api.post<{ ok: boolean; detail: string }>("/push/test");
       setNote({ text: r.detail, bad: !r.ok });
+      // A test that reported dead devices has just deactivated them.
+      devices.reload();
+      status.reload();
     } catch (e) {
       setNote({ text: (e as Error).message, bad: true });
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
@@ -216,12 +230,12 @@ function PushSection() {
       action={
         <div className="flex gap-2">
           {active.length > 0 && (
-            <Button compact disabled={busy} onClick={test}>
-              Send test
+            <Button compact disabled={busy !== null} onClick={test}>
+              {busy === "test" ? "Sending…" : "Send test"}
             </Button>
           )}
-          <Button compact variant="primary" disabled={busy} onClick={turnOn}>
-            {busy ? "Working…" : "Turn on here"}
+          <Button compact variant="primary" disabled={busy !== null} onClick={turnOn}>
+            {busy === "turnOn" ? "Working…" : "Turn on here"}
           </Button>
         </div>
       }
@@ -279,60 +293,147 @@ function PushSection() {
   );
 }
 
+
+/* ---------------------------------------------------------------------------
+   Follow-up wording.
+
+   A follow-up says the same thing every time; only the reference and the money
+   change. So it is a template filled in code rather than a writing task for a
+   model - no API call, no variation the desk did not ask for, and the figures
+   come from the same place the quotation itself is rendered from.
+   --------------------------------------------------------------------------- */
+
+function TemplatesSection() {
+  const templates = useApi<EmailTemplates>("/organisation/email-templates");
+  const [subject, setSubject] = useState<string | null>(null);
+  const [body, setBody] = useState<string | null>(null);
+  /* Which of Save / Restore is running, so one does not label the other. */
+  const [busy, setBusy] = useState<"save" | "restore" | null>(null);
+  const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null);
+
+  const t = templates.data;
+
+  /* An unedited desk shows the default rather than an empty box, so what is
+     on screen is always what would actually be sent. */
+  const currentSubject =
+    subject ?? t?.followup_subject_template ?? t?.default_followup_subject ?? "";
+  const currentBody =
+    body ?? t?.followup_body_template ?? t?.default_followup_body ?? "";
+
+  const dirty = subject !== null || body !== null;
+  const usingDefault =
+    !t?.followup_subject_template && !t?.followup_body_template && !dirty;
+
+  async function save() {
+    setBusy("save");
+    setNote(null);
+    try {
+      await api.patch("/organisation", {
+        followup_subject_template: currentSubject,
+        followup_body_template: currentBody,
+      });
+      setSubject(null);
+      setBody(null);
+      templates.reload();
+      setNote({ text: "Saved. New follow-ups will use this wording." });
+    } catch (e) {
+      setNote({ text: (e as Error).message, bad: true });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function restore() {
+    setBusy("restore");
+    setNote(null);
+    try {
+      /* Empty clears the override on the server, so the built-in wording is
+         read at send time rather than being copied into the desk's row. */
+      await api.patch("/organisation", {
+        followup_subject_template: "",
+        followup_body_template: "",
+      });
+      setSubject(null);
+      setBody(null);
+      templates.reload();
+      setNote({ text: "Restored the built-in wording." });
+    } catch (e) {
+      setNote({ text: (e as Error).message, bad: true });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (templates.loading && !t) return <Loading label="Loading templates" />;
+
+  return (
+    <Card
+      title="Follow-up email"
+      subtitle="Sent when chasing a quotation. Filled in from the quotation itself — no AI is used, so the figures always match."
+      action={
+        <div className="flex gap-2">
+          {!usingDefault && (
+            <Button compact variant="secondary" disabled={busy !== null} onClick={restore}>
+              {busy === "restore" ? "Restoring…" : "Restore default"}
+            </Button>
+          )}
+          <Button compact disabled={busy !== null || !dirty} onClick={save}>
+            {busy === "save" ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      }
+    >
+      {note && (
+        <Banner tone={note.bad ? "danger" : "settled"}>{note.text}</Banner>
+      )}
+
+      <div className="flex flex-col gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-medium text-ink-faint">Subject</span>
+          <Input value={currentSubject} onChange={setSubject} />
+        </label>
+
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] font-medium text-ink-faint">Message</span>
+          <textarea
+            value={currentBody}
+            onChange={(e) => setBody(e.target.value)}
+            rows={12}
+            spellCheck
+            className="w-full resize-y rounded-lg border border-rule bg-surface px-3 py-2 font-sans text-sm leading-relaxed text-ink outline-none focus:border-brand"
+          />
+        </label>
+
+        <div>
+          <p className="text-[11px] font-medium text-ink-faint">
+            Available placeholders — these are replaced with the real values
+          </p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {t?.placeholders.map((p) => (
+              <span
+                key={p.name}
+                title={p.description}
+                className="rounded border border-rule bg-sunk px-1.5 py-0.5 font-mono text-[11px] text-ink-soft"
+              >
+                {`{{${p.name}}}`}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 export default function Settings() {
-  const status = useApi<SystemStatus>("/system/status");
   const rules = useApi<NotificationRule[]>("/notification-rules");
 
-  if (status.loading && !status.data) return <Loading label="Loading settings" />;
-
-  const s = status.data;
+  if (rules.loading && !rules.data) return <Loading label="Loading settings" />;
 
   return (
     <div className="flex flex-col gap-4 p-5">
-      <p className="text-sm text-ink-soft">
-        What the system is configured to do, and who it tells.
-      </p>
-
-      {s && !s.auto_send_enabled && (
-        <Banner tone="settled">
-          Nothing is sent to a customer without a person approving it first.
-        </Banner>
-      )}
-
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card title="System">
-          <dl className="divide-y divide-rule">
-            <Field label="Environment">{s?.environment}</Field>
-            <Field label="Email source">
-              <span className="inline-flex items-center gap-2">
-                {s?.email_source}
-                <Badge value={s?.email_source_available ? "CONNECTED" : "UNAVAILABLE"} />
-              </span>
-            </Field>
-            <Field label="Language model">
-              <Badge value={s?.llm_configured ? "CONFIGURED" : "NO API KEY"} />
-            </Field>
-            <Field label="Pricing rules">v{s?.rules_version}</Field>
-            <Field label="Stock lots">{s?.stock_lots}</Field>
-            <Field label="Customers">{s?.customers}</Field>
-          </dl>
-        </Card>
-
-        <Card title="Models">
-          <dl className="divide-y divide-rule">
-            {s?.llm_models &&
-              Object.entries(s.llm_models).map(([task, model]) => (
-                <Field key={task} label={task}>
-                  <span className="font-mono text-xs">{model}</span>
-                </Field>
-              ))}
-          </dl>
-          <p className="mt-3 text-xs text-ink-faint">
-            Routed per task: classification runs on every email, extraction and drafting only on
-            the enquiries.
-          </p>
-        </Card>
-      </div>
+      <SectionLabel>Email templates</SectionLabel>
+      <TemplatesSection />
 
       <SectionLabel>Push notifications</SectionLabel>
       <PushSection />

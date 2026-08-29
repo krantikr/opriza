@@ -960,3 +960,16 @@ export interface PeriodChoice {
   label: string;
   range: string;
 }
+
+export interface TemplatePlaceholder {
+  name: string;
+  description: string;
+}
+
+export interface EmailTemplates {
+  followup_subject_template: string | null;
+  followup_body_template: string | null;
+  default_followup_subject: string;
+  default_followup_body: string;
+  placeholders: TemplatePlaceholder[];
+}
