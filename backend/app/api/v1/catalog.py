@@ -10,7 +10,15 @@ from sqlalchemy import func, select
 from app.api.deps import TenantDb
 from app.api.serializers import customer_out, stock_item_out
 from app.models import Customer, StockItem
-from app.schemas.catalog import CustomerOut, StockCheckRequest, StockItemOut, StockSummaryOut
+from app.schemas.catalog import (
+    CustomerOut,
+    SpecPositionOut,
+    StockCheckRequest,
+    StockItemIn,
+    StockItemOut,
+    StockPositionOut,
+    StockSummaryOut,
+)
 from app.schemas.common import Page
 from app.schemas.quotations import StockAvailabilityOut
 from app.services.stock.availability import StockAvailabilityService
@@ -103,6 +111,88 @@ def stock_summary(db: TenantDb) -> list[StockSummaryOut]:
 
     summaries.sort(key=lambda s: (s.grade or "", s.thickness_mm or 0))
     return summaries
+
+
+@router.get("/stock/position", response_model=StockPositionOut)
+def stock_position(db: TenantDb) -> StockPositionOut:
+    """What the desk holds, owes, has spare, and still has to buy.
+
+    Declared before `/stock/{stock_item_id}`: FastAPI matches in order, and a
+    literal path registered after a parameterised one is never reached -
+    "position" would be read as an id and fail to parse.
+    """
+    from app.services.stock.position import spec_positions, totals
+
+    positions = spec_positions(db)
+    summary = totals(positions)
+
+    return StockPositionOut(
+        in_stock_mt=summary.in_stock_mt,
+        committed_mt=summary.committed_mt,
+        free_mt=summary.free_mt,
+        to_buy_mt=summary.to_buy_mt,
+        prospective_mt=summary.prospective_mt,
+        specs_short=summary.specs_short,
+        specs=[
+            SpecPositionOut(
+                product_type=p.product_type,
+                grade=p.grade,
+                thickness_mm=p.thickness_mm,
+                width_mm=p.width_mm,
+                length_mm=p.length_mm,
+                display_name=p.display_name,
+                lot_count=p.lot_count,
+                locations=p.locations,
+                in_stock_mt=p.in_stock_mt,
+                committed_mt=p.committed_mt,
+                free_mt=p.free_mt,
+                to_buy_mt=p.to_buy_mt,
+                prospective_mt=p.prospective_mt,
+                cost_per_mt=p.cost_per_mt,
+            )
+            for p in positions
+        ],
+    )
+
+
+@router.post("/stock", response_model=StockItemOut, status_code=status.HTTP_201_CREATED)
+def create_stock_item(payload: StockItemIn, db: TenantDb) -> StockItemOut:
+    """Add one lot by hand.
+
+    The Excel import remains the bulk route; this is for the ordinary case of
+    a single delivery arriving, which previously required editing a
+    spreadsheet and re-importing it.
+    """
+    from datetime import date as _date
+
+    quantity_kg = (payload.quantity_mt * Decimal(1000)).quantize(Decimal("0.001"))
+    stock_date = payload.stock_date or _date.today()
+
+    lot = StockItem(
+        product_type=payload.product_type.strip(),
+        grade=payload.grade.strip(),
+        thickness_mm=payload.thickness_mm,
+        width_mm=payload.width_mm,
+        length_mm=payload.length_mm,
+        diameter_mm=payload.diameter_mm,
+        location=(payload.location or "").strip() or None,
+        make=(payload.make or "").strip() or None,
+        coil_no=(payload.coil_no or "").strip() or None,
+        nop=payload.nop,
+        qty_kg=quantity_kg,
+        # A new lot is wholly available: balance starts at the full quantity,
+        # and is drawn down by movements from here on.
+        balance_nop=payload.nop,
+        balance_qty_kg=quantity_kg,
+        purchase_rate_per_kg=payload.purchase_rate_per_kg,
+        landed_cost_per_kg=payload.landed_cost_per_kg,
+        stock_date=stock_date,
+        ageing_days=max((_date.today() - stock_date).days, 0),
+    )
+    db.add(lot)
+    db.commit()
+    db.refresh(lot)
+    return stock_item_out(lot)
 
 
 @router.get("/stock/{stock_item_id}", response_model=StockItemOut)

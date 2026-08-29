@@ -172,6 +172,63 @@ def dashboard_metrics(db: TenantDb) -> DashboardMetrics:
     )
 
 
+@router.get("/dashboard/pipeline", tags=["dashboard"])
+def dashboard_pipeline(db: TenantDb) -> dict:
+    """The desk in tonnes and rupees: stages, deliveries due, money owed.
+
+    Counts answer "how many pieces of paper"; a steel desk runs on tonnage and
+    on dates, so every stage carries both, and the two tables below say what
+    has to be shipped and what has to be collected.
+    """
+    from app.services.quotations.pipeline import build
+
+    pipeline = build(db)
+
+    return {
+        "stages": [
+            {
+                "key": s.key,
+                "label": s.label,
+                "count": s.count,
+                "tonnes": float(s.tonnes),
+                "value": float(s.value),
+            }
+            for s in pipeline.stages
+        ],
+        "to_buy_mt": float(pipeline.to_buy_mt),
+        "due_this_week": float(pipeline.due_this_week),
+        "overdue_value": float(pipeline.overdue_value),
+        "overdue_count": pipeline.overdue_count,
+        "deliveries": [
+            {
+                "quotation_id": d.quotation_id,
+                "quotation_number": d.quotation_number,
+                "customer": d.customer,
+                "material": d.material,
+                "tonnes": float(d.tonnes),
+                "value": float(d.value),
+                "wanted_by": d.wanted_by,
+                "in_stock_mt": float(d.in_stock_mt),
+                "to_buy_mt": float(d.to_buy_mt),
+            }
+            for d in pipeline.deliveries
+        ],
+        "payments": [
+            {
+                "quotation_id": p.quotation_id,
+                "quotation_number": p.quotation_number,
+                "customer": p.customer,
+                "value": float(p.value),
+                "despatched_on": p.despatched_on.isoformat() if p.despatched_on else None,
+                "terms": p.terms,
+                "due_on": p.due_on.isoformat() if p.due_on else None,
+                "days_overdue": p.days_overdue,
+            }
+            for p in pipeline.payments
+        ],
+    }
+
+
 @router.get("/audit-logs", response_model=Page[AuditLogOut])
 def list_audit_logs(
     db: TenantDb,

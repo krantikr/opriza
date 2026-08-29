@@ -79,3 +79,60 @@ class StockCheckRequest(ORMModel):
     stock_item_id: int
     quantity_mt: Decimal | None = None
     customer_id: int | None = None
+
+
+class SpecPositionOut(ORMModel):
+    """One specification: what is held, owed, spare, and short."""
+
+    product_type: str | None = None
+    grade: str | None = None
+    thickness_mm: float | None = None
+    width_mm: float | None = None
+    length_mm: float | None = None
+    display_name: str = ""
+    lot_count: int = 0
+    locations: list[str] = Field(default_factory=list)
+
+    in_stock_mt: Decimal = Decimal(0)
+    committed_mt: Decimal = Decimal(0)
+    free_mt: Decimal = Decimal(0)
+    to_buy_mt: Decimal = Decimal(0)
+    prospective_mt: Decimal = Decimal(0)
+    #: Weighted average landed cost per MT. Null where no lot carries a cost.
+    cost_per_mt: Decimal | None = None
+
+
+class StockPositionOut(ORMModel):
+    """The desk-wide position, and the per-specification breakdown."""
+
+    in_stock_mt: Decimal = Decimal(0)
+    committed_mt: Decimal = Decimal(0)
+    free_mt: Decimal = Decimal(0)
+    to_buy_mt: Decimal = Decimal(0)
+    prospective_mt: Decimal = Decimal(0)
+    specs_short: int = 0
+    specs: list[SpecPositionOut] = Field(default_factory=list)
+
+
+class StockItemIn(ORMModel):
+    """A lot being added by hand.
+
+    Quantity is taken in MT because that is the unit a trader buys and sells
+    in; it is stored in kg to match the imported sheets, and the conversion
+    happens once, here, rather than in the interface.
+    """
+
+    product_type: str = Field(min_length=1, max_length=80)
+    grade: str = Field(min_length=1, max_length=60)
+    thickness_mm: float | None = Field(default=None, gt=0)
+    width_mm: float | None = Field(default=None, gt=0)
+    length_mm: float | None = Field(default=None, gt=0)
+    diameter_mm: float | None = Field(default=None, gt=0)
+    location: str | None = Field(default=None, max_length=120)
+    make: str | None = Field(default=None, max_length=120)
+    coil_no: str | None = Field(default=None, max_length=120)
+    quantity_mt: Decimal = Field(gt=0)
+    nop: float | None = Field(default=None, ge=0)
+    purchase_rate_per_kg: float | None = Field(default=None, ge=0)
+    landed_cost_per_kg: float | None = Field(default=None, ge=0)
+    stock_date: date | None = None

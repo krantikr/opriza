@@ -87,6 +87,10 @@ class QuotationRequest(Base, TimestampMixin, TenantMixin):
     #: Set when the goods go out. Until then an accepted quotation sits in the
     #: Delivery queue, because the customer is still owed something.
     despatched_at: Mapped[datetime | None] = mapped_column()
+    #: When the money actually arrived. Separate from the status because a
+    #: date answers "how long have we been waiting", which is the question a
+    #: trader chasing payment is really asking, and a status cannot.
+    paid_at: Mapped[datetime | None] = mapped_column()
     sent_message_id: Mapped[str | None] = mapped_column(String(255))
     send_error: Mapped[str | None] = mapped_column(Text)
 

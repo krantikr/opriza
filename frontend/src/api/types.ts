@@ -973,3 +973,71 @@ export interface EmailTemplates {
   default_followup_body: string;
   placeholders: TemplatePlaceholder[];
 }
+
+export interface SpecPosition {
+  product_type: string | null;
+  grade: string | null;
+  thickness_mm: number | null;
+  width_mm: number | null;
+  length_mm: number | null;
+  display_name: string;
+  lot_count: number;
+  locations: string[];
+  in_stock_mt: string;
+  committed_mt: string;
+  free_mt: string;
+  to_buy_mt: string;
+  prospective_mt: string;
+  cost_per_mt: string | null;
+}
+
+export interface StockPosition {
+  in_stock_mt: string;
+  committed_mt: string;
+  free_mt: string;
+  to_buy_mt: string;
+  prospective_mt: string;
+  specs_short: number;
+  specs: SpecPosition[];
+}
+
+export interface Stage {
+  key: string;
+  label: string;
+  count: number;
+  tonnes: number;
+  value: number;
+}
+
+export interface DeliveryDue {
+  quotation_id: number;
+  quotation_number: string;
+  customer: string;
+  material: string;
+  tonnes: number;
+  value: number;
+  wanted_by: string | null;
+  in_stock_mt: number;
+  to_buy_mt: number;
+}
+
+export interface PaymentDue {
+  quotation_id: number;
+  quotation_number: string;
+  customer: string;
+  value: number;
+  despatched_on: string | null;
+  terms: string | null;
+  due_on: string | null;
+  days_overdue: number;
+}
+
+export interface PipelineReport {
+  stages: Stage[];
+  to_buy_mt: number;
+  due_this_week: number;
+  overdue_value: number;
+  overdue_count: number;
+  deliveries: DeliveryDue[];
+  payments: PaymentDue[];
+}

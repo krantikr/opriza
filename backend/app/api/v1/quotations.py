@@ -20,6 +20,7 @@ from app.models import (
 from app.schemas.common import ActionResult, Page
 from app.schemas.pricing import OverrideIn, PricingOut
 from app.schemas.quotations import (
+    StageIn,
     ApproveIn,
     DraftUpdateIn,
     FollowUpIn,
@@ -679,6 +680,81 @@ def update_details(
 
     return ActionResult(
         detail=detail,
+        quotation_id=quotation.id,
+        status=quotation.status.value,
+    )
+
+
+@router.post("/{quotation_id}/stage", response_model=ActionResult)
+def set_stage(
+    payload: StageIn,
+    db: TenantDb,
+    quotation: QuotationRequest = Depends(get_quotation),
+    user: User | None = Depends(current_user),
+) -> ActionResult:
+    """Move a quotation to a working stage by hand.
+
+    Every stage is settable, deliberately. A deal is agreed on the phone as
+    often as by email, a customer says "we'll take it" to a salesman in a
+    corridor, and a board that cannot be corrected is one that stops being
+    trusted and then stops being used.
+
+    What this changes is the *status* - where the quotation sits on the board.
+    It does not touch the draft, the approval record, or the sent message id,
+    so the account of what was actually said to the customer survives a
+    trader dragging a card, and the audit log records who moved it.
+    """
+    from app.services.quotations.stages import LABELS, STATUS_FOR_STAGE
+
+    target = STATUS_FOR_STAGE.get(payload.stage)
+    if target is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"{payload.stage} is not a stage. Expected one of: "
+            + ", ".join(STATUS_FOR_STAGE),
+        )
+
+    previous = quotation.status
+    if previous is target and payload.stage != "delivery_pending":
+        return ActionResult(
+            detail=f"Already in {LABELS.get(payload.stage, payload.stage)}.",
+            quotation_id=quotation.id,
+            status=quotation.status.value,
+        )
+
+    quotation.status = target
+
+    # The dates that define a stage move with it, or the board and the
+    # timestamps disagree about the same quotation.
+    if payload.stage == "delivery_pending":
+        # Back from payment: the goods have not gone after all.
+        quotation.despatched_at = None
+        quotation.paid_at = None
+    elif payload.stage == "payment_pending":
+        quotation.despatched_at = quotation.despatched_at or utcnow()
+        quotation.paid_at = None
+    elif payload.stage == "won":
+        quotation.despatched_at = quotation.despatched_at or utcnow()
+        quotation.paid_at = quotation.paid_at or utcnow()
+
+    audit.record(
+        db,
+        entity_type="quotation_request",
+        entity_id=quotation.id,
+        action="STAGE_CHANGED",
+        user_id=user.id if user else None,
+        details={
+            "quotation_number": quotation.quotation_number,
+            "stage": payload.stage,
+            "from_status": previous.value,
+            "to_status": target.value,
+            "reason": payload.reason,
+        },
+    )
+    db.commit()
+
+    return ActionResult(
+        detail=f"{quotation.quotation_number} moved to {LABELS.get(payload.stage, payload.stage)}.",
         quotation_id=quotation.id,
         status=quotation.status.value,
     )

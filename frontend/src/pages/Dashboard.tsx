@@ -2,13 +2,20 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api, useApi } from "../api/client";
-import type { DashboardMetrics, FunnelReport, TrendPoint, Trends } from "../api/types";
+import type {
+  DashboardMetrics,
+  FunnelReport,
+  PipelineReport,
+  TrendPoint,
+  Trends,
+} from "../api/types";
 import { AreaChart, ColumnChart, DonutChart, FunnelChart } from "../components/charts";
 import {
   ago,
   Badge,
   Button,
   Card,
+  Kpi,
   Empty,
   ErrorNote,
   inrShort,
@@ -103,6 +110,8 @@ export default function Dashboard() {
   const [running, setRunning] = useState(false);
 
   const metrics = useApi<DashboardMetrics>("/dashboard/metrics", 60_000);
+  const pipeline = useApi<PipelineReport>("/dashboard/pipeline", 60_000);
+  const p = pipeline.data;
   const trends = useApi<Trends>(`/dashboard/trends?days=${days}`, 120_000);
   const funnel = useApi<FunnelReport>(`/reports/funnel?days=${days}`);
 
@@ -172,6 +181,178 @@ export default function Dashboard() {
           </div>
           <span className="text-sm font-medium text-attention-ink">Review →</span>
         </Link>
+      )}
+
+      {/* --- The desk, stage by stage ------------------------------------
+          Money moves left to right: an enquiry nobody has answered, through
+          a quotation out with the customer, to cash that has not arrived.
+          Derived from status rather than stored, so a quotation can never sit
+          in a stage that contradicts its own state. */}
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-5">
+        {(p?.stages ?? []).map((stage) => (
+          <Link
+            key={stage.key}
+            to={`/quotations?stage=${stage.key}`}
+            className="rounded-card border border-rule bg-surface px-3 py-2.5 transition-colors hover:border-brand"
+          >
+            <p className="truncate text-[11px] font-medium uppercase tracking-wide text-ink-faint">
+              {stage.label}
+            </p>
+            {/* Tonnage leads. Twelve quotations is not a workload a trader
+                can feel; 340 MT is. The count stays as the smaller figure
+                beside it, because it still answers "how many customers am I
+                dealing with here". */}
+            <p className="tabular mt-0.5 text-xl font-semibold text-ink">
+              {stage.tonnes > 0 ? `${stage.tonnes.toFixed(2)}` : "—"}
+              {stage.tonnes > 0 && (
+                <span className="ml-1 text-xs font-normal text-ink-faint">MT</span>
+              )}
+            </p>
+            <p className="tabular text-xs text-ink-faint">
+              {stage.count} quote{stage.count === 1 ? "" : "s"}
+              {stage.value > 0 && ` · ${inrShort(stage.value)}`}
+            </p>
+          </Link>
+        ))}
+      </div>
+
+      {/* --- What the desk has to act on --------------------------------
+          Three figures that each mean a job: steel to buy, money arriving,
+          money late. Shown only when non-zero - a row of zeroes trains a
+          trader to stop reading the row. */}
+      {(!!p?.to_buy_mt || !!p?.due_this_week || !!p?.overdue_count) && (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 sm:gap-3">
+          {!!p?.to_buy_mt && (
+            <Kpi
+              label="To buy for orders won"
+              value={`${p.to_buy_mt.toFixed(2)} MT`}
+              hint="not on the floor, already sold"
+              tone="warn"
+            />
+          )}
+          {!!p?.due_this_week && (
+            <Kpi
+              label="Payment due this week"
+              value={inrShort(p.due_this_week)}
+              hint="by the agreed terms"
+            />
+          )}
+          {!!p?.overdue_count && (
+            <Kpi
+              label="Overdue"
+              value={inrShort(p.overdue_value)}
+              hint={`${p.overdue_count} invoice${p.overdue_count === 1 ? "" : "s"} past terms`}
+              tone="warn"
+            />
+          )}
+        </div>
+      )}
+
+      {/* --- What has to ship, and what has to be collected -------------
+          The two tables a trader acts from. Rendered only when they have
+          rows: an empty table is a promise that something will appear there,
+          and a dashboard full of empty promises stops being read. */}
+      {(p?.deliveries.length ?? 0) > 0 && (
+        <Card
+          title="Deliveries pending"
+          subtitle="Won, not yet shipped — soonest first"
+          padded={false}
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-rule bg-sunk text-left text-xs uppercase tracking-wide text-ink-faint">
+                <tr>
+                  <th className="px-4 py-2 font-medium">Customer</th>
+                  <th className="px-4 py-2 font-medium">Material</th>
+                  <th className="px-4 py-2 font-medium">Wanted by</th>
+                  <th className="px-4 py-2 text-right font-medium">Ordered (MT)</th>
+                  <th className="px-4 py-2 text-right font-medium">In stock (MT)</th>
+                  <th className="px-4 py-2 text-right font-medium">To buy (MT)</th>
+                  <th className="px-4 py-2 text-right font-medium">Value</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-sunk">
+                {p!.deliveries.map((d) => (
+                  <tr key={d.quotation_id} className="hover:bg-sunk">
+                    <td className="px-4 py-2">
+                      <Link to={`/quotations/${d.quotation_id}`} className="text-ink hover:text-brand">
+                        {d.customer}
+                      </Link>
+                      <span className="ml-2 text-xs text-ink-faint">{d.quotation_number}</span>
+                    </td>
+                    <td className="px-4 py-2 text-ink-soft">{d.material}</td>
+                    <td className="px-4 py-2 text-ink-soft">{d.wanted_by ?? "—"}</td>
+                    <td className="tabular px-4 py-2 text-right">{d.tonnes.toFixed(2)}</td>
+                    <td className="tabular px-4 py-2 text-right text-ink-soft">
+                      {d.in_stock_mt.toFixed(2)}
+                    </td>
+                    {/* The column that costs money to ignore: material sold
+                        and not on the floor. */}
+                    <td
+                      className={`tabular px-4 py-2 text-right ${
+                        d.to_buy_mt > 0 ? "font-semibold text-attention-ink" : "text-ink-faint"
+                      }`}
+                    >
+                      {d.to_buy_mt > 0 ? d.to_buy_mt.toFixed(2) : "—"}
+                    </td>
+                    <td className="tabular px-4 py-2 text-right">{inrShort(d.value)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {(p?.payments.length ?? 0) > 0 && (
+        <Card
+          title="Payments pending"
+          subtitle="Shipped, not yet paid — most overdue first"
+          padded={false}
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="border-b border-rule bg-sunk text-left text-xs uppercase tracking-wide text-ink-faint">
+                <tr>
+                  <th className="px-4 py-2 font-medium">Customer</th>
+                  <th className="px-4 py-2 font-medium">Despatched</th>
+                  <th className="px-4 py-2 font-medium">Terms</th>
+                  <th className="px-4 py-2 font-medium">Due</th>
+                  <th className="px-4 py-2 text-right font-medium">Amount</th>
+                  <th className="px-4 py-2 text-right font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-sunk">
+                {p!.payments.map((row) => (
+                  <tr key={row.quotation_id} className="hover:bg-sunk">
+                    <td className="px-4 py-2">
+                      <Link to={`/quotations/${row.quotation_id}`} className="text-ink hover:text-brand">
+                        {row.customer}
+                      </Link>
+                      <span className="ml-2 text-xs text-ink-faint">{row.quotation_number}</span>
+                    </td>
+                    <td className="px-4 py-2 text-ink-soft">{row.despatched_on ?? "—"}</td>
+                    {/* Terms are shown because the due date is derived from
+                        them: a trader disputing the date needs to see what it
+                        was calculated from. */}
+                    <td className="px-4 py-2 text-xs text-ink-faint">{row.terms ?? "30 days (assumed)"}</td>
+                    <td className="px-4 py-2 text-ink-soft">{row.due_on ?? "—"}</td>
+                    <td className="tabular px-4 py-2 text-right">{inrShort(row.value)}</td>
+                    <td className="px-4 py-2 text-right">
+                      {row.days_overdue > 0 ? (
+                        <span className="rounded-full bg-attention-wash px-2 py-0.5 text-[11px] font-medium text-attention-ink">
+                          {row.days_overdue}d overdue
+                        </span>
+                      ) : (
+                        <span className="text-xs text-ink-faint">on terms</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       )}
 
       {/* --- Headline movement ------------------------------------------- */}

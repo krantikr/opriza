@@ -131,7 +131,13 @@ class QuotationStatus(StrEnum):
     NEW -> PROCESSING -> (NEEDS_INFORMATION | READY_FOR_REVIEW | FAILED)
         -> EDITED -> APPROVED -> SENT | REJECTED
         -> (from SENT, once the customer replies on the same thread)
-           CUSTOMER_ACCEPTED | CUSTOMER_DECLINED
+           NEGOTIATION | CUSTOMER_ACCEPTED | CUSTOMER_DECLINED
+        -> (once accepted and despatched)
+           PAYMENT_PENDING -> PAID
+
+    The desk reads this as five working stages - received, sent, negotiation,
+    delivery pending, payment pending - and `COMMERCIAL_STAGES` maps the
+    machine onto them.
 
     The two CUSTOMER_* states are reached only by `QuotationWorkflow`'s reply
     branch, never by a reviewer action - they represent what the customer said,
@@ -149,6 +155,20 @@ class QuotationStatus(StrEnum):
     FAILED = "FAILED"
     CUSTOMER_ACCEPTED = "CUSTOMER_ACCEPTED"
     CUSTOMER_DECLINED = "CUSTOMER_DECLINED"
+    #: The customer has replied and is bargaining - over price, quantity,
+    #: delivery. Reached automatically when a reply arrives that is neither an
+    #: acceptance nor a refusal, and settable by hand, because a phone call is
+    #: the usual way this is learned and the system never sees it.
+    #:
+    #: Distinct from SENT: a quotation nobody has answered and one being
+    #: actively haggled over need different attention, and collapsing them
+    #: hides which of the two a trader should ring today.
+    NEGOTIATION = "NEGOTIATION"
+    #: Goods despatched, money not yet in. The deal is done and the risk has
+    #: changed shape: what is owed is no longer steel but payment.
+    PAYMENT_PENDING = "PAYMENT_PENDING"
+    #: Paid in full. The end of the line.
+    PAID = "PAID"
 
 
 class MatchStatus(StrEnum):

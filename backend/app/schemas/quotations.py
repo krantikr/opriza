@@ -262,6 +262,15 @@ class AuditLogOut(ORMModel):
     created_at: datetime
 
 
+class StageIn(BaseModel):
+    """A manual move to one of the working stages."""
+
+    stage: str
+    #: Why, where a trader wants to say. Kept on the audit entry rather than
+    #: the quotation: it explains one move, not the current state.
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class QuotationDetailsIn(BaseModel):
     """Commercial terms a reviewer supplies when the enquiry did not state them."""
 

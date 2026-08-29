@@ -1,7 +1,14 @@
 import { useRef, useState } from "react";
 
 import { api, useApi } from "../api/client";
-import type { StockHold, StockImportResult, StockItem, StockSummary } from "../api/types";
+import type {
+  StockHold,
+  StockImportResult,
+  StockItem,
+  StockPosition,
+  StockSummary,
+} from "../api/types";
+import AddStock from "../components/AddStock";
 import { HoldsPanel, StockAdjustDialog } from "../components/StockAdjust";
 import {
   Banner,
@@ -10,7 +17,6 @@ import {
   Empty,
   ErrorNote,
   Input,
-  inrShort,
   Kpi,
   Loading,
   num,
@@ -158,13 +164,35 @@ function ImportReport({ result }: { result: StockImportResult }) {
   );
 }
 
+/** Whole tonnes, grouped the way the desk reads numbers. */
+function mt(value: string | number | null | undefined): string {
+  return Math.round(Number(value ?? 0)).toLocaleString("en-IN");
+}
+
 export default function Stock() {
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const { data, error, loading, reload } = useApi<StockSummary[]>(`/stock/summary`);
+  /* The demand side. Fetched separately so a slow join over quotations never
+     delays the stock list itself, which is what the page is mostly used for. */
+  const positionApi = useApi<StockPosition>("/stock/position");
+  const position = positionApi.data;
+
+  /* Matched on grade and the three dimensions rather than the product word:
+     the server groups "Plate" and "C-45 Plates" together, and matching on the
+     raw type here would fail to find exactly the rows that were merged. */
+  const positionFor = (row: StockSummary) =>
+    position?.specs.find(
+      (p) =>
+        (p.grade ?? "") === (row.grade ?? "") &&
+        p.thickness_mm === row.thickness_mm &&
+        p.width_mm === row.width_mm &&
+        p.length_mm === row.length_mm,
+    );
   const holds = useApi<StockHold[]>("/stock/holds", 60_000);
   const [adjusting, setAdjusting] = useState<StockItem | null>(null);
+  const [adding, setAdding] = useState(false);
   const [showHolds, setShowHolds] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<StockImportResult | null>(null);
@@ -173,6 +201,7 @@ export default function Stock() {
   function refreshAll() {
     reload();
     holds.reload();
+    positionApi.reload();
   }
 
   async function importStock(file: File) {
@@ -216,18 +245,12 @@ export default function Stock() {
 
   const lotTotal = (data ?? []).reduce((sum, row) => sum + row.lot_count, 0);
 
-  const totalMt = (data ?? []).reduce((sum, r) => sum + Number(r.balance_qty_mt), 0);
-  const totalValue = (data ?? []).reduce(
-    (sum, r) => sum + Number(r.balance_qty_mt) * 1000 * (r.avg_landed_cost_per_kg ?? 0),
-    0,
-  );
+  /* Ageing keeps a mention but loses its tile. It is money sitting still and
+     worth knowing, but it is not one of the four figures a trader decides
+     from - and giving it equal billing was part of what made the page read
+     as a report rather than a working screen. */
   const dead = (data ?? []).filter((r) => (r.ageing_max_days ?? 0) > 90);
   const deadMt = dead.reduce((sum, r) => sum + Number(r.balance_qty_mt), 0);
-  const locations = new Set((data ?? []).flatMap((r) => r.locations)).size;
-  const heldMt = (holds.data ?? []).reduce(
-    (sum, h) => sum + Number(h.quantity_kg) / 1000,
-    0,
-  );
 
   return (
     <div className="flex flex-col gap-4 p-4 sm:p-5">
@@ -251,8 +274,11 @@ export default function Stock() {
             {data ? `${data.length} spec${data.length === 1 ? "" : "s"}` : "…"} ·{" "}
             {data ? `${lotTotal} lot${lotTotal === 1 ? "" : "s"}` : "…"}
           </p>
+          <Button variant="primary" onClick={() => setAdding(true)}>
+            Add stock
+          </Button>
           <StockUpload busy={importing} onPicked={importStock} />
-          <Button onClick={reload}>Refresh</Button>
+          <Button onClick={refreshAll}>Refresh</Button>
         </div>
       </header>
 
@@ -260,22 +286,60 @@ export default function Stock() {
       {importError && <ErrorNote message={importError} />}
       {importResult && <ImportReport result={importResult} />}
 
+      {/* The position, not the cost sheet.
+          What a trader decides from is the relationship between three
+          numbers - held, owed, short - and the old row showed none of them:
+          it led with stock value and ageing, which answer questions nobody
+          opens this page to ask. "To buy" is the one that costs money to get
+          wrong, so it is given its own tone the moment it is non-zero. */}
       <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
-        <Kpi label="On hand" value={`${Math.round(totalMt).toLocaleString("en-IN")} MT`} hint={`${data?.length ?? 0} specs`} />
-        <Kpi label="Stock value" value={inrShort(totalValue)} hint="at landed cost" tone="brand" />
         <Kpi
-          label="Over 90 days"
-          value={`${Math.round(deadMt).toLocaleString("en-IN")} MT`}
-          hint={`${dead.length} spec${dead.length === 1 ? "" : "s"} ageing`}
-          tone={deadMt > 0 ? "warn" : "default"}
+          label="In stock"
+          value={`${mt(position?.in_stock_mt)} MT`}
+          hint={`${position?.specs.length ?? 0} specs`}
         />
         <Kpi
-          label="Held back"
-          value={`${Math.round(heldMt).toLocaleString("en-IN")} MT`}
-          hint={locations > 0 ? `across ${locations} location${locations === 1 ? "" : "s"}` : undefined}
-          tone={heldMt > 0 ? "warn" : "default"}
+          label="To deliver"
+          value={`${mt(position?.committed_mt)} MT`}
+          hint="accepted, not yet despatched"
+        />
+        <Kpi
+          label="Free to sell"
+          value={`${mt(position?.free_mt)} MT`}
+          hint="on hand and not owed"
+          tone="brand"
+        />
+        <Kpi
+          label="To buy"
+          value={`${mt(position?.to_buy_mt)} MT`}
+          hint={
+            (position?.specs_short ?? 0) > 0
+              ? `${position!.specs_short} spec${position!.specs_short === 1 ? "" : "s"} short`
+              : "nothing short"
+          }
+          tone={Number(position?.to_buy_mt ?? 0) > 0 ? "warn" : "default"}
         />
       </div>
+
+      <p className="text-xs text-ink-faint">
+        {Number(position?.prospective_mt ?? 0) > 0 && (
+          <>
+            A further{" "}
+            <span className="font-medium text-ink-soft">
+              {mt(position?.prospective_mt)} MT
+            </span>{" "}
+            is quoted and still with customers — not counted as owed, because a
+            quotation is not an order.
+          </>
+        )}
+        {deadMt > 0 && (
+          <>
+            {Number(position?.prospective_mt ?? 0) > 0 && " "}
+            <span className="font-medium text-ink-soft">{mt(deadMt)} MT</span> has
+            been on the floor over 90 days.
+          </>
+        )}
+      </p>
 
       {(holds.data?.length ?? 0) > 0 && (
         <Card
@@ -302,22 +366,41 @@ export default function Stock() {
             <table className="w-full text-sm">
               <thead className="sticky top-0 z-10 border-b border-rule bg-sunk text-left text-xs uppercase tracking-wide text-ink-faint">
                 <tr>
+                  {/* Five columns, down from nine. Grade, type and
+                      specification all described the same material three
+                      times over, and NOP, average landed cost, lot count and
+                      ageing are per-lot facts that belong in the expanded
+                      view - which is where they still are. What replaces them
+                      is the demand side, which was not shown at all. */}
+                  {/* Location is a column, not a suffix on the material.
+                      Codes like "788" sat beside a column of tonnages and
+                      read as a quantity - the one thing a number in this
+                      table must never be mistaken for.
+
+                      Every quantity heading carries MT, and the price says
+                      what it is per: a bare figure on a commercial screen
+                      leaves the reader to infer the unit, which is exactly
+                      the inference that must not be left to them. */}
                   <th className="w-8 px-2 py-2" />
-                  <th className="px-4 py-2 font-medium">Grade</th>
-                  <th className="px-4 py-2 font-medium">Type</th>
-                  <th className="px-4 py-2 font-medium">Specification</th>
-                  <th className="px-4 py-2 font-medium">Locations</th>
-                  <th className="px-4 py-2 text-right font-medium">Balance qty</th>
-                  <th className="px-4 py-2 text-right font-medium">Bal. NOP</th>
-                  <th className="px-4 py-2 text-right font-medium">Avg landed /kg</th>
-                  <th className="px-4 py-2 text-right font-medium">Lots</th>
-                  <th className="px-4 py-2 text-right font-medium">Ageing</th>
+                  <th className="px-4 py-2 font-medium">Material</th>
+                  <th className="px-4 py-2 font-medium">Location</th>
+                  <th className="px-4 py-2 text-right font-medium">In stock (MT)</th>
+                  <th className="px-4 py-2 text-right font-medium">To deliver (MT)</th>
+                  <th className="px-4 py-2 text-right font-medium">Free (MT)</th>
+                  <th className="px-4 py-2 text-right font-medium">To buy (MT)</th>
+                  <th className="px-4 py-2 text-right font-medium">Cost (₹/MT)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-sunk">
                 {filtered.map((row) => {
                   const key = specKey(row);
                   const open = expanded.has(key);
+                  const demand = positionFor(row);
+                  const owed = Number(demand?.committed_mt ?? 0);
+                  const buy = Number(demand?.to_buy_mt ?? 0);
+                  // Falls back to the plain balance when the position has no
+                  // row for this spec, so the column is never blank.
+                  const free = Number(demand?.free_mt ?? row.balance_qty_mt);
                   return [
                     <tr
                       key={key}
@@ -325,32 +408,40 @@ export default function Stock() {
                       className={`cursor-pointer hover:bg-sunk ${open ? "bg-sunk" : ""}`}
                     >
                       <td className="px-2 py-2 text-center text-ink-400">{open ? "▾" : "▸"}</td>
-                      <td className="px-4 py-2 font-mono text-xs">{row.grade ?? "—"}</td>
-                      <td className="px-4 py-2 text-ink-soft">{row.product_type ?? "—"}</td>
-                      <td className="px-4 py-2 text-ink-soft">{row.display_name}</td>
-                      <td className="px-4 py-2 text-ink-soft">
+                      <td className="px-4 py-2">
+                        <span className="text-ink">{row.display_name}</span>
+                        {row.lot_count > 1 && (
+                          <span className="ml-2 text-xs text-ink-faint">
+                            {row.lot_count} lots
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2 text-xs text-ink-soft">
                         {row.locations.join(", ") || "—"}
                       </td>
-                      <td className="tabular px-4 py-2 text-right">
-                        {num(row.balance_qty_mt)}
-                        <span className="ml-1 text-xs text-ink-faint">MT</span>
+                      <td className="tabular px-4 py-2 text-right">{num(row.balance_qty_mt)}</td>
+                      <td className="tabular px-4 py-2 text-right text-ink-soft">
+                        {owed > 0 ? num(owed) : "—"}
                       </td>
-                      <td className="tabular px-4 py-2 text-right">{num(row.balance_nop, 0)}</td>
-                      <td className="tabular px-4 py-2 text-right">
-                        {rate(row.avg_landed_cost_per_kg)}
+                      <td className="tabular px-4 py-2 text-right">{num(free)}</td>
+                      {/* The only figure that changes colour. A shortfall is
+                          an action, not a statistic. */}
+                      <td
+                        className={`tabular px-4 py-2 text-right ${
+                          buy > 0 ? "font-semibold text-attention-ink" : "text-ink-faint"
+                        }`}
+                      >
+                        {buy > 0 ? num(buy) : "—"}
                       </td>
-                      <td className="tabular px-4 py-2 text-right">{row.lot_count}</td>
-                      <td className="tabular px-4 py-2 text-right text-ink-faint">
-                        {row.ageing_min_days === null
-                          ? "—"
-                          : row.ageing_min_days === row.ageing_max_days
-                            ? `${row.ageing_min_days}d`
-                            : `${row.ageing_min_days}-${row.ageing_max_days}d`}
+                      <td className="tabular px-4 py-2 text-right text-ink-soft">
+                        {demand?.cost_per_mt
+                          ? Math.round(Number(demand.cost_per_mt)).toLocaleString("en-IN")
+                          : "—"}
                       </td>
                     </tr>,
                     open ? (
                       <tr key={`${key}-lots`}>
-                        <td colSpan={10} className="p-0">
+                        <td colSpan={8} className="p-0">
                           <LotTable lots={row.lots} onAdjust={setAdjusting} />
                         </td>
                       </tr>
@@ -362,6 +453,10 @@ export default function Stock() {
           </div>
         )}
       </Card>
+
+      {adding && (
+        <AddStock onClose={() => setAdding(false)} onSaved={refreshAll} />
+      )}
 
       {adjusting && (
         <StockAdjustDialog

@@ -167,6 +167,46 @@ def build_html(quotation: QuotationRequest, rows: list[TableRow]) -> str:
 </body></html>"""
 
 
+#: Where Homebrew puts Pango and Cairo, per architecture. Apple Silicon first,
+#: since that is what the desk develops on.
+_HOMEBREW_LIBS = ("/opt/homebrew/lib", "/usr/local/lib")
+
+
+def _ensure_library_path() -> None:
+    """Let ctypes find Pango and Cairo when the shell did not say where.
+
+    WeasyPrint loads them through `ctypes.util.find_library`, which on macOS
+    consults `DYLD_FALLBACK_LIBRARY_PATH` - and that is unset in a plain shell,
+    a launchd service, or an IDE's test runner. The libraries are installed and
+    working; nothing can see them. The symptom is a `cannot load library
+    'libgobject-2.0-0'` warning and every quotation going out with no
+    attachment, which reads as a missing dependency rather than an unset
+    variable, and sends people off to reinstall packages they already have.
+
+    Set in-process, before the import, and only for directories that exist -
+    so a Linux host, where the loader resolves these from the standard paths
+    anyway, is untouched.
+    """
+    import os
+    from pathlib import Path
+
+    present = [path for path in _HOMEBREW_LIBS if Path(path).is_dir()]
+    if not present:
+        return
+
+    existing = os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+    parts = [p for p in existing.split(os.pathsep) if p]
+    added = [p for p in present if p not in parts]
+    if not added:
+        return
+
+    # The default fallback list is replaced, not extended, once this is set -
+    # so the standard directories are put back explicitly rather than lost.
+    defaults = [str(Path.home() / "lib"), "/usr/local/lib", "/lib", "/usr/lib"]
+    merged = parts + added + [d for d in defaults if d not in parts + added]
+    os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = os.pathsep.join(merged)
+
+
 def build(quotation: QuotationRequest, rows: list[TableRow]) -> bytes | None:
     """Render the quotation to PDF bytes, or None if it cannot be produced.
 
@@ -180,6 +220,8 @@ def build(quotation: QuotationRequest, rows: list[TableRow]) -> bytes | None:
     # ordinary one to send. The test is therefore a rate, not an amount.
     if not any(row.rate is not None for row in rows):
         return None
+
+    _ensure_library_path()
 
     try:
         from weasyprint import HTML

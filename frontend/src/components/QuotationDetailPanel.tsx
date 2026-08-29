@@ -48,6 +48,26 @@ function SendIcon() {
   );
 }
 
+/** The working stages, in the order the server defines them.
+ *
+ *  Duplicated from `stages.py` rather than fetched: it is five fixed labels,
+ *  and a round trip to render a row of buttons would leave them blank for a
+ *  moment on every open. The server remains the authority - it rejects a
+ *  stage it does not know, and the test suite pins both lists to the same
+ *  five keys. */
+const STAGES: { key: string; label: string; statuses: string[] }[] = [
+  {
+    key: "received",
+    label: "Received",
+    statuses: ["NEW", "PROCESSING", "NEEDS_INFORMATION", "READY_FOR_REVIEW", "EDITED", "APPROVED"],
+  },
+  { key: "sent", label: "Sent", statuses: ["SENT"] },
+  { key: "negotiation", label: "Negotiation", statuses: ["NEGOTIATION"] },
+  { key: "delivery_pending", label: "Delivery pending", statuses: ["CUSTOMER_ACCEPTED"] },
+  { key: "payment_pending", label: "Payment pending", statuses: ["PAYMENT_PENDING"] },
+  { key: "won", label: "Paid", statuses: ["PAID"] },
+];
+
 function EnquiryTerms({
   quotation,
   onSaved,
@@ -511,7 +531,11 @@ export default function QuotationDetailPanel({
      pins the 409 - so offering the buttons only invites an error message.
      Rejected and failed are settled the same way. */
   const settled = ["SENT", "APPROVED", "CUSTOMER_ACCEPTED", "CUSTOMER_DECLINED",
-    "REJECTED", "FAILED"].includes(data.status);
+    "REJECTED", "FAILED",
+    // The commercial stages are all past the send. Offering redraft controls
+    // on a quotation being negotiated would end in a 409 the reviewer cannot
+    // act on, exactly as for the states above.
+    "NEGOTIATION", "PAYMENT_PENDING", "PAID"].includes(data.status);
   const stale = data.line_items.some((i) => i.pricing?.draft_stale);
   const totalValue = data.line_items.reduce(
     (sum, i) => sum + Number(i.pricing?.line_total ?? 0),
@@ -830,6 +854,42 @@ export default function QuotationDetailPanel({
             {/* Terms: a compact line when known, expanded into fields only
                 when a reviewer chooses to fill them in. */}
             <EnquiryTerms quotation={data} onSaved={() => { reload(); onChanged(); }} />
+
+            {/* Where this sits on the board. Settable at any stage, because a
+                deal is agreed on the phone as often as by email and a board
+                that cannot be corrected stops being used. Moving it changes
+                only the status - the draft and the record of what was sent
+                are untouched. */}
+            <section className="mt-3 border-t border-rule pt-3">
+              <h3 className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint">
+                Stage
+              </h3>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {STAGES.map((stage) => {
+                  const here = stage.statuses.includes(data.status);
+                  return (
+                    <button
+                      key={stage.key}
+                      disabled={busy !== null}
+                      onClick={() =>
+                        act("stage", () =>
+                          api.post<ActionResult>(`/quotations/${data.id}/stage`, {
+                            stage: stage.key,
+                          }),
+                        )
+                      }
+                      className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                        here
+                          ? "border-brand bg-brand text-white"
+                          : "border-rule text-ink-soft hover:border-brand hover:text-ink"
+                      }`}
+                    >
+                      {stage.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
           </div>
         </section>
 
