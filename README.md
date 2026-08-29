@@ -144,8 +144,35 @@ OpenRouter key; see below.
 
 ## Configuration
 
-All behaviour is environment-driven — see [`.env.example`](.env.example) for the
-annotated list. The two placeholders you need to fill in:
+### System libraries for the quotation PDF
+
+Every approved quotation is emailed with a PDF of its table attached, rendered by
+WeasyPrint. That needs Pango and Cairo present on the host — they are not Python
+packages and `uv sync` will not install them:
+
+```bash
+# macOS
+brew install pango cairo gdk-pixbuf libffi
+
+# Debian / Ubuntu
+apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libcairo2 libgdk-pixbuf-2.0-0
+```
+
+On Apple Silicon, Homebrew installs to a path the dynamic linker does not search
+by default, so the backend needs it pointed out:
+
+```bash
+export DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib
+```
+
+**Without these the app still runs and still sends quotations** — the attachment
+is skipped and the reason logged, because a quotation that reaches the customer
+without its PDF is a far smaller failure than one that never sends at all. If
+customers report missing attachments, check the logs for
+`PDF attachment skipped` before looking anywhere else.
+
+All other behaviour is environment-driven — see [`.env.example`](.env.example) for
+the annotated list. The two placeholders you need to fill in:
 
 ### 1. OpenRouter API key
 

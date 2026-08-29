@@ -10,7 +10,13 @@ from app.api.deps import TenantDb, current_user, get_quotation
 from app.api.serializers import quotation_detail_out, quotation_out
 from app.core.db import utcnow
 from app.core.logging import get_logger
-from app.models import QuotationPricing, QuotationRequest, QuotationStatus, User
+from app.models import (
+    PRICING_FROZEN_STATUSES,
+    QuotationPricing,
+    QuotationRequest,
+    QuotationStatus,
+    User,
+)
 from app.schemas.common import ActionResult, Page
 from app.schemas.pricing import OverrideIn, PricingOut
 from app.schemas.quotations import (
@@ -29,6 +35,7 @@ from app.services import audit
 from app.services.pricing.engine import active_rule_set
 from app.services.pricing.service import PricingService
 from app.services.quotations.approval import ApprovalError, ApprovalService
+from app.services.quotations.draft_figures import refresh_draft_figures
 from app.services.quotations.drafting import DraftingService
 from app.services.quotations.followup import FollowUpError, FollowUpService
 from app.services.quotations.past_orders import PastOrdersService
@@ -255,6 +262,59 @@ def quotation_past_orders(
     return PastOrdersOut(**data)
 
 
+@router.get("/{quotation_id}/attachment", response_model=None, tags=["quotations"])
+def quotation_attachment(
+    db: TenantDb,
+    fmt: str = Query("html", pattern="^(html|pdf)$"),
+    quotation: QuotationRequest = Depends(get_quotation),
+) -> Response:
+    """The document that goes out attached to the quotation email.
+
+    Served as HTML by default so a reviewer can open it in a tab and read
+    exactly what the customer will receive - it is the *same* markup the PDF is
+    rendered from, not a second rendering that could disagree with it. `fmt=pdf`
+    returns the real file, which is what the reviewer is checking.
+    """
+    from app.services.quotations import pdf as quotation_pdf
+    from app.services.quotations.table import build_rows
+
+    # A row exists as soon as a line does, priced or not. The attachment needs a
+    # *rate* on at least one line: a quotation document that quotes nothing is
+    # not a quotation, and sending one would look like an error to the customer.
+    # Deliberately not `row.priced`, which additionally requires a line amount
+    # and so a quantity - quoting a rate against an unstated tonnage is normal.
+    rows = build_rows(quotation)
+    if not any(row.rate is not None for row in rows):
+        raise HTTPException(
+            status_code=404,
+            detail="This quotation has no priced lines, so there is nothing to attach.",
+        )
+
+    if fmt == "pdf":
+        document = quotation_pdf.build(quotation, rows)
+        if document is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "The PDF renderer is unavailable on this host. The HTML preview "
+                    "shows the same document."
+                ),
+            )
+        return Response(
+            content=document,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition":
+                    f'inline; filename="{quotation_pdf.filename(quotation)}"'
+            },
+        )
+
+    return Response(
+        content=quotation_pdf.build_html(quotation, rows),
+        media_type="text/html; charset=utf-8",
+    )
+
+
 @router.get("/{quotation_id}", response_model=QuotationDetailOut)
 def get_quotation_detail(
     quotation_id: int, db: TenantDb
@@ -303,6 +363,10 @@ def regenerate_draft(
     pricing, so a reviewer cannot shake a different price out of the system by
     pressing the button again.
     """
+    # Regeneration touches prose, not figures - but the stored draft is the
+    # record of what the customer was actually sent, so it is frozen for the
+    # same reason the price is.
+    _require_unsent(quotation)
     service = ApprovalService(db)
     service.record_regeneration(quotation, user_id=user.id if user else None)
 
@@ -431,6 +495,24 @@ def get_pricing(
     return rows
 
 
+def _require_unsent(quotation: QuotationRequest) -> None:
+    """Refuse to rewrite the figures of a quotation already with the customer.
+
+    A sent quotation is a commitment, and the stored build-up is the record of
+    what was actually offered. Re-pricing it would overwrite that record with a
+    number the customer never saw - and the trader would have no way to tell
+    what they had promised. Re-quoting at a new price is a new quotation.
+    """
+    if quotation.status in PRICING_FROZEN_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{quotation.quotation_number} is {quotation.status.value}. "
+                "Its figures are the record of what was quoted and cannot be changed."
+            ),
+        )
+
+
 @router.post("/{quotation_id}/lines/{line_id}/pricing/override", response_model=PricingOut)
 def override_component(
     line_id: int,
@@ -445,6 +527,7 @@ def override_component(
     explains itself. Changing a figure marks any existing draft stale rather
     than letting text written against the old number go out unchanged.
     """
+    _require_unsent(quotation)
     item = next((i for i in quotation.line_items if i.id == line_id), None)
     if item is None:
         raise HTTPException(status_code=404, detail="Line item not found")
@@ -470,6 +553,10 @@ def override_component(
             "reason": payload.reason,
         },
     )
+    # An overridden component moves the quoted rate, and the drafted reply
+    # carries that rate as text. Refreshing it keeps the document and the
+    # calculator from disagreeing while the draft still sits in review.
+    refresh_draft_figures(db, quotation)
     db.commit()
     return result.record
 
@@ -482,10 +569,12 @@ def clear_component_override(
     quotation: QuotationRequest = Depends(get_quotation),
 ) -> QuotationPricing:
     """Put a component back to what the rules say."""
+    _require_unsent(quotation)
     item = next((i for i in quotation.line_items if i.id == line_id), None)
     if item is None:
         raise HTTPException(status_code=404, detail="Line item not found")
     result = PricingService(db).clear_override(item, component_code)
+    refresh_draft_figures(db, quotation)
     db.commit()
     return result.record
 
@@ -502,11 +591,13 @@ def recalculate(
     kept by default: recomputing must not silently discard a figure a human
     deliberately set.
     """
+    _require_unsent(quotation)
     service = PricingService(db)
     records = [
         service.price_line(item, quotation=quotation, keep_overrides=keep_overrides).record
         for item in quotation.line_items
     ]
+    refresh_draft_figures(db, quotation)
     db.commit()
     return records
 
@@ -559,6 +650,13 @@ def update_details(
     for item in quotation.line_items:
         service.price_line(item, quotation=quotation)
 
+    # The terms that were just supplied are usually the reason the lines could
+    # not be priced at all, so the draft written before them shows an empty
+    # Rate column. Re-splicing its table here means the reply the reviewer is
+    # looking at carries the figures the calculator now holds, without costing
+    # a regeneration or rewriting a sentence they may have edited.
+    refreshed = refresh_draft_figures(db, quotation)
+
     audit.record(
         db,
         entity_type="quotation_request",
@@ -569,8 +667,12 @@ def update_details(
     )
     db.commit()
 
+    detail = f"Updated {', '.join(changed)} and re-priced every line."
+    if refreshed is not None:
+        detail += " The drafted reply now shows the new figures."
+
     return ActionResult(
-        detail=f"Updated {', '.join(changed)} and re-priced every line.",
+        detail=detail,
         quotation_id=quotation.id,
         status=quotation.status.value,
     )

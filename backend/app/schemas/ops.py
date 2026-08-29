@@ -339,3 +339,9 @@ class StockImportOut(BaseModel):
     rows_skipped: int
     errors: list[dict[str, Any]] = Field(default_factory=list)
     batch_id: int | None = None
+    #: The import replaces the stock table wholesale, which detaches every
+    #: quotation line matched to it. Open quotations are re-matched and
+    #: re-priced afterwards, and the trader is told how many moved - a silent
+    #: repriced book is worse than none, because a draft may now understate.
+    quotations_repriced: int = 0
+    drafts_to_rewrite: int = 0

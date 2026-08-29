@@ -31,6 +31,7 @@ from app.models import (
     VehicleRate,
 )
 from app.services.pricing import PricingContext, PricingEngine
+from app.services.pricing.components import NO_BASE_PRICE
 from app.services.pricing.defaults import seed_pricing_defaults
 
 
@@ -695,3 +696,224 @@ def test_stated_payment_terms_beat_the_configured_default(db):
     assert stated.amount == Decimal("986.30")
     assert "as agreed with this customer" in stated.note
     assert "as agreed" not in default.note
+
+
+# ---------------------------------------------------------------------------
+# Overriding a component the engine could not compute
+# ---------------------------------------------------------------------------
+
+
+def test_overriding_the_base_price_answers_the_warning_it_raised(db, quoted_quotation, rule_set):
+    """A reviewer supplying the missing figure has answered the complaint.
+
+    Regression: the screen said "No base price available." directly above the
+    base price the reviewer had just typed in, because the component's warning
+    was collected whether or not it had been overridden.
+    """
+    from app.models import PricingBasis
+    from app.services.pricing.service import PricingService
+
+    item = quoted_quotation.line_items[0]
+    # Nothing to price from: no landed cost on the stock, no mill offer.
+    if item.matched_stock_item is not None:
+        item.matched_stock_item.landed_cost_per_kg = None
+    db.commit()
+
+    service = PricingService(db, rule_set)
+    before = service.price_line(item, quotation=quoted_quotation)
+    assert NO_BASE_PRICE in (before.outcome.warnings or [])
+    assert before.outcome.basis is PricingBasis.UNAVAILABLE
+
+    after = service.set_override(item, component_code="base_price", amount=Decimal("200"))
+
+    assert NO_BASE_PRICE not in (after.outcome.warnings or [])
+    assert after.outcome.basis is PricingBasis.MANUAL
+    assert after.outcome.base_rate == Decimal("200.00")
+
+
+def test_a_warning_from_a_component_nobody_touched_still_stands(db, quoted_quotation, rule_set):
+    """Overriding one figure must not silence an unrelated complaint."""
+    from app.services.pricing.service import PricingService
+
+    item = quoted_quotation.line_items[0]
+    if item.matched_stock_item is not None:
+        item.matched_stock_item.landed_cost_per_kg = None
+    db.commit()
+
+    service = PricingService(db, rule_set)
+    service.price_line(item, quotation=quoted_quotation)
+
+    # Override a *different* component; the base price is still unavailable.
+    after = service.set_override(item, component_code="handling", amount=Decimal("500"))
+
+    assert NO_BASE_PRICE in (after.outcome.warnings or [])
+
+
+def test_the_stored_record_reflects_the_answered_warning(db, quoted_quotation, rule_set):
+    """The screen reads the persisted row, so the fix has to reach the database.
+
+    Checking the outcome object alone would pass while the panel still showed
+    the stale warning from `QuotationPricing.warnings`.
+    """
+    from app.models import PricingBasis
+    from app.services.pricing.service import PricingService
+
+    item = quoted_quotation.line_items[0]
+    if item.matched_stock_item is not None:
+        item.matched_stock_item.landed_cost_per_kg = None
+    db.commit()
+
+    service = PricingService(db, rule_set)
+    service.price_line(item, quotation=quoted_quotation)
+    service.set_override(item, component_code="base_price", amount=Decimal("200"))
+    db.commit()
+    db.refresh(item)
+
+    assert NO_BASE_PRICE not in (item.pricing.warnings or [])
+    assert item.pricing.basis is PricingBasis.MANUAL
+    assert item.pricing.base_rate == Decimal("200.00")
+
+
+def test_repricing_an_already_overridden_line_clears_a_stale_warning(
+    db, quoted_quotation, rule_set
+):
+    """A row written before the fix must heal on the next recalculation.
+
+    The panel reads the stored row, so a quotation overridden earlier still
+    carries the old warning until something re-prices it. Recalculate has to be
+    enough - otherwise the only cure is deleting and re-entering the override.
+    """
+    from app.models import PricingBasis
+    from app.services.pricing.service import PricingService
+
+    item = quoted_quotation.line_items[0]
+    if item.matched_stock_item is not None:
+        item.matched_stock_item.landed_cost_per_kg = None
+    db.commit()
+
+    service = PricingService(db, rule_set)
+    service.price_line(item, quotation=quoted_quotation)
+    service.set_override(item, component_code="base_price", amount=Decimal("200"))
+    db.commit()
+
+    # Simulate the stale state a pre-fix row would be in.
+    db.refresh(item)
+    item.pricing.warnings = [NO_BASE_PRICE]
+    item.pricing.basis = PricingBasis.UNAVAILABLE
+    db.commit()
+
+    service.price_line(item, quotation=quoted_quotation)
+    db.commit()
+    db.refresh(item)
+
+    assert NO_BASE_PRICE not in (item.pricing.warnings or [])
+    assert item.pricing.basis is PricingBasis.MANUAL
+
+
+# ---------------------------------------------------------------------------
+# Where the stock cost comes from
+# ---------------------------------------------------------------------------
+
+
+def test_a_lot_with_only_a_purchase_rate_still_prices(db, quoted_quotation, rule_set):
+    """A stock sheet without a landed-cost column is ordinary.
+
+    Regression: the line reported "no base price available" while the floor
+    plainly held the material at a known cost, because only `landed_cost_per_kg`
+    was consulted.
+    """
+    from app.models import PricingBasis
+    from app.services.pricing.service import PricingService
+
+    lot = quoted_quotation.line_items[0].matched_stock_item
+    lot.landed_cost_per_kg = None
+    lot.purchase_rate_per_kg = 52.0
+    db.commit()
+
+    result = PricingService(db, rule_set).price_line(
+        quoted_quotation.line_items[0], quotation=quoted_quotation
+    )
+
+    assert NO_BASE_PRICE not in (result.outcome.warnings or [])
+    assert result.outcome.basis is PricingBasis.STOCK
+    assert result.outcome.base_rate == Decimal("52000.00")
+
+
+def test_the_note_says_which_figure_it_priced_from(db, quoted_quotation, rule_set):
+    """Purchase rate excludes freight and duty, so it must not read as landed."""
+    from app.services.pricing.service import PricingService
+
+    lot = quoted_quotation.line_items[0].matched_stock_item
+    lot.landed_cost_per_kg = None
+    lot.purchase_rate_per_kg = 52.0
+    db.commit()
+
+    result = PricingService(db, rule_set).price_line(
+        quoted_quotation.line_items[0], quotation=quoted_quotation
+    )
+    base = next(c for c in result.outcome.components if c.kind == "BASE_PRICE")
+
+    assert "purchase rate" in base.note
+    assert "freight and duty are not included" in base.note
+
+
+def test_landed_cost_is_preferred_when_both_are_recorded(db, quoted_quotation, rule_set):
+    """Landed cost is what the material actually cost to have on the floor."""
+    from app.services.pricing.service import PricingService
+
+    lot = quoted_quotation.line_items[0].matched_stock_item
+    lot.landed_cost_per_kg = 56.5
+    lot.purchase_rate_per_kg = 52.0
+    db.commit()
+
+    result = PricingService(db, rule_set).price_line(
+        quoted_quotation.line_items[0], quotation=quoted_quotation
+    )
+    base = next(c for c in result.outcome.components if c.kind == "BASE_PRICE")
+
+    assert result.outcome.base_rate == Decimal("56500.00")
+    assert "landed cost" in base.note
+
+
+def test_a_lot_with_neither_figure_still_reports_honestly(db, quoted_quotation, rule_set):
+    """The fallback must not invent a cost where none is recorded."""
+    from app.services.pricing.service import PricingService
+
+    lot = quoted_quotation.line_items[0].matched_stock_item
+    lot.landed_cost_per_kg = None
+    lot.purchase_rate_per_kg = None
+    db.commit()
+
+    result = PricingService(db, rule_set).price_line(
+        quoted_quotation.line_items[0], quotation=quoted_quotation
+    )
+
+    assert NO_BASE_PRICE in (result.outcome.warnings or [])
+
+
+def test_pricing_a_line_that_had_no_rate_marks_the_draft_stale(
+    db, quoted_quotation, rule_set
+):
+    """Going from no price to a price is the largest change there is.
+
+    Regression: the guard was `previous_rate is not None`, so a line that could
+    not be priced at all never raised the warning - and a draft saying no rate
+    was available could be sent over a line that now had one.
+    """
+    from app.services.pricing.service import PricingService
+
+    item = quoted_quotation.line_items[0]
+    lot = item.matched_stock_item
+    lot.landed_cost_per_kg = None
+    lot.purchase_rate_per_kg = None
+    db.commit()
+
+    service = PricingService(db, rule_set)
+    first = service.price_line(item, quotation=quoted_quotation)
+    assert first.record.quote_rate is None
+    assert first.record.draft_stale is False
+
+    after = service.set_override(item, component_code="base_price", amount=Decimal("200"))
+
+    assert after.record.quote_rate is not None
+    assert after.record.draft_stale is True

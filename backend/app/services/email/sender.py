@@ -37,6 +37,15 @@ class SendResult:
     destination: str | None = None
 
 
+@dataclass(slots=True)
+class Attachment:
+    """A file to send alongside the body."""
+
+    filename: str
+    content: bytes
+    mime_type: str = "application/pdf"
+
+
 def build_reply(
     *,
     to_address: str,
@@ -45,6 +54,7 @@ def build_reply(
     html_body: str | None = None,
     in_reply_to: str | None = None,
     references: str | None = None,
+    attachments: list[Attachment] | None = None,
 ) -> EmailMessage:
     """Build a reply that threads correctly.
 
@@ -71,6 +81,19 @@ def build_reply(
         # add_alternative orders the parts text-then-html, which is what the
         # MIME spec asks for: the richest acceptable part is the last one.
         message.add_alternative(html_body, subtype="html")
+
+    # Attachments go on *after* the alternatives. Adding one promotes the
+    # message to multipart/mixed with the text/html pair intact underneath;
+    # attaching first would leave the body as a sibling of the file rather
+    # than as the message the file belongs to.
+    for item in attachments or []:
+        maintype, _, subtype = item.mime_type.partition("/")
+        message.add_attachment(
+            item.content,
+            maintype=maintype or "application",
+            subtype=subtype or "octet-stream",
+            filename=item.filename,
+        )
     return message
 
 
@@ -159,6 +182,7 @@ def reply_to(
     subject: str,
     body: str,
     html_body: str | None = None,
+    attachments: list[Attachment] | None = None,
     sender: EmailSender,
 ) -> SendResult:
     """Send a reply to an ingested email, on its original thread."""
@@ -170,6 +194,7 @@ def reply_to(
         subject=subject,
         body=body,
         html_body=html_body,
+        attachments=attachments,
         in_reply_to=email.rfc822_message_id,
         references=email.rfc822_message_id,
     )

@@ -128,6 +128,52 @@ export const api = {
     link.remove();
     URL.revokeObjectURL(url);
   },
+
+  /** Fetch a document and open it in a new tab.
+   *
+   *  Same constraint as `download`, and the same trap: a plain
+   *  `<a target="_blank">` is a fresh browser navigation that carries no
+   *  Authorization header, so the tab shows "Please sign in to continue"
+   *  instead of the document. Fetching it here attaches the token, and the
+   *  response is handed to the tab as a blob URL.
+   *
+   *  The tab is opened *before* the await. A popup blocker allows a window
+   *  opened during a click, and refuses one opened after an async gap - so
+   *  opening late would silently do nothing on a first click. */
+  openInTab: async (path: string): Promise<void> => {
+    const tab = window.open("", "_blank");
+    try {
+      const response = await fetch(`${BASE}${path}`, { headers: authHeaders() });
+      if (!response.ok) {
+        let detail = `Could not open the document (${response.status}).`;
+        try {
+          const body = await response.json();
+          if (body?.detail) detail = String(body.detail);
+        } catch {
+          // A non-JSON error body is nothing to add; the status stands.
+        }
+        tab?.close();
+        throw new ApiError(detail, response.status);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      if (tab) {
+        tab.location.href = url;
+        // Revoking immediately would pull the document out from under the tab
+        // before it has finished loading; a minute is far longer than needed
+        // and the URL dies with the page anyway.
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      } else {
+        // The popup was blocked, so fall back to this tab rather than
+        // failing silently.
+        window.location.href = url;
+      }
+    } catch (error) {
+      tab?.close();
+      throw error;
+    }
+  },
 };
 
 interface ApiState<T> {

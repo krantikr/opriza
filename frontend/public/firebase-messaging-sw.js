@@ -37,8 +37,8 @@ function start(config) {
 
     self.registration.showNotification(note.title || "Steel Desk", {
       body: note.body || "",
-      icon: "/favicon.svg",
-      badge: "/favicon.svg",
+      icon: "/favicon-192.png",
+      badge: "/favicon-192.png",
       // Same tag collapses repeats about one subject instead of stacking a
       // column of near-identical buzzes.
       tag: link,

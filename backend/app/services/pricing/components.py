@@ -91,6 +91,9 @@ class PricingContext:
 
     #: Landed cost per MT of the matched stock, when the material is held.
     stock_cost_per_mt: Decimal | None = None
+    #: "LANDED_COST" or "PURCHASE_RATE" - which figure the stock cost came from,
+    #: so the note can say so rather than implying a landed figure it is not.
+    stock_cost_basis: str = "LANDED_COST"
     #: Supplier offer per MT, used when nothing in stock matches.
     mill_offer_per_mt: Decimal | None = None
     mill_offer_supplier: str | None = None
@@ -164,7 +167,17 @@ def base_price(config: dict, ctx: PricingContext, running: Decimal, base: Decima
         )
 
     if source == "STOCK":
-        note = f"Weighted-average landed cost of the matched stock: INR {chosen:,.2f}/MT."
+        # Naming the figure matters: purchase rate excludes freight and duty,
+        # so a quote built on it carries less cover than one built on landed
+        # cost, and the reviewer should be able to see which they have.
+        label = (
+            "purchase rate"
+            if ctx.stock_cost_basis == "PURCHASE_RATE"
+            else "landed cost"
+        )
+        note = f"Weighted-average {label} of the matched stock: INR {chosen:,.2f}/MT."
+        if ctx.stock_cost_basis == "PURCHASE_RATE":
+            note += " No landed cost is recorded, so freight and duty are not included."
     else:
         supplier = f" from {ctx.mill_offer_supplier}" if ctx.mill_offer_supplier else ""
         note = f"Mill offer{supplier} (material not held in stock): INR {chosen:,.2f}/MT."

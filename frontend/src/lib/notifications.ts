@@ -153,8 +153,8 @@ export function systemNotify(
           ? `${item.body ?? ""}\n+${items.length - 1} more waiting`.trim()
           : (item.body ?? undefined),
         tag: `steel-desk-${item.kind}`,
-        icon: "/favicon.svg",
-        badge: "/favicon.svg",
+        icon: "/favicon-192.png",
+        badge: "/favicon-192.png",
         // Android honours this; desktop ignores it harmlessly.
         ...({ vibrate: [120, 60, 120] } as object),
       });

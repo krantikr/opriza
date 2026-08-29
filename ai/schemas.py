@@ -311,6 +311,12 @@ class LLMUsage:
     strict_schema_used: bool = False
     succeeded: bool = True
     error: str | None = None
+    #: Set when the task's configured model could not be reached and the call
+    #: was served by the fallback instead. `model` is then the model that
+    #: actually ran, so cost and latency stay attributed correctly, and this
+    #: records what was asked for - otherwise a desk silently running on the
+    #: fallback for a week looks identical to one whose config was always that.
+    fell_back_from: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 

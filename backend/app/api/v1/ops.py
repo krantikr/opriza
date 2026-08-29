@@ -75,6 +75,7 @@ from app.services.quotations.followup import FollowUpError, FollowUpService
 from app.services.quotations.followup_rules import FollowUpScheduler
 from app.services.reports import DateRange, ReportService
 from app.services.stock.movements import StockMovementService
+from app.services.stock.resync import StockResyncService
 from app.services.workbook import WorkbookBuilder
 
 router = APIRouter()
@@ -751,7 +752,15 @@ async def import_stock(
     finally:
         shutil.rmtree(tmp.parent, ignore_errors=True)
 
+    # The import replaced the stock table, which detached every quotation line
+    # matched against it. Re-match and re-price the open book so a desk is not
+    # left with quotations pointing at lots that no longer exist, quoting costs
+    # the business no longer pays. Sent quotations are deliberately untouched.
+    resync = StockResyncService(db).resync_open_quotations()
+
     return StockImportOut(
+        quotations_repriced=resync.quotations_repriced,
+        drafts_to_rewrite=resync.drafts_flagged,
         status=result.status.value,
         source_file=result.source_file,
         rows_total=result.rows_total,

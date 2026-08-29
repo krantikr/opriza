@@ -27,9 +27,16 @@ function AuthFrame({
     <div className="flex min-h-screen items-center justify-center bg-ground px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-7 flex flex-col items-center gap-3 text-center">
-          <div className="grid size-11 place-items-center rounded-xl bg-rail text-lg font-semibold text-white">
-            S
-          </div>
+          {/* The logo carries its own colour, so it sits on the page rather
+              than in a tinted tile - a coloured mark inside a coloured chip
+              reads as two logos fighting for the same corner. */}
+          <img
+            src="/logo.png"
+            alt="tDesk"
+            width={44}
+            height={44}
+            className="size-11 object-contain"
+          />
           <div>
             <h1 className="text-lg font-semibold text-ink">{title}</h1>
             <p className="mt-1 text-sm text-ink-soft">{subtitle}</p>

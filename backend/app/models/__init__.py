@@ -58,6 +58,7 @@ from app.models.pricing import (
     VehicleRate,
 )
 from app.models.quotation import (
+    PRICING_FROZEN_STATUSES,
     Approval,
     FollowUp,
     QuotationDraft,
@@ -86,6 +87,7 @@ __all__ = [
     "Email",
     "EmailAttachment",
     # quotation workflow
+    "PRICING_FROZEN_STATUSES",
     "QuotationRequest",
     "QuotationLineItem",
     "StockAvailability",

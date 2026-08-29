@@ -21,6 +21,7 @@ or guessed value reach the pricing engine.
 
 from __future__ import annotations
 
+import logging
 import time
 from enum import StrEnum
 from typing import Any, TypeVar
@@ -32,6 +33,7 @@ from ai.llm.base import (
     LLMClient,
     LLMError,
     Messages,
+    ModelUnavailableError,
     RateLimitedError,
     StructuredOutputError,
     assistant,
@@ -39,6 +41,8 @@ from ai.llm.base import (
 )
 from ai.llm.schema import describe_schema, extract_json, schema_name, to_strict_schema
 from ai.schemas import AIOutcome, LLMUsage
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -159,6 +163,51 @@ class OpenRouterClient(LLMClient):
         return False
 
     @staticmethod
+    def _is_model_unavailable(exc: Exception) -> bool:
+        """True when the *model itself* cannot be reached, whatever we ask it.
+
+        A retired model, a name the gateway does not know, or one this account
+        has lost access to. Checked before `_is_unsupported_format`, and this
+        ordering is the whole point: OpenRouter returns 404 for a retired
+        model, `NotFoundError` was already being read as "this model cannot do
+        strict schema", and so a dead model walked the entire output ladder -
+        strict, json_object, prompt_only, each with a repair round - firing six
+        doomed calls before surfacing an error that blamed the output format.
+        The message a trader saw was "classify call failed in prompt_only
+        mode", which describes neither the cause nor the fix.
+
+        No weaker output mode helps here. The only useful move is a different
+        model.
+        """
+        try:
+            from openai import APIStatusError, NotFoundError, PermissionDeniedError
+        except ImportError:  # pragma: no cover - dependency is declared
+            return False
+
+        if isinstance(exc, NotFoundError | PermissionDeniedError):
+            return True
+        if isinstance(exc, APIStatusError) and exc.status_code in (401, 402, 403, 404):
+            return True
+
+        # Gateways vary in status code but converge on wording. Matched on the
+        # model-specific phrases only, so an unsupported *parameter* is not
+        # mistaken for an unsupported *model*.
+        text = str(exc).lower()
+        return any(
+            token in text
+            for token in (
+                "no longer available",
+                "no endpoints found",
+                "is not a valid model",
+                "unknown model",
+                "model not found",
+                "has been deprecated",
+                "transitioned to a paid model",
+                "insufficient credits",
+            )
+        )
+
+    @staticmethod
     def _is_unsupported_format(exc: Exception) -> bool:
         """True when the failure looks like 'this model cannot do that format'.
 
@@ -168,11 +217,15 @@ class OpenRouterClient(LLMClient):
         only safe once load errors have been taken off the table.
         """
         try:
-            from openai import BadRequestError, NotFoundError, UnprocessableEntityError
+            from openai import BadRequestError, UnprocessableEntityError
         except ImportError:  # pragma: no cover - dependency is declared
             return False
 
-        if isinstance(exc, BadRequestError | UnprocessableEntityError | NotFoundError):
+        # `NotFoundError` is deliberately absent: it means the model does not
+        # exist, which `_is_model_unavailable` handles by switching model.
+        # Treating it as a format problem is what sent retired models down the
+        # whole output ladder.
+        if isinstance(exc, BadRequestError | UnprocessableEntityError):
             return True
 
         text = str(exc).lower()
@@ -200,12 +253,39 @@ class OpenRouterClient(LLMClient):
                 model=chosen, messages=messages, response_format=None, max_tokens=max_tokens
             )
         except Exception as exc:
-            usage.latency_ms = int((time.perf_counter() - started) * 1000)
-            usage.succeeded = False
-            usage.error = str(exc)
-            if self._is_rate_limited(exc):
-                raise RateLimitedError(f"{task} rate-limited by the gateway: {exc}") from exc
-            raise LLMError(f"{task} completion failed: {exc}") from exc
+            substitute = self._is_model_unavailable(exc) and model is None
+            fallback = self.config.fallback_for(task) if substitute else None
+
+            if fallback is None:
+                usage.latency_ms = int((time.perf_counter() - started) * 1000)
+                usage.succeeded = False
+                usage.error = str(exc)
+                if self._is_rate_limited(exc):
+                    raise RateLimitedError(f"{task} rate-limited by the gateway: {exc}") from exc
+                raise LLMError(f"{task} completion failed: {exc}") from exc
+
+            logger.warning(
+                "%s: model %s is unavailable (%s); falling back to %s.",
+                task, chosen, str(exc)[:200], fallback,
+            )
+            usage.model = fallback
+            usage.fell_back_from = chosen
+            try:
+                text, meta = self._call(
+                    model=fallback, messages=messages, response_format=None,
+                    max_tokens=max_tokens,
+                )
+            except Exception as second:
+                usage.latency_ms = int((time.perf_counter() - started) * 1000)
+                usage.succeeded = False
+                usage.error = f"{chosen}: {exc} | fallback {fallback}: {second}"
+                if self._is_rate_limited(second):
+                    raise RateLimitedError(
+                        f"{task} rate-limited by the gateway: {second}"
+                    ) from second
+                raise LLMError(
+                    f"{task} completion failed on {chosen} and fallback {fallback}: {second}"
+                ) from second
 
         self._apply(usage, meta)
         usage.latency_ms = int((time.perf_counter() - started) * 1000)
@@ -223,6 +303,57 @@ class OpenRouterClient(LLMClient):
         chosen = model or self.config.model_for(task)
         usage = LLMUsage(model=chosen, task=task, attempts=0)
         started = time.perf_counter()
+
+        try:
+            return self._structured_on(
+                model=chosen, task=task, messages=messages, schema=schema,
+                max_tokens=max_tokens, usage=usage, started=started,
+            )
+        except ModelUnavailableError as exc:
+            fallback = self.config.fallback_for(task) if model is None else None
+            if fallback is None:
+                usage.succeeded = False
+                usage.error = str(exc)
+                raise LLMError(f"{task}: {exc}") from exc
+
+            # A fresh ladder on the substitute model: output-mode support is a
+            # property of the model, so nothing learned about the dead one
+            # carries over.
+            logger.warning(
+                "%s: model %s is unavailable (%s); falling back to %s.",
+                task, chosen, str(exc)[:200], fallback,
+            )
+            usage.model = fallback
+            usage.fell_back_from = chosen
+            try:
+                return self._structured_on(
+                    model=fallback, task=task, messages=messages, schema=schema,
+                    max_tokens=max_tokens, usage=usage, started=started,
+                )
+            except ModelUnavailableError as second:
+                # Name both. "good/model is unavailable" alone reads as a
+                # config error about the fallback, hiding that the task's own
+                # model is the one that needs changing.
+                usage.succeeded = False
+                usage.error = f"{chosen}: {exc} | fallback {fallback}: {second}"
+                raise LLMError(
+                    f"{task}: neither {chosen} nor fallback {fallback} is "
+                    f"available. {second}"
+                ) from second
+
+    def _structured_on(
+        self,
+        *,
+        model: str,
+        task: str,
+        messages: Messages,
+        schema: type[T],
+        max_tokens: int | None,
+        usage: LLMUsage,
+        started: float,
+    ) -> AIOutcome[T]:
+        """Walk the output-mode ladder against one model."""
+        chosen = model
         failures: list[str] = []
 
         for mode in OutputMode:
@@ -309,6 +440,14 @@ class OpenRouterClient(LLMClient):
                     # retrying is what caused the overload.
                     raise RateLimitedError(
                         f"{task} rate-limited by the gateway in {mode.value} mode: {exc}"
+                    ) from exc
+                if self._is_model_unavailable(exc):
+                    # Unwind the whole ladder. A retired model does not become
+                    # reachable in a weaker output mode, and walking down to
+                    # prompt_only is what turned one dead model into six failed
+                    # calls and an error message about output format.
+                    raise ModelUnavailableError(
+                        f"model {model} is unavailable: {exc}"
                     ) from exc
                 if self._is_unsupported_format(exc) and mode is not OutputMode.PROMPT_ONLY:
                     failures.append(f"{mode.value}: {exc}")

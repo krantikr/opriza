@@ -251,6 +251,15 @@ class DraftingService:
             generated_by=model,
         )
         self.db.add(draft)
+
+        # The new draft was written from the figures as they stand now, so the
+        # staleness that prompted the regeneration is spent. Left set, the
+        # warning would never clear and a reviewer would learn to ignore a
+        # banner that is right the one time it matters.
+        for item in quotation.line_items:
+            if item.pricing is not None and item.pricing.draft_stale:
+                item.pricing.draft_stale = False
+
         self.db.flush()
 
         audit.record(

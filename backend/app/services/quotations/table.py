@@ -20,6 +20,7 @@ between what is reviewed and what is received.
 
 from __future__ import annotations
 
+import re as _re
 from dataclasses import dataclass
 from decimal import Decimal
 from html import escape
@@ -493,6 +494,106 @@ def _html_paragraph(line: str) -> str:
     return f'<div>{escape(line)}</div>'
 
 
+
+
+# --- Re-splicing a table whose figures have moved ---------------------------
+
+#: A line of the rendered table's horizontal rule. Three or more dashes and
+#: nothing else - short enough to match the narrowest table, specific enough
+#: that ordinary prose (an em-dash, a signature underline of one or two) does
+#: not look like one.
+_RULE_RE = _re.compile(r"^-{3,}$")
+
+
+def _table_span(lines: list[str]) -> tuple[int, int] | None:
+    """Locate a previously spliced table inside a body, as [start, end).
+
+    The table is recognised by its own shape rather than by remembering where
+    it was put: a header line, then a rule, then rows, then a closing rule and
+    a totals line. That matters because the reviewer may have typed above it,
+    which moves it, and because the figures inside it are exactly what is about
+    to change - so it cannot be found by matching its text.
+
+    Anchored on the *first* rule and closed after the last one, so a table
+    whose middle rows were edited is still replaced whole.
+    """
+    rules = [i for i, line in enumerate(lines) if _RULE_RE.match(line.strip())]
+    if len(rules) < 2:
+        return None
+
+    first, last = rules[0], rules[-1]
+    # The header sits immediately above the opening rule.
+    start = first - 1
+    if start < 0:
+        return None
+    # The totals line sits immediately below the closing rule; a table whose
+    # totals row was trimmed still ends at the rule itself.
+    end = last + 1
+    if end < len(lines) and lines[end].strip():
+        end += 1
+    return start, end
+
+
+def retable_text(body: str, rows: list[TableRow]) -> str:
+    """Rewrite a stored draft body so its table shows the current figures.
+
+    Splicing happens once, at generation, and bakes the numbers into prose.
+    When the figures later move - terms are supplied, a component is
+    overridden, stock is re-costed - the body still reads as the quotation it
+    was, which is how a draft came to show a blank Rate column while the
+    calculator showed a price.
+
+    Regenerating would fix it too, but that is an LLM call, it costs a version,
+    and it rewrites sentences a reviewer may have deliberately worded. The
+    table is settled arithmetic that was never the model's to author, so it is
+    replaced in place and the prose around it is left exactly as written.
+
+    A body that still carries the placeholder is spliced normally. A body with
+    no recognisable table gets one appended by `splice_text`'s own fallback,
+    rather than being returned without its figures.
+    """
+    if TABLE_PLACEHOLDER in body:
+        return splice_text(body, rows)
+
+    table = render_text(rows)
+    lines = body.splitlines()
+    span = _table_span(lines)
+
+    if span is None:
+        # Never seen a table, or it was edited past recognition. Fall back to
+        # the same placement a fresh draft would have used.
+        return splice_text(body, rows)
+
+    start, end = span
+    if not table:
+        # Nothing to show any more: drop the stale table rather than leaving
+        # figures that no longer have a basis.
+        replacement: list[str] = []
+        # Collapse the blank lines the removed block sat between.
+        while start > 0 and not lines[start - 1].strip() and end < len(lines) and not lines[end].strip():
+            start -= 1
+            break
+    else:
+        replacement = table.splitlines()
+
+    return "\n".join([*lines[:start], *replacement, *lines[end:]])
+
+
+def prose_only(body: str) -> str:
+    """The body with its item table removed.
+
+    Used by the stale-price check: the table is regenerated from the
+    calculator and is always current, so including it would compare the
+    figures against themselves. What needs checking is the prose around it.
+    """
+    lines = (body or "").splitlines()
+    span = _table_span(lines)
+    if span is None:
+        return body or ""
+    start, end = span
+    return "\n".join([*lines[:start], *lines[end:]])
+
+
 __all__ = [
     "COLUMNS",
     "build_html_email",
@@ -501,7 +602,9 @@ __all__ = [
     "build_rows",
     "has_placeholder",
     "render_html",
+    "prose_only",
     "render_text",
+    "retable_text",
     "splice_text",
     "totals",
 ]

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { api, useApi } from "../api/client";
@@ -448,12 +448,36 @@ export default function QuotationDetailPanel({
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null);
 
   const draftId = data?.current_draft?.id;
+  const serverSubject = data?.current_draft?.subject ?? "";
+  const serverBody = data?.current_draft?.body ?? "";
+  /* What the editor was last known to hold in common with the server. Keeping
+     it lets the next effect tell a reviewer's unsaved typing apart from a body
+     the server rewrote underneath them - the two are indistinguishable from
+     the text alone. */
+  const synced = useRef({ subject: "", body: "" });
+  const syncedId = useRef<number | undefined>(undefined);
+
   useEffect(() => {
-    if (data?.current_draft) {
-      setSubject(data.current_draft.subject ?? "");
-      setBody(data.current_draft.body ?? "");
-    }
-  }, [draftId]);
+    if (!data?.current_draft) return;
+
+    /* Keyed on the *body*, not just the draft id. Supplying terms re-prices
+       every line and re-splices the item table into the current draft, which
+       changes the body without minting a new version - so an effect watching
+       only the id left the reviewer reading the pre-priced text, with a blank
+       Rate column, while the Pricing tab beside it showed a rate.
+
+       A reviewer's own unsaved edits still win: adopting the server copy over
+       them would delete work in progress every time a price moved. */
+    const dirty =
+      subject !== synced.current.subject || body !== synced.current.body;
+    const fresh = draftId !== syncedId.current;
+    if (dirty && !fresh) return;
+
+    syncedId.current = draftId;
+    synced.current = { subject: serverSubject, body: serverBody };
+    setSubject(serverSubject);
+    setBody(serverBody);
+  }, [draftId, serverSubject, serverBody]);
 
   useEffect(() => setNote(null), [id]);
 
@@ -494,6 +518,16 @@ export default function QuotationDetailPanel({
     0,
   );
   const headline = data.line_items[0];
+
+  // Mirrors the server's own test for whether there is a document to attach: a
+  // line is priced by its own quote rate *or*, failing that, by the suggested
+  // rate on its stock availability - the same fallback the Pricing Calculator
+  // displays. Checking only `quote_rate` would hide the link on quotations the
+  // server would happily produce a document for.
+  const hasAttachment = data.line_items.some(
+    (i) => i.pricing?.quote_rate || i.stock_availability?.suggested_rate,
+  );
+  const attachmentName = `${data.quotation_number ?? `Q-${data.id}`}.pdf`;
 
   /* Status as colour, matching the stripe on the list and the chase board so
      one glance carries across all three screens. */
@@ -872,9 +906,43 @@ export default function QuotationDetailPanel({
         {/* --- Pricing ------------------------------------------------------ */}
         {tab === "pricing" && (
           <div className="flex flex-col gap-4">
-            {/* Stated once for the quotation rather than once per line. */}
+            {/* Stated once for the quotation rather than once per line.
+                Each carries the recompute, because a warning describes the
+                state at the moment the line was priced: once a reviewer has
+                answered it - by overriding the figure, or by the stock sheet
+                gaining a cost - the only thing standing between the desk and
+                a correct screen is a recalculation it has no other way to ask
+                for. */}
             {pricingWarnings.map((w) => (
-              <Banner key={w} tone="attention">
+              <Banner
+                key={w}
+                tone="attention"
+                action={
+                  settled ? undefined : (
+                  <Button
+                    variant="primary"
+                    compact
+                    disabled={busy === "recalc"}
+                    onClick={() =>
+                      act("recalc", async () => {
+                        await api.post(`/quotations/${data.id}/pricing/recalculate`);
+                        // The route returns the priced lines, not an action
+                        // result; `act` only needs something to report.
+                        return {
+                          ok: true,
+                          detail: "Pricing recalculated.",
+                          quotation_id: data.id,
+                          status: null,
+                          warnings: [],
+                        };
+                      })
+                    }
+                  >
+                    {busy === "recalc" ? "Recalculating…" : "Recalculate"}
+                  </Button>
+                  )
+                }
+              >
                 {w}
               </Banner>
             ))}
@@ -892,6 +960,11 @@ export default function QuotationDetailPanel({
                     quotationId={data.id}
                     lineId={item.id}
                     hideWarnings
+                    /* A sent quotation's figures are the record of what was
+                       offered. The server refuses to change them; the panel
+                       must not offer the controls either, or every click ends
+                       in a 409 the reviewer cannot act on. */
+                    readOnly={settled}
                     onChange={() => {
                       reload();
                       onChanged();
@@ -921,9 +994,47 @@ export default function QuotationDetailPanel({
                 title={`Draft v${draft.version}`}
                 subtitle={draft.generated_by ?? undefined}
                 action={
-                  <span className="text-xs text-ink-faint">
-                    {edited ? "Unsaved edits" : "No changes"}
-                  </span>
+                  <div className="flex items-center gap-3">
+                    {/* The attachment the customer will actually receive. Opened
+                        as HTML rather than as the PDF: it is the same markup the
+                        PDF is rendered from, so it cannot disagree with the file,
+                        and it opens in a tab on every machine without depending
+                        on the renderer being installed. */}
+                    {hasAttachment && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNote(null);
+                          api
+                            .openInTab(`/quotations/${data.id}/attachment`)
+                            .catch((e) =>
+                              setNote({ text: (e as Error).message, bad: true }),
+                            );
+                        }}
+                        title="Open the document that will be attached to this email"
+                        className="inline-flex items-center gap-1.5 text-xs font-medium text-brand hover:underline"
+                      >
+                        <svg
+                          viewBox="0 0 16 16"
+                          className="size-3.5 shrink-0"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          aria-hidden="true"
+                        >
+                          <path
+                            d="M9 1.5H4.5A1.5 1.5 0 0 0 3 3v10A1.5 1.5 0 0 0 4.5 14.5h7A1.5 1.5 0 0 0 13 13V5.5L9 1.5Z"
+                            strokeLinejoin="round"
+                          />
+                          <path d="M9 1.5V5.5H13" strokeLinejoin="round" />
+                        </svg>
+                        {attachmentName}
+                      </button>
+                    )}
+                    <span className="text-xs text-ink-faint">
+                      {edited ? "Unsaved edits" : "No changes"}
+                    </span>
+                  </div>
                 }
               >
                 <label className="flex items-center gap-2 border-b border-rule px-4 py-2.5">

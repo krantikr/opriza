@@ -14,7 +14,7 @@ import pytest
 from ai.config import LLMConfig
 from ai.guards import find_unsupported_claims, money_fact, quantity_fact, verify_draft_facts
 from ai.llm.openrouter import OpenRouterClient
-from app.models import DraftStatus, QuotationDraft
+from app.models import DraftStatus, QuotationDraft, QuotationPricing
 from app.services.quotations.draft_context import build_draft_context, format_inr, format_quantity
 from app.services.quotations.drafting import DraftingService
 
@@ -250,3 +250,77 @@ def test_generation_is_recorded_in_telemetry_and_audit(db, quoted_quotation):
     entry = db.query(AuditLog).filter_by(entity_type="quotation_draft").one()
     assert entry.action == "GENERATED"
     assert entry.details["fact_violations"] == []
+
+
+# ---------------------------------------------------------------------------
+# Staleness
+# ---------------------------------------------------------------------------
+
+
+def test_regenerating_the_draft_clears_the_staleness_it_was_raised_for(
+    db, quoted_quotation, default_user
+):
+    """The warning must go once it has been acted on.
+
+    A banner that never clears is one a reviewer learns to ignore, and then it
+    is no use on the day it is right.
+    """
+    item = quoted_quotation.line_items[0]
+    db.add(
+        QuotationPricing(
+            quotation_line_item_id=item.id,
+            quantity_mt=Decimal("20"),
+            total_cost=Decimal("50000"),
+            quote_rate=Decimal("55000"),
+            line_total=Decimal("1100000"),
+            rules_version=1,
+            draft_stale=True,
+        )
+    )
+    db.commit()
+    db.refresh(quoted_quotation)
+
+    DraftingService(db, client=ScriptedDrafter([GOOD_BODY])).generate(quoted_quotation)
+    db.refresh(item)
+
+    assert item.pricing.draft_stale is False
+
+
+def test_clearing_the_flag_does_not_disarm_it_for_good(db, quoted_quotation, default_user):
+    """A price moving *after* the new draft must raise the warning again."""
+    item = quoted_quotation.line_items[0]
+    db.add(
+        QuotationPricing(
+            quotation_line_item_id=item.id,
+            quantity_mt=Decimal("20"),
+            total_cost=Decimal("50000"),
+            quote_rate=Decimal("55000"),
+            line_total=Decimal("1100000"),
+            rules_version=1,
+            draft_stale=True,
+        )
+    )
+    db.commit()
+    db.refresh(quoted_quotation)
+
+    DraftingService(db, client=ScriptedDrafter([GOOD_BODY])).generate(quoted_quotation)
+    db.refresh(item)
+    assert item.pricing.draft_stale is False
+
+    # The same thing the pricing service does when a figure moves.
+    item.pricing.draft_stale = True
+    db.commit()
+    db.refresh(item)
+
+    assert item.pricing.draft_stale is True
+
+
+def test_a_draft_written_against_current_figures_is_never_stale(
+    db, quoted_quotation, default_user
+):
+    """The common path: nothing has moved, so nothing is flagged."""
+    DraftingService(db, client=ScriptedDrafter([GOOD_BODY])).generate(quoted_quotation)
+    item = quoted_quotation.line_items[0]
+    db.refresh(item)
+
+    assert item.pricing is None or item.pricing.draft_stale is False

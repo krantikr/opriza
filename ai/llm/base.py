@@ -34,6 +34,17 @@ class RateLimitedError(LLMError):
     """
 
 
+class ModelUnavailableError(LLMError):
+    """The configured model cannot be reached at all.
+
+    Retired, unknown to the gateway, or no longer permitted for this account.
+    Distinct from every other failure because no change to the *request* helps
+    - not a weaker output mode, not a repair round, not a retry. The only
+    useful response is a different model, so the client raises this to unwind
+    the output ladder and try the configured fallback instead.
+    """
+
+
 class StructuredOutputError(LLMError):
     """The model could not produce output matching the required schema.
 

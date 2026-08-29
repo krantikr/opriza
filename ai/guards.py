@@ -103,6 +103,72 @@ def verify_draft_facts(body: str, required: Sequence[RequiredFact | None]) -> li
     ]
 
 
+#: A money amount written the way this desk writes one: an optional currency
+#: marker, then a number carrying either a decimal part or thousands
+#: separators. Bare integers are deliberately excluded - "10 x 2500 x 7000 mm"
+#: and "20 MT" are full of them, and treating those as prices would flag every
+#: draft ever written.
+_MONEY_IN_PROSE = re.compile(
+    r"(?:(?:₹|\brs\.?\b|\binr\b)\s*)(\d[\d,]*(?:\.\d{1,2})?)"
+    r"|(\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?)",
+    re.IGNORECASE,
+)
+
+
+def _money_tokens(text: str) -> list[str]:
+    """Every money-shaped figure in `text`, normalised to a plain number."""
+    found: list[str] = []
+    for match in _MONEY_IN_PROSE.finditer(text or ""):
+        raw = match.group(1) or match.group(2) or ""
+        cleaned = raw.replace(",", "").rstrip(".")
+        if cleaned:
+            found.append(cleaned)
+    return found
+
+
+def _same_amount(a: str, b: str) -> bool:
+    """Whether two normalised money tokens are the same value."""
+    try:
+        return Decimal(a) == Decimal(b)
+    except (ArithmeticError, ValueError):
+        return False
+
+
+def find_stale_prices(body: str, current: Sequence[Decimal | float | int]) -> list[str]:
+    """Money figures in the prose that no longer match any current figure.
+
+    The item table is re-rendered from the calculator whenever pricing moves,
+    so it is always right. Prose is not: a rate the model mentioned in a
+    sentence is indistinguishable from wording a reviewer chose, so nothing
+    rewrites it. The result is an email whose opening line and whose table
+    quote different prices - and the customer reads the stale one first.
+
+    The prompt forbids restating figures in prose, but a prompt is a request.
+    This is the check that a prompt cannot be.
+
+    Only the *prose* is examined; the caller strips the table first. Anything
+    matching a current figure is fine wherever it appears - the concern is a
+    number that used to be true, not a number that is repeated.
+
+    An empty `current` returns nothing. With no calculated figure there is
+    nothing for the prose to contradict: the quotation was priced by hand, or
+    is not priced at all, and the reviewer's own number is the only figure
+    there is. Flagging it would block every manually-written quotation on the
+    grounds that the calculator disagrees, when the calculator has not spoken.
+    """
+    if not current:
+        return []
+
+    allowed = [str(Decimal(str(value))) for value in current]
+    stale: list[str] = []
+    for token in _money_tokens(body):
+        if any(_same_amount(token, ok) for ok in allowed):
+            continue
+        if token not in stale:
+            stale.append(token)
+    return stale
+
+
 def find_unsupported_claims(body: str) -> list[str]:
     """Flag commitments the system has no basis to make."""
     lowered = (body or "").lower()

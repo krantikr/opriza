@@ -14,7 +14,7 @@ it is the only honest record of what the customer received.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
@@ -56,6 +56,9 @@ class ApprovalResult:
     action: ApprovalAction
     send: SendResult | None = None
     draft: QuotationDraft | None = None
+    #: Things the reviewer should know about what was just sent. Not errors:
+    #: the send happened. A stale price in the prose lands here.
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def sent(self) -> bool:
@@ -196,6 +199,34 @@ class ApprovalService:
         if not final_subject or not final_body:
             raise ApprovalError("The draft has no subject or body to send.")
 
+        # A price the calculator does not hold, sitting in the prose. The item
+        # table is re-rendered on every pricing change, so it is right; a rate
+        # written into a sentence is not, and nothing rewrites it. Sending can
+        # then quote two different prices in one email, with the customer
+        # reading the stale one first.
+        #
+        # Reported, not refused. A reviewer may legitimately state a figure
+        # the calculator never produced - a rate agreed on the phone, a
+        # negotiated price - and blocking that would make the desk unable to
+        # send its own commercial decision. So the send proceeds and the
+        # discrepancy is named, which turns a silent wrong price into a
+        # visible one.
+        from app.services.quotations.draft_figures import stale_prices_in_draft
+
+        warnings: list[str] = []
+        stale = stale_prices_in_draft(quotation, final_body)
+        if stale:
+            warnings.append(
+                "The reply states "
+                + ", ".join(f"INR {figure}" for figure in stale)
+                + ", which the current pricing does not hold. The item table is "
+                "up to date; check the wording around it."
+            )
+            logger.warning(
+                "%s sent with %d price(s) in the prose that pricing does not hold: %s",
+                quotation.quotation_number, len(stale), ", ".join(stale),
+            )
+
         approval = Approval(
             quotation_draft_id=draft.id,
             user_id=user_id,
@@ -217,23 +248,44 @@ class ApprovalService:
         self.db.commit()
 
         # --- Send -----------------------------------------------------------
-        from app.services.email.sender import reply_to
+        from app.services.email.sender import Attachment, reply_to
+        from app.services.quotations import pdf as quotation_pdf
         from app.services.quotations.table import build_html_email, build_rows
+
+        rows = build_rows(quotation)
 
         # Built from the approved text, so the HTML the customer sees carries
         # the reviewer's edits rather than a freshly regenerated body.
         html_body = build_html_email(
             final_body,
-            build_rows(quotation),
+            rows,
             title=settings.company_name,
             tagline=settings.company_tagline or None,
         )
+
+        # The same table again as a PDF, because an email body does not survive
+        # being forwarded to a purchase manager intact - it gets re-wrapped,
+        # stripped of HTML, pasted elsewhere - and a PDF arrives as the same
+        # document every time. A quotation that reaches the customer without
+        # its attachment is a far smaller failure than one that never sends, so
+        # a rendering problem degrades the mail rather than blocking it.
+        attachments: list[Attachment] = []
+        document = quotation_pdf.build(quotation, rows)
+        if document:
+            attachments.append(
+                Attachment(
+                    filename=quotation_pdf.filename(quotation),
+                    content=document,
+                    mime_type="application/pdf",
+                )
+            )
 
         result = reply_to(
             quotation.email,
             subject=final_subject,
             body=final_body,
             html_body=html_body,
+            attachments=attachments,
             sender=self.sender,
         )
 
@@ -275,7 +327,8 @@ class ApprovalService:
             self.sender.describe(),
         )
         return ApprovalResult(
-            quotation=quotation, action=ApprovalAction.APPROVE, send=result, draft=draft
+            quotation=quotation, action=ApprovalAction.APPROVE, send=result,
+            draft=draft, warnings=warnings,
         )
 
     def record_regeneration(

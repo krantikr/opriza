@@ -22,7 +22,12 @@ describe("the API client", () => {
     // Per-call headers would mean one forgotten call is an anonymous request
     // that 401s for no visible reason.
     expect(source).toContain("Authorization: `Bearer ${auth}`");
-    expect(source.match(/Authorization/g)?.length).toBe(1);
+
+    // Counted over code only. The word also appears in prose explaining why a
+    // plain <a href> to an authenticated route fails, and a comment naming the
+    // hazard is the opposite of a second place that builds the header.
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(code.match(/Authorization/g)?.length).toBe(1);
   });
 
   it("discards a token the server has rejected", () => {

@@ -26,6 +26,20 @@ from app.models.enums import (
 from app.models.mixins import CreatedAtMixin, TenantMixin, TimestampMixin, enum_col
 from app.models.types import Money, Quantity
 
+#: Once a quotation has gone to the customer its figures are a commitment, and
+#: the record of what was actually quoted must not be rewritten afterwards. This
+#: is deliberately *not* `approval.OPEN_STATUSES`, which counts CUSTOMER_DECLINED
+#: as open so a courtesy reply can still be approved - a declined quotation's
+#: price was still sent, so it is frozen here.
+PRICING_FROZEN_STATUSES = frozenset(
+    {
+        QuotationStatus.SENT,
+        QuotationStatus.APPROVED,
+        QuotationStatus.CUSTOMER_ACCEPTED,
+        QuotationStatus.CUSTOMER_DECLINED,
+    }
+)
+
 
 class QuotationRequest(Base, TimestampMixin, TenantMixin):
     """Header record for one enquiry email that the MVP will act on."""

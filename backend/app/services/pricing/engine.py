@@ -180,7 +180,15 @@ class PricingEngine:
                 if rule.kind is PricingComponentKind.BASE_PRICE:
                     base = running
                     outcome.base_rate = running
-                    basis = result.meta.get("basis")
+                    # A component that stood aside reports UNAVAILABLE. When a
+                    # reviewer has supplied the figure, the basis is the person,
+                    # not the absent source - otherwise the line carries a rate
+                    # while still labelled as having none.
+                    basis = (
+                        PricingBasis.MANUAL.value
+                        if overridden
+                        else result.meta.get("basis")
+                    )
                     if basis in {b.value for b in PricingBasis}:
                         outcome.basis = PricingBasis(basis)
                     outcome.basis_note = result.note
@@ -214,7 +222,12 @@ class PricingEngine:
                 )
             )
 
-            if result.warning:
+            # A component's warning describes why *it* could not produce a
+            # figure. Overriding it is the reviewer supplying that figure by
+            # hand, so the complaint has been answered: repeating it leaves the
+            # screen saying "No base price available" directly above the base
+            # price the reviewer just typed in.
+            if result.warning and not overridden:
                 outcome.warnings.append(result.warning)
 
         if outcome.base_rate is None:

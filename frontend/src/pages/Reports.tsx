@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { useApi } from "../api/client";
+import { api, useApi } from "../api/client";
 import type {
   DeskCustomer,
   DeskProduct,
@@ -389,9 +389,16 @@ function Register({ period }: { period: string }) {
         </h3>
         <div className="flex items-center gap-2 print:hidden">
           <Select value={name} onChange={setName} options={DETAIL_REPORTS} />
-          <a href={`/api/v1/reports/${name}?period=${period}&fmt=csv`} download>
-            <Button compact>Export CSV</Button>
-          </a>
+          <Button
+            compact
+            onClick={() =>
+              api
+                .download(`/reports/${name}?period=${period}&fmt=csv`, `${name}.csv`)
+                .catch(() => undefined)
+            }
+          >
+            Export CSV
+          </Button>
         </div>
       </div>
 
@@ -467,6 +474,7 @@ function Register({ period }: { period: string }) {
 
 export default function Reports() {
   const [period, setPeriod] = useState("this-month");
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const { organisation } = useAuth();
 
   const { data, loading, error } = useApi<DeskReport>(`/reports/desk?period=${period}`);
@@ -480,6 +488,14 @@ export default function Reports() {
       </div>
     );
   if (!data) return null;
+
+  /** Pull a report file with the session token attached. A failure has to be
+   *  said out loud: a download that silently does nothing reads as a dead
+   *  button, and the reader has no way to tell it apart from a slow one. */
+  const download = (kind: "pack" | "document", extension: string) =>
+    api
+      .download(`/reports/${kind}?period=${period}`, `trading-report.${extension}`)
+      .catch((e) => setDownloadError((e as Error).message));
 
   const periodOptions = (choices.data?.choices ?? FALLBACK_PERIODS).map((c) => ({
     value: c.key,
@@ -506,17 +522,23 @@ export default function Reports() {
             print stylesheet already lays out, without adding a dependency
             whose output would then have to be kept in step with this page. */}
         <div className="flex flex-wrap items-center gap-2">
-          <a href={`/api/v1/reports/pack?period=${period}`} download>
-            <Button>Excel</Button>
-          </a>
-          <a href={`/api/v1/reports/document?period=${period}`} download>
-            <Button>HTML</Button>
-          </a>
+          {/* Fetched rather than linked: the session token lives in
+              localStorage, so a plain <a href> to an authenticated route is an
+              unauthenticated navigation and the browser shows "Please sign in
+              to continue" instead of the file. */}
+          <Button onClick={() => download("pack", "xlsx")}>Excel</Button>
+          <Button onClick={() => download("document", "html")}>HTML</Button>
           <Button variant="primary" onClick={() => window.print()}>
             Download PDF
           </Button>
         </div>
       </div>
+
+      {downloadError && (
+        <div className="print:hidden">
+          <ErrorNote message={downloadError} />
+        </div>
+      )}
 
       <div data-report className="flex flex-col gap-4 sm:gap-5">
         {/* --- Letterhead ------------------------------------------------- */}

@@ -26,6 +26,12 @@ load_dotenv(find_dotenv(usecwd=True))
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
+#: Used when a task's own model cannot be reached at all - retired by the
+#: gateway, unknown, or the account has lost access to it. Deliberately a
+#: widely-available, cheap, general model: its job is to keep the desk running
+#: through an outage, not to match the primary model's quality.
+DEFAULT_FALLBACK_MODEL = "openai/gpt-4o-mini"
+
 DEFAULT_MODELS = {
     "classify": "openai/gpt-4o-mini",
     "extract": "anthropic/claude-sonnet-4.5",
@@ -50,6 +56,8 @@ class LLMConfig:
     max_retries: int = 2
     temperature: float = 0.0
     models: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_MODELS))
+    #: One model standing behind every task. Empty disables falling back.
+    fallback_model: str = DEFAULT_FALLBACK_MODEL
 
     @classmethod
     def from_env(cls) -> LLMConfig:
@@ -77,6 +85,8 @@ class LLMConfig:
             max_retries=int(os.getenv("LLM_MAX_RETRIES", "2")),
             temperature=float(os.getenv("LLM_TEMPERATURE", "0.0")),
             models=models,
+            # Set LLM_MODEL_FALLBACK="" to switch falling back off entirely.
+            fallback_model=os.getenv("LLM_MODEL_FALLBACK", DEFAULT_FALLBACK_MODEL).strip(),
         )
 
     @property
@@ -85,6 +95,18 @@ class LLMConfig:
 
     def model_for(self, task: str) -> str:
         return self.models.get(task) or DEFAULT_MODELS.get(task, DEFAULT_MODELS["extract"])
+
+    def fallback_for(self, task: str) -> str | None:
+        """The model to try when `model_for(task)` cannot be reached.
+
+        None when falling back is disabled, or when the task already runs on
+        the fallback model - retrying the same name against the same gateway
+        would just spend a second call to earn the same error.
+        """
+        candidate = (self.fallback_model or "").strip()
+        if not candidate or candidate == self.model_for(task):
+            return None
+        return candidate
 
     def require(self) -> None:
         if not self.configured:

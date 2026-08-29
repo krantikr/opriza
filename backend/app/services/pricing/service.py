@@ -90,6 +90,7 @@ class PricingService:
         """Assemble what the rules are allowed to see about this line."""
         customer: Customer | None = quotation.customer if quotation else None
 
+        self._stock_cost_basis = "LANDED_COST"
         stock_cost = self._stock_cost_per_mt(item, lot_ids)
         offer = self._mill_offer(item) if stock_cost is None else None
 
@@ -109,6 +110,7 @@ class PricingService:
             origin_location=self._origin_location(item, lot_ids),
             payment_days=_payment_days(quotation, customer),
             stock_cost_per_mt=stock_cost,
+            stock_cost_basis=self._stock_cost_basis,
             mill_offer_per_mt=Decimal(str(offer.rate_per_mt)) if offer else None,
             mill_offer_supplier=offer.supplier if offer else None,
         )
@@ -218,7 +220,13 @@ class PricingService:
         # A draft written against a figure that has since moved must not be
         # sent as though it still matched. The reviewer is told, and the
         # drafting service regenerates rather than the change passing silently.
-        if previous_rate is not None and outcome.quote_rate != previous_rate:
+        #
+        # `existing is not None` rather than `previous_rate is not None`: a line
+        # that could not be priced at all has no previous rate, and going from
+        # no price to a price is the largest change there is - guarding on the
+        # old rate meant exactly that case never raised the warning, so a draft
+        # saying "no rate available" could be sent over a line that now has one.
+        if existing is not None and outcome.quote_rate != previous_rate:
             record.draft_stale = True
 
         if existing is None:
@@ -227,7 +235,16 @@ class PricingService:
         return record
 
     def _stock_cost_per_mt(self, item: QuotationLineItem, lot_ids: list[int] | None) -> Decimal | None:
-        """Weighted-average landed cost across the matched lots, per MT."""
+        """Weighted-average cost across the matched lots, per MT.
+
+        Landed cost is preferred because it is what the material actually cost
+        to have on the floor - purchase rate plus freight and duty. But a stock
+        sheet that carries only a purchase rate is ordinary, and refusing to
+        price from it leaves a line reading "no base price available" while the
+        floor plainly holds the material at a known cost. So purchase rate is
+        the fallback, per lot, and `stock_cost_basis` records which was used so
+        the note on the screen can say so rather than implying a landed figure.
+        """
         ids = lot_ids or []
         if not ids and item.matched_stock_item_id:
             ids = [item.matched_stock_item_id]
@@ -235,13 +252,22 @@ class PricingService:
             return None
 
         lots = list(self.db.scalars(select(StockItem).where(StockItem.id.in_(ids))))
-        weighted = [
-            (Decimal(str(lot.landed_cost_per_kg)), Decimal(str(lot.balance_qty_kg or 0)))
-            for lot in lots
-            if lot.landed_cost_per_kg is not None and (lot.balance_qty_kg or 0) > 0
-        ]
+        weighted: list[tuple[Decimal, Decimal]] = []
+        used_purchase_rate = False
+        for lot in lots:
+            balance = Decimal(str(lot.balance_qty_kg or 0))
+            if balance <= 0:
+                continue
+            if lot.landed_cost_per_kg is not None:
+                weighted.append((Decimal(str(lot.landed_cost_per_kg)), balance))
+            elif lot.purchase_rate_per_kg is not None:
+                weighted.append((Decimal(str(lot.purchase_rate_per_kg)), balance))
+                used_purchase_rate = True
+
         if not weighted:
             return None
+
+        self._stock_cost_basis = "PURCHASE_RATE" if used_purchase_rate else "LANDED_COST"
 
         total_weight = sum(w for _, w in weighted)
         if total_weight <= 0:
