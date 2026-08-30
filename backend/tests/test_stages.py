@@ -524,3 +524,89 @@ def test_the_list_never_falls_back_to_the_live_customer_name_or_company(
     assert row["customer_company"] is None
     assert row["customer_company"] != "Renamed Trading Co"
     assert row["customer_name"] == quoted_quotation.customer_name_raw
+
+
+# --- Multi-location pricing options (API) -------------------------------------
+
+
+def test_a_second_pricing_option_can_be_added_and_listed(client, quoted_quotation):
+    item = quoted_quotation.line_items[0]
+
+    # Prices the line's original, unlabelled option first - the ordinary
+    # single-column state - so the second POST is genuinely a *second* one.
+    client.post(f"/api/v1/quotations/{quoted_quotation.id}/pricing/recalculate")
+
+    response = client.post(
+        f"/api/v1/quotations/{quoted_quotation.id}/lines/{item.id}/pricing/options",
+        json={"despatch_location": "VARANASI"},
+    )
+    assert response.status_code == 201
+    assert response.json()["despatch_location"] == "VARANASI"
+
+    listed = client.get(
+        f"/api/v1/quotations/{quoted_quotation.id}/lines/{item.id}/pricing/options"
+    ).json()
+    assert len(listed) == 2
+
+
+def test_adding_the_same_location_twice_is_refused(client, quoted_quotation):
+    item = quoted_quotation.line_items[0]
+    client.post(
+        f"/api/v1/quotations/{quoted_quotation.id}/lines/{item.id}/pricing/options",
+        json={"despatch_location": "VARANASI"},
+    )
+    again = client.post(
+        f"/api/v1/quotations/{quoted_quotation.id}/lines/{item.id}/pricing/options",
+        json={"despatch_location": "VARANASI"},
+    )
+    assert again.status_code == 422
+
+
+def test_a_manual_option_needs_no_stock_at_all(client, quoted_quotation):
+    item = quoted_quotation.line_items[0]
+    response = client.post(
+        f"/api/v1/quotations/{quoted_quotation.id}/lines/{item.id}/pricing/options",
+        json={"manual": True, "despatch_location": "Customer's own yard"},
+    )
+    assert response.status_code == 201
+    assert response.json()["is_manual"] is True
+
+
+def test_selecting_an_option_is_refused_once_the_quotation_is_sent(
+    db, client, quoted_quotation
+):
+    item = quoted_quotation.line_items[0]
+    second = client.post(
+        f"/api/v1/quotations/{quoted_quotation.id}/lines/{item.id}/pricing/options",
+        json={"despatch_location": "VARANASI"},
+    ).json()
+
+    quoted_quotation.status = Q.SENT
+    db.commit()
+
+    response = client.post(
+        f"/api/v1/quotations/{quoted_quotation.id}/lines/{item.id}"
+        f"/pricing/options/{second['id']}/select"
+    )
+    assert response.status_code == 409
+
+
+def test_removing_the_selected_option_is_refused(client, quoted_quotation):
+    item = quoted_quotation.line_items[0]
+    client.post(f"/api/v1/quotations/{quoted_quotation.id}/pricing/recalculate")
+    options = client.get(
+        f"/api/v1/quotations/{quoted_quotation.id}/lines/{item.id}/pricing/options"
+    ).json()
+    selected = options[0]["id"]
+
+    response = client.delete(
+        f"/api/v1/quotations/{quoted_quotation.id}/lines/{item.id}"
+        f"/pricing/options/{selected}"
+    )
+    assert response.status_code == 422
+
+
+def test_known_pricing_locations_are_listed(client, plate):
+    response = client.get("/api/v1/quotations/pricing/locations")
+    assert response.status_code == 200
+    assert "NAGPUR" in response.json()

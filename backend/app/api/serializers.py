@@ -157,6 +157,7 @@ def line_item_out(item: QuotationLineItem) -> LineItemOut:
         match_candidates=item.match_candidates or [],
         stock_availability=stock_availability_out(item),
         pricing=PricingOut.model_validate(item.pricing) if item.pricing else None,
+        pricing_option_count=len(item.pricing_options) or 1,
     )
 
 

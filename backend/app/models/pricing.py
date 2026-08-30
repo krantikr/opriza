@@ -145,8 +145,24 @@ class QuotationPricing(Base, TimestampMixin, TenantMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     quotation_line_item_id: Mapped[int] = mapped_column(
-        ForeignKey("quotation_line_items.id", ondelete="CASCADE"), unique=True, nullable=False
+        ForeignKey("quotation_line_items.id", ondelete="CASCADE"), nullable=False
     )
+    #: Which warehouse this build-up prices despatch from. `None` is the
+    #: original, single-option behaviour: priced from whichever lot the
+    #: matcher found, no location comparison in play. A real value marks one
+    #: of several options a trader added by hand to compare sourcing points -
+    #: see `is_selected`/`is_manual` below.
+    despatch_location: Mapped[str | None] = mapped_column(String(120))
+    #: Exactly one option per line item is selected at a time - the one that
+    #: becomes `QuotationLineItem.pricing` and therefore what drafts, PDFs and
+    #: every report read. Enforced in `PricingService`, not a DB constraint:
+    #: the write path is centralised there, so a partial unique index would
+    #: add nothing a service-level invariant doesn't already guarantee.
+    is_selected: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: A trader-entered option with no matched stock behind it - "Other",
+    #: typed in by hand. The engine never runs for one of these; every
+    #: component is a plain override from the moment it's created.
+    is_manual: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     rule_set_id: Mapped[int | None] = mapped_column(ForeignKey("pricing_rule_sets.id"))
     rules_version: Mapped[int | None] = mapped_column(Integer)
 
@@ -176,7 +192,7 @@ class QuotationPricing(Base, TimestampMixin, TenantMixin):
     draft_stale: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     line_item: Mapped["QuotationLineItem"] = relationship(  # noqa: F821
-        back_populates="pricing"
+        back_populates="pricing_options"
     )
     overrides: Mapped[list["PricingOverride"]] = relationship(
         back_populates="pricing", cascade="all, delete-orphan", order_by="PricingOverride.created_at"

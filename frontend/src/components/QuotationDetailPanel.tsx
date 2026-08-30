@@ -8,7 +8,7 @@ import type {
   PastOrders,
   QuotationDetail as Detail,
 } from "../api/types";
-import PricingCalculator from "./PricingCalculator";
+import PricingCalculatorGroup from "./PricingCalculatorGroup";
 import ThreadView, { type Thread } from "./Thread";
 import {
   ago,
@@ -24,6 +24,7 @@ import {
   Loading,
   num,
   Scroller,
+  Select,
   StatCard,
   Tabs,
   when,
@@ -101,7 +102,7 @@ function EnquiryTerms({
      "N to fill in" chip rather than three times as empty cells. */
   const known: [string, string][] = [
     draft.delivery_location ? ["Deliver to", draft.delivery_location] : null,
-    draft.required_delivery_date ? ["Wanted by", draft.required_delivery_date] : null,
+    draft.required_delivery_date ? ["Delivery date", draft.required_delivery_date] : null,
     draft.payment_terms ? ["Payment", draft.payment_terms] : null,
   ].filter(Boolean) as [string, string][];
 
@@ -178,20 +179,29 @@ function EnquiryTerms({
           two different subjects. This card is only the terms a reviewer fills
           in or corrects. */}
       {/* Three cells reading "not stated" is an empty grid pretending to be
-          data. Until a reviewer opens the editor, only what is known shows. */}
+          data. Until a reviewer opens the editor, only what is known shows.
+
+          Label above value rather than beside it: a payment term runs to a
+          full sentence, and inline pairs left it wrapping mid-phrase into the
+          next label's column. Stacked, each term is a block that can be as
+          long as it needs to be and still scans down the row. */}
       {open ? (
         <div className="mt-2 grid gap-3 sm:grid-cols-3">
           {field("delivery_location", "Deliver to", "e.g. Patna")}
-          {field("required_delivery_date", "Wanted by", "e.g. within 2 weeks")}
+          {field("required_delivery_date", "Delivery date", "e.g. within 2 weeks")}
           {field("payment_terms", "Payment terms", "e.g. 30 days from invoice")}
         </div>
       ) : (
         known.length > 0 && (
-          <dl className="mt-1.5 flex flex-wrap items-center gap-x-5 gap-y-1 text-xs">
+          <dl className="mt-2 grid gap-x-6 gap-y-2.5 sm:grid-cols-3">
             {known.map(([label, value]) => (
-              <div key={label} className="flex items-center gap-1.5">
-                <dt className="text-ink-faint">{label}</dt>
-                <dd className="font-medium text-ink">{value}</dd>
+              <div key={label} className="min-w-0">
+                <dt className="text-[10.5px] font-medium uppercase tracking-wide text-ink-faint">
+                  {label}
+                </dt>
+                <dd className="mt-0.5 text-[13px] font-medium leading-snug text-ink">
+                  {value}
+                </dd>
               </div>
             ))}
           </dl>
@@ -228,6 +238,23 @@ function specOf(item: LineItem | undefined): string {
   // Fall back to the customer's own words only when nothing was extracted -
   // a long sentence still beats an empty card.
   return parts.length > 0 ? parts.join(" ") : (item.raw_text?.slice(0, 90) ?? "Material not stated");
+}
+
+/** The same line, compressed for the pricing stepper's one-line header:
+ *  "45C8 - PLATE - 12 × 1250 × 6300 mm". Grade leads because that is what a
+ *  trader steps through the lines looking for, and the parsed specification
+ *  is preferred over `matched_stock_item_name` (often a whole sentence). */
+function shortSpecOf(item: LineItem | undefined): string {
+  if (!item) return "Material not stated";
+
+  const dims = [item.thickness_mm, item.width_mm, item.length_mm].filter(Boolean);
+  const parts = [
+    item.grade,
+    item.product_type && item.product_type !== item.grade ? item.product_type : null,
+    dims.length >= 2 ? `${dims.join(" × ")} mm` : null,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(" · ") : specOf(item);
 }
 
 /** What this customer has bought and been quoted before.
@@ -466,6 +493,9 @@ export default function QuotationDetailPanel({
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<{ text: string; bad?: boolean } | null>(null);
+  // Which line item's pricing is showing - the calculator steps through
+  // them one at a time rather than stacking every line's build-up at once.
+  const [lineIndex, setLineIndex] = useState(0);
 
   const draftId = data?.current_draft?.id;
   const serverSubject = data?.current_draft?.subject ?? "";
@@ -500,6 +530,7 @@ export default function QuotationDetailPanel({
   }, [draftId, serverSubject, serverBody]);
 
   useEffect(() => setNote(null), [id]);
+  useEffect(() => setLineIndex(0), [id]);
 
   // Reloaded whenever the quotation changes underneath - sending, approving
   // or recording a reply all add a message, and a stale thread would show a
@@ -568,31 +599,6 @@ export default function QuotationDetailPanel({
       } as Record<string, string>
     )[data.status] ?? "bg-rule-firm";
 
-  /* What is actually stopping a price, in the order a trader would clear it.
-     Derived from the current record rather than from `review_notes`, which is
-     a snapshot taken at processing time and goes stale the moment somebody
-     publishes rules or receives stock.
-
-     Silent once every line carries a rate. A quotation that has been priced
-     has, by definition, nothing standing in the way of pricing it - and a
-     warning strip above a working figure teaches the desk to read past the
-     strip. A missing delivery location is not a blocker at all: the freight
-     component treats it as an ex-works quote, which is a real basis a trader
-     chooses, so it is reported below as a term rather than as a fault. */
-  const priced =
-    data.line_items.length > 0 &&
-    data.line_items.every((i) => i.pricing?.quote_rate != null);
-  const blockers = priced
-    ? []
-    : ([
-        data.line_items.some((i) => i.match_status === "NO_MATCH")
-          ? "no matching stock"
-          : null,
-        data.line_items.some((i) => i.match_status === "MULTIPLE_MATCHES")
-          ? "more than one spec fits — pick one"
-          : null,
-      ].filter(Boolean) as string[]);
-
   /* Every line of a quotation usually fails for the same reason - the same
      missing mill offer, the same unpublished rule - so the engine records an
      identical warning on each one. Rendered per line that is one fact stated
@@ -613,13 +619,8 @@ export default function QuotationDetailPanel({
      he did not already know from "no matching stock" above. */
   const availability = headline?.stock_availability;
   const stockFacts: [string, string][] = [];
-  /* Where it is going decides whether freight is in the number at all, so the
-     basis is stated on a priced quotation instead of being flagged as a
-     missing field. "Ex-works" is an answer, not a gap. */
-  stockFacts.push([
-    "Delivery",
-    data.delivery_location ? data.delivery_location : "ex-works",
-  ]);
+  /* Where it is going is Terms' "Deliver to" a few lines below, so it is not
+     repeated here - this row is the stock behind the line, nothing else. */
   if (availability?.available_qty_mt != null) {
     stockFacts.push(["In stock", `${num(availability.available_qty_mt)} MT`]);
   }
@@ -695,15 +696,6 @@ export default function QuotationDetailPanel({
             {busy === "regen" ? "Regenerating…" : "Regenerate"}
           </Button>
           <Button
-            variant="danger"
-            className="flex-1 sm:flex-none"
-            disabled={settled || busy !== null}
-            title={settled ? "This quotation has already been sent." : undefined}
-            onClick={() => act("reject", () => api.post(`/quotations/${data.id}/reject`, {}))}
-          >
-            Reject
-          </Button>
-          <Button
             variant="primary"
             className="flex-1 sm:flex-none"
             title={settled ? "This quotation has already been sent." : undefined}
@@ -758,15 +750,14 @@ export default function QuotationDetailPanel({
             <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
               <div className="min-w-0 flex-1">
                 {/* The material leads. It is what the quotation is *about*;
-                    the reference number identifies it to the system and can
-                    sit quietly above. */}
-                <p className="flex flex-wrap items-center gap-2 text-[11px] text-ink-faint">
-                  <span className="font-semibold tracking-wide text-ink-soft">
-                    {data.quotation_number}
-                  </span>
-                  <Badge value={data.status} dot={false} />
-                </p>
-                <h3 className="mt-1 text-[17px] font-semibold leading-snug tracking-tight text-ink">
+                    the reference number is filing, and sits with the stage
+                    opposite where a reviewer looks for identifiers rather
+                    than above the thing it identifies.
+
+                    The status badge is gone from here too: the stage selector
+                    opposite says the same thing and can also change it, and
+                    two controls for one fact read as two different facts. */}
+                <h3 className="text-[17px] font-semibold leading-snug tracking-tight text-ink">
                   {specOf(headline)}
                 </h3>
                 <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-xs text-ink-soft">
@@ -793,103 +784,72 @@ export default function QuotationDetailPanel({
                 </p>
               </div>
 
-              {/* A price only earns the largest type on the card once there is
-                  one. Zero in bold blue reads as a real quote of nothing. */}
-              {totalValue && Number(totalValue) > 0 ? (
-                <div className="shrink-0 text-right">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
-                    Indicative value
-                  </p>
-                  <p className="tabular text-[22px] font-bold leading-tight tracking-tight text-brand">
-                    {inr(totalValue)}
-                  </p>
-                  {headline?.pricing?.quote_rate && (
-                    <p className="tabular text-[11px] text-ink-faint">
-                      {inr(headline.pricing.quote_rate)}/MT
+              {/* Money and stage together on the right: what this is worth,
+                  and where it sits on the board. The stage is settable at any
+                  point, because a deal is agreed on the phone as often as by
+                  email and a board that cannot be corrected stops being used.
+                  Moving it changes only the status - the draft and the record
+                  of what was sent are untouched. */}
+              <div className="flex shrink-0 flex-col items-end gap-2">
+                {/* A price only earns the largest type on the card once there
+                    is one. Zero in bold blue reads as a real quote of nothing,
+                    and an unpriced quotation says so plainly enough in the
+                    pricing tab - it needs no chip here to repeat it. */}
+                {totalValue > 0 && (
+                  <div className="text-right">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-ink-faint">
+                      Indicative value
                     </p>
-                  )}
-                </div>
-              ) : (
-                <span className="shrink-0 rounded-full border border-rule bg-sunk px-2.5 py-1 text-[11px] font-medium text-ink-soft">
-                  Not priced yet
-                </span>
-              )}
-            </div>
+                    <p className="tabular text-[22px] font-bold leading-tight tracking-tight text-brand">
+                      {inr(totalValue)}
+                    </p>
+                    {headline?.pricing?.quote_rate && (
+                      <p className="tabular text-[11px] text-ink-faint">
+                        {inr(headline.pricing.quote_rate)}/MT
+                      </p>
+                    )}
+                  </div>
+                )}
 
-            {/* One line naming what is actually in the way, in the order a
-                trader would resolve it. Silent when nothing is blocking. */}
-            {blockers.length > 0 && (
-              <div className="mt-3 flex items-start gap-2 rounded-lg border border-attention/25 bg-attention-wash px-3 py-2 text-[13px] text-attention-ink">
-                <svg
-                  viewBox="0 0 24 24"
-                  className="mt-0.5 size-3.5 shrink-0"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                >
-                  <path d="M12 8v5M12 16.5v.01" />
-                  <circle cx="12" cy="12" r="9" strokeWidth="1.6" />
-                </svg>
-                <p>
-                  <span className="font-semibold">To price this: </span>
-                  {blockers.join(" · ")}
+                <Select
+                  value={
+                    STAGES.find((s) => s.statuses.includes(data.status))?.key ??
+                    STAGES[0].key
+                  }
+                  disabled={busy !== null}
+                  onChange={(stage) =>
+                    act("stage", () =>
+                      api.post<ActionResult>(`/quotations/${data.id}/stage`, { stage }),
+                    )
+                  }
+                  options={STAGES.map((s) => ({ value: s.key, label: s.label }))}
+                  className="py-1 pl-2.5 pr-7 text-xs font-medium"
+                />
+
+                <p className="tabular -mt-1 text-[11px] font-semibold tracking-wide text-ink-faint">
+                  {data.quotation_number}
                 </p>
               </div>
-            )}
+            </div>
 
           {/* Stock, only where there is stock to report. "In stock —, held
               for —, enough? not judged" is four cells saying nothing. */}
             {stockFacts.length > 0 && (
-              <dl className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 border-t border-rule pt-3 text-xs">
+              <dl className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-rule pt-3">
                 {stockFacts.map(([label, value]) => (
-                  <div key={label} className="flex items-center gap-1.5">
-                    <dt className="text-ink-faint">{label}</dt>
-                    <dd className="tabular font-medium text-ink">{value}</dd>
+                  <div key={label} className="flex items-baseline gap-2">
+                    <dt className="text-[10.5px] font-medium uppercase tracking-wide text-ink-faint">
+                      {label}
+                    </dt>
+                    <dd className="tabular text-[13px] font-medium text-ink">{value}</dd>
                   </div>
                 ))}
               </dl>
             )}
 
-            {/* Terms: a compact line when known, expanded into fields only
+            {/* Terms: a compact block when known, expanded into fields only
                 when a reviewer chooses to fill them in. */}
             <EnquiryTerms quotation={data} onSaved={() => { reload(); onChanged(); }} />
-
-            {/* Where this sits on the board. Settable at any stage, because a
-                deal is agreed on the phone as often as by email and a board
-                that cannot be corrected stops being used. Moving it changes
-                only the status - the draft and the record of what was sent
-                are untouched. */}
-            <section className="mt-3 border-t border-rule pt-3">
-              <h3 className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint">
-                Stage
-              </h3>
-              <div className="mt-1.5 flex flex-wrap gap-1.5">
-                {STAGES.map((stage) => {
-                  const here = stage.statuses.includes(data.status);
-                  return (
-                    <button
-                      key={stage.key}
-                      disabled={busy !== null}
-                      onClick={() =>
-                        act("stage", () =>
-                          api.post<ActionResult>(`/quotations/${data.id}/stage`, {
-                            stage: stage.key,
-                          }),
-                        )
-                      }
-                      className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                        here
-                          ? "border-brand bg-brand text-white"
-                          : "border-rule text-ink-soft hover:border-brand hover:text-ink"
-                      }`}
-                    >
-                      {stage.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
           </div>
         </section>
 
@@ -974,16 +934,13 @@ export default function QuotationDetailPanel({
         {/* --- Pricing ------------------------------------------------------ */}
         {tab === "pricing" && (
           <div className="flex flex-col gap-4">
-            {/* Stated once for the quotation rather than once per line.
-                Each carries the recompute, because a warning describes the
-                state at the moment the line was priced: once a reviewer has
-                answered it - by overriding the figure, or by the stock sheet
-                gaining a cost - the only thing standing between the desk and
-                a correct screen is a recalculation it has no other way to ask
-                for. */}
-            {pricingWarnings.map((w) => (
+            {/* Every pricing warning on the quotation, in one bar. Stated once
+                rather than once per line, and once per bar rather than once per
+                warning: a stack of yellow reading "no base price" then "no
+                distance configured" is one unpriced line described twice, and
+                the single recompute answers all of them. */}
+            {pricingWarnings.length > 0 && (
               <Banner
-                key={w}
                 tone="attention"
                 action={
                   settled ? undefined : (
@@ -1011,41 +968,51 @@ export default function QuotationDetailPanel({
                   )
                 }
               >
-                {w}
+                {pricingWarnings.join(" · ")}
               </Banner>
-            ))}
-            {data.line_items.map((item) => (
-              <div key={item.id} className="flex flex-col gap-2">
-                {data.line_items.length > 1 && (
-                  <p className="text-sm font-semibold text-ink">
-                    Line {item.line_no} ·{" "}
-                    {item.matched_stock_item_name ?? item.raw_text ?? "Material"}
-                  </p>
-                )}
-                {item.pricing ? (
-                  <PricingCalculator
-                    pricing={item.pricing}
-                    quotationId={data.id}
-                    lineId={item.id}
-                    hideWarnings
-                    /* A sent quotation's figures are the record of what was
-                       offered. The server refuses to change them; the panel
-                       must not offer the controls either, or every click ends
-                       in a 409 the reviewer cannot act on. */
-                    readOnly={settled}
-                    onChange={() => {
-                      reload();
-                      onChanged();
-                    }}
-                  />
-                ) : (
-                  <Banner tone="attention">
-                    This line has not been priced — no landed cost on the matched stock and no
-                    current mill offer covers it.
-                  </Banner>
-                )}
+            )}
+            {data.line_items.length > 1 && (
+              <div className="flex items-center justify-between gap-3">
+                <Button
+                  compact
+                  disabled={lineIndex === 0}
+                  onClick={() => setLineIndex((i) => Math.max(0, i - 1))}
+                >
+                  ← Back
+                </Button>
+                <p className="truncate text-sm font-semibold text-ink">
+                  <span className="tabular mr-2 text-ink-faint">
+                    {lineIndex + 1}/{data.line_items.length}
+                  </span>
+                  {shortSpecOf(data.line_items[lineIndex])}
+                </p>
+                <Button
+                  compact
+                  disabled={lineIndex === data.line_items.length - 1}
+                  onClick={() =>
+                    setLineIndex((i) => Math.min(data.line_items.length - 1, i + 1))
+                  }
+                >
+                  Next →
+                </Button>
               </div>
-            ))}
+            )}
+            {data.line_items[lineIndex] && (
+              <PricingCalculatorGroup
+                key={data.line_items[lineIndex].id}
+                quotationId={data.id}
+                item={data.line_items[lineIndex]}
+                /* A sent quotation's figures are the record of what was
+                   offered. The server refuses to change them; the panel
+                   must not offer the controls either, or every click ends
+                   in a 409 the reviewer cannot act on. */
+                readOnly={settled}
+                onChanged={() => {
+                  reload();
+                  onChanged();
+                }}
+              />
+            )}
             <p className="text-xs text-ink-faint">
               Any change here updates the quoted price in the list, and marks the drafted reply
               for regeneration so it can never go out with a superseded figure.

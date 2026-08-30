@@ -166,6 +166,9 @@ export interface LineItem {
   match_candidates: MatchCandidate[];
   stock_availability: StockAvailability | null;
   pricing: QuotationPricing | null;
+  /** 1 in the ordinary case; more once a trader has added despatch
+   *  locations to compare for this line. */
+  pricing_option_count: number;
 }
 
 export interface Draft {
@@ -434,6 +437,13 @@ export interface PricingComponent {
 
 export interface QuotationPricing {
   id: number;
+  /** `null` for the line's original, unlabelled option. A real value marks
+   *  one a trader added to compare sourcing from a specific warehouse. */
+  despatch_location: string | null;
+  /** Which option `pricing` (on the line item) currently resolves to. */
+  is_selected: boolean;
+  /** A hand-priced option with no matched stock behind it ("Other"). */
+  is_manual: boolean;
   basis: PricingBasis;
   basis_note: string | null;
   base_rate: string | null;

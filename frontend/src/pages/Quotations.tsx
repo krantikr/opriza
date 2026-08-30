@@ -46,8 +46,8 @@ const PERIODS = [
  *  them blank for a moment on every load, and the server remains the
  *  authority - it rejects a stage it does not know. */
 const STAGES: { key: QuotationStage; label: string }[] = [
-  { key: "received", label: "Quotations received" },
-  { key: "sent", label: "Quotations sent" },
+  { key: "received", label: "Received" },
+  { key: "sent", label: "Sent" },
   { key: "negotiation", label: "Negotiation" },
   { key: "delivery_pending", label: "Delivery pending" },
   { key: "payment_pending", label: "Payment pending" },
@@ -537,6 +537,7 @@ export default function Quotations() {
                             match_candidates: [],
                             stock_availability: null,
                             pricing: null,
+                            pricing_option_count: 1,
                           }
                         }
                         rowSpan={i === 0 ? items.length : null}

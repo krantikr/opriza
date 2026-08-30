@@ -34,6 +34,14 @@ class ComponentOut(BaseModel):
 
 class PricingOut(ORMModel):
     id: int
+    #: `None` for the line's original, unlabelled option. A real value marks
+    #: one a trader added to compare sourcing from a specific warehouse.
+    despatch_location: str | None = None
+    #: Which option `QuotationLineItem.pricing` currently resolves to -
+    #: exactly one per line item is true at a time.
+    is_selected: bool = True
+    #: A hand-priced option with no matched stock behind it ("Other").
+    is_manual: bool = False
     basis: PricingBasis
     basis_note: str | None = None
     base_rate: Decimal | None = None
@@ -189,6 +197,24 @@ class OverrideIn(BaseModel):
     component_code: str = Field(min_length=1, max_length=60)
     amount: Decimal
     reason: str | None = None
+    #: Targets one specific pricing option among several. Omitted, the
+    #: override lands on the line's selected option - today's behaviour.
+    despatch_location: str | None = None
+
+
+class PricingOptionIn(BaseModel):
+    """A new despatch-location price to compare against what's already there."""
+
+    #: Required unless `manual` is true, in which case the trader is typing
+    #: a location that has no matched stock and pricing it entirely by hand.
+    despatch_location: str | None = Field(default=None, max_length=120)
+    manual: bool = False
+
+    @model_validator(mode="after")
+    def _location_or_manual(self) -> PricingOptionIn:
+        if not self.despatch_location and not self.manual:
+            raise ValueError("despatch_location is required unless manual is true")
+        return self
 
 
 # --- Trader-maintained inputs ----------------------------------------------

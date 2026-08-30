@@ -125,6 +125,10 @@ class LineItemOut(ORMModel):
     match_candidates: list[MatchCandidateOut] = Field(default_factory=list)
     stock_availability: StockAvailabilityOut | None = None
     pricing: PricingOut | None = None
+    #: How many priced options this line has - 1 in the ordinary case, more
+    #: once a trader has added despatch locations to compare. Lets the list
+    #: show a "+2" indicator without a second fetch per row.
+    pricing_option_count: int = 1
 
 
 class DraftOut(ORMModel):

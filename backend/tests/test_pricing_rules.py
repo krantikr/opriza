@@ -564,6 +564,50 @@ def test_a_priced_line_serialises_when_there_are_no_warnings(db, quoted_quotatio
     assert PricingOut.model_validate(result.record).warnings == []
 
 
+def test_pricing_finds_cost_on_a_sibling_lot_of_the_same_spec(
+    db, quoted_quotation, plate, rule_set
+):
+    """Regression: `matched_stock_item_id` names one representative lot,
+    chosen by freshest ageing for display - not the lot with cost data.
+    Several lots commonly share a spec at different ages, locations or
+    costs. A caller that re-prices without threading the matcher's full
+    `lot_ids` through (recalculate, update details) must still find a
+    sibling's cost rather than reporting the line unavailable just because
+    the one lot it happens to point at carries none.
+    """
+    from app.models import StockItem
+    from app.services.pricing.service import PricingService
+
+    item = quoted_quotation.line_items[0]
+
+    # The representative lot the item is actually matched to: same spec as
+    # `plate`, but no cost on file - exactly what an incomplete import row
+    # produces.
+    costless = StockItem(
+        product_type=plate.product_type,
+        grade=plate.grade,
+        thickness_mm=plate.thickness_mm,
+        width_mm=plate.width_mm,
+        length_mm=plate.length_mm,
+        location="PUNE",
+        balance_qty_kg=Decimal("5000.000"),
+        ageing_days=1,  # freshest, so the matcher would pick this one
+    )
+    db.add(costless)
+    db.commit()
+
+    item.matched_stock_item_id = costless.id
+    db.commit()
+
+    # No `lot_ids` passed, matching the recalculate/update-details call sites.
+    result = PricingService(db, rule_set).price_line(item, quotation=quoted_quotation)
+    db.commit()
+
+    base = next(c for c in result.record.components if c["code"] == "base_price")
+    assert base["meta"]["basis"] != "UNAVAILABLE"
+    assert Decimal(base["amount"]) > 0
+
+
 def test_an_override_survives_a_recalculation(db, quoted_quotation, rule_set):
     """Recomputing because stock moved must not discard a deliberate figure."""
     from app.services.pricing.service import PricingService
@@ -917,3 +961,119 @@ def test_pricing_a_line_that_had_no_rate_marks_the_draft_stale(
 
     assert after.record.quote_rate is not None
     assert after.record.draft_stale is True
+
+
+# --- Multi-location pricing options ------------------------------------------
+
+
+def test_a_second_location_gets_its_own_priced_option(db, quoted_quotation, plate, rule_set):
+    """Comparing sourcing from two warehouses must not blend their costs."""
+    from app.models import StockItem
+    from app.services.pricing.service import PricingService
+
+    varanasi = StockItem(
+        product_type=plate.product_type,
+        grade=plate.grade,
+        thickness_mm=plate.thickness_mm,
+        width_mm=plate.width_mm,
+        length_mm=plate.length_mm,
+        location="VARANASI",
+        balance_qty_kg=Decimal("10000.000"),
+        landed_cost_per_kg=40.0,  # cheaper than plate's 56.5
+        ageing_days=3,
+    )
+    db.add(varanasi)
+    db.commit()
+
+    item = quoted_quotation.line_items[0]
+    service = PricingService(db, rule_set)
+
+    main = service.price_line(item, quotation=quoted_quotation).record
+    assert main.despatch_location is None
+    assert main.is_selected is True
+
+    second = service.price_line(
+        item, quotation=quoted_quotation, despatch_location="VARANASI"
+    ).record
+    assert second.despatch_location == "VARANASI"
+    assert second.is_selected is False  # first option keeps the selection
+    assert second.base_rate != main.base_rate  # different warehouse, different cost
+
+    db.refresh(item)
+    assert len(item.pricing_options) == 2
+    assert item.pricing is main  # unchanged until explicitly selected
+
+
+def test_selecting_an_option_changes_what_item_pricing_resolves_to(
+    db, quoted_quotation, plate, rule_set
+):
+    from app.services.pricing.service import PricingService
+
+    item = quoted_quotation.line_items[0]
+    service = PricingService(db, rule_set)
+    main = service.price_line(item, quotation=quoted_quotation).record
+    second = service.price_line(
+        item, quotation=quoted_quotation, despatch_location="PUNE"
+    ).record
+
+    selected = service.select_option(item, second.id)
+
+    assert selected.id == second.id
+    db.refresh(item)
+    assert item.pricing.id == second.id
+    assert main.is_selected is False
+    assert second.is_selected is True
+
+
+def test_selecting_an_unknown_option_is_refused(db, quoted_quotation, rule_set):
+    from app.services.pricing.service import PricingService
+
+    item = quoted_quotation.line_items[0]
+    service = PricingService(db, rule_set)
+    service.price_line(item, quotation=quoted_quotation)
+
+    with pytest.raises(ValueError):
+        service.select_option(item, pricing_id=999999)
+
+
+def test_a_manual_option_takes_whatever_the_trader_types_with_no_engine(
+    db, quoted_quotation, rule_set
+):
+    """"Other": a despatch location with no matched stock, priced entirely
+    by hand - the engine must never run for one of these."""
+    from app.services.pricing.service import PricingService
+
+    item = quoted_quotation.line_items[0]
+    service = PricingService(db, rule_set)
+    manual = service.add_manual_option(item, "Customer's own yard")
+
+    assert manual.is_manual is True
+    assert manual.components == []
+    assert manual.quote_rate is None
+
+    result = service.set_override(
+        item, component_code="base_price", amount=Decimal("500"), despatch_location="Customer's own yard"
+    )
+
+    assert result.record.is_manual is True
+    assert result.record.quote_rate == Decimal("500")
+    assert result.record.components[0]["code"] == "base_price"
+    assert result.record.components[0]["overridden"] is True
+
+
+def test_known_locations_lists_distinct_stock_locations(db, plate, rule_set):
+    from app.models import StockItem
+    from app.services.pricing.service import PricingService
+
+    db.add(
+        StockItem(
+            product_type="Plate", grade="E250", thickness_mm=8.0,
+            location="VARANASI", balance_qty_kg=Decimal("1000"),
+        )
+    )
+    db.commit()
+
+    locations = PricingService(db, rule_set).known_locations()
+    assert "NAGPUR" in locations
+    assert "VARANASI" in locations
+    assert len(locations) == len(set(locations))  # no duplicates

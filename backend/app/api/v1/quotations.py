@@ -23,7 +23,7 @@ from app.models import (
     User,
 )
 from app.schemas.common import ActionResult, Page
-from app.schemas.pricing import OverrideIn, PricingOut
+from app.schemas.pricing import OverrideIn, PricingOptionIn, PricingOut
 from app.schemas.quotations import (
     StageIn,
     ApproveIn,
@@ -508,6 +508,19 @@ def reject_quotation(
 # --- Pricing calculator ----------------------------------------------------
 
 
+@router.get("/pricing/locations", response_model=list[str])
+def list_pricing_locations(db: TenantDb) -> list[str]:
+    """Every warehouse a quotation could be priced from - whatever locations
+    have ever appeared in a stock import, whether or not this specific
+    material happens to be there right now.
+
+    Registered before `/{quotation_id}/...`, matching the convention already
+    used for `/export` above: a literal path declared after a parameterised
+    one risks FastAPI trying to read "pricing" as a quotation id first.
+    """
+    return PricingService(db).known_locations()
+
+
 @router.get("/{quotation_id}/pricing", response_model=list[PricingOut])
 def get_pricing(
     db: TenantDb,
@@ -571,6 +584,7 @@ def override_component(
         amount=payload.amount,
         user_id=user.id if user else None,
         reason=payload.reason,
+        despatch_location=payload.despatch_location,
     )
 
     audit.record(
@@ -584,12 +598,17 @@ def override_component(
             "component": payload.component_code,
             "amount": str(payload.amount),
             "reason": payload.reason,
+            "despatch_location": payload.despatch_location,
         },
     )
     # An overridden component moves the quoted rate, and the drafted reply
     # carries that rate as text. Refreshing it keeps the document and the
-    # calculator from disagreeing while the draft still sits in review.
-    refresh_draft_figures(db, quotation)
+    # calculator from disagreeing while the draft still sits in review - but
+    # only when the changed option is the one actually selected; editing a
+    # comparison option nobody has chosen yet must not touch what the
+    # customer is being shown.
+    if result.record.is_selected:
+        refresh_draft_figures(db, quotation)
     db.commit()
     return result.record
 
@@ -600,16 +619,133 @@ def clear_component_override(
     component_code: str,
     db: TenantDb,
     quotation: QuotationRequest = Depends(get_quotation),
+    despatch_location: str | None = None,
 ) -> QuotationPricing:
     """Put a component back to what the rules say."""
     _require_unsent(quotation)
     item = next((i for i in quotation.line_items if i.id == line_id), None)
     if item is None:
         raise HTTPException(status_code=404, detail="Line item not found")
-    result = PricingService(db).clear_override(item, component_code)
-    refresh_draft_figures(db, quotation)
+    result = PricingService(db).clear_override(
+        item, component_code, despatch_location=despatch_location
+    )
+    if result.record.is_selected:
+        refresh_draft_figures(db, quotation)
     db.commit()
     return result.record
+
+
+@router.get("/{quotation_id}/lines/{line_id}/pricing/options", response_model=list[PricingOut])
+def list_pricing_options(
+    line_id: int,
+    db: TenantDb,
+    quotation: QuotationRequest = Depends(get_quotation),
+) -> list[QuotationPricing]:
+    """Every price this line has been given, one per despatch location
+    compared - almost always just one, the line's original build-up."""
+    item = next((i for i in quotation.line_items if i.id == line_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Line item not found")
+    return item.pricing_options
+
+
+@router.post(
+    "/{quotation_id}/lines/{line_id}/pricing/options",
+    response_model=PricingOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_pricing_option(
+    line_id: int,
+    payload: PricingOptionIn,
+    db: TenantDb,
+    quotation: QuotationRequest = Depends(get_quotation),
+) -> QuotationPricing:
+    """Add a price to compare from another warehouse, or a hand-priced
+    "Other" location with no stock behind it."""
+    _require_unsent(quotation)
+    item = next((i for i in quotation.line_items if i.id == line_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Line item not found")
+
+    if any(o.despatch_location == payload.despatch_location for o in item.pricing_options):
+        raise HTTPException(
+            status_code=422,
+            detail=f"This line already has an option for {payload.despatch_location}.",
+        )
+
+    service = PricingService(db)
+    if payload.manual:
+        record = service.add_manual_option(item, payload.despatch_location or "Other")
+    else:
+        record = service.price_line(
+            item, quotation=quotation, despatch_location=payload.despatch_location
+        ).record
+    db.commit()
+    return record
+
+
+@router.post(
+    "/{quotation_id}/lines/{line_id}/pricing/options/{pricing_id}/select",
+    response_model=PricingOut,
+)
+def select_pricing_option(
+    line_id: int,
+    pricing_id: int,
+    db: TenantDb,
+    quotation: QuotationRequest = Depends(get_quotation),
+    user: User | None = Depends(current_user),
+) -> QuotationPricing:
+    """Make one option the line's selected price - what the draft, the PDF
+    and every report will read from now on."""
+    _require_unsent(quotation)
+    item = next((i for i in quotation.line_items if i.id == line_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Line item not found")
+
+    try:
+        record = PricingService(db).select_option(item, pricing_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    audit.record(
+        db,
+        entity_type="quotation_request",
+        entity_id=quotation.id,
+        action="PRICING_OPTION_SELECTED",
+        user_id=user.id if user else None,
+        details={"line_no": item.line_no, "despatch_location": record.despatch_location},
+    )
+    # The selected option changed, so what the draft quotes changed with it.
+    refresh_draft_figures(db, quotation)
+    db.commit()
+    return record
+
+
+@router.delete("/{quotation_id}/lines/{line_id}/pricing/options/{pricing_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_pricing_option(
+    line_id: int,
+    pricing_id: int,
+    db: TenantDb,
+    quotation: QuotationRequest = Depends(get_quotation),
+) -> None:
+    """Drop one comparison option. Never the selected one - pick a
+    different option first, so the line is never left with no price."""
+    _require_unsent(quotation)
+    item = next((i for i in quotation.line_items if i.id == line_id), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Line item not found")
+
+    record = next((o for o in item.pricing_options if o.id == pricing_id), None)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Pricing option not found")
+    if record.is_selected:
+        raise HTTPException(
+            status_code=422,
+            detail="This is the selected price - choose a different option before removing it.",
+        )
+
+    item.pricing_options.remove(record)
+    db.commit()
 
 
 @router.post("/{quotation_id}/pricing/recalculate", response_model=list[PricingOut])

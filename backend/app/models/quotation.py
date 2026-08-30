@@ -207,9 +207,24 @@ class QuotationLineItem(Base, TimestampMixin, TenantMixin):
     stock_availability: Mapped["StockAvailability | None"] = relationship(
         back_populates="line_item", cascade="all, delete-orphan", uselist=False
     )
-    pricing: Mapped["QuotationPricing | None"] = relationship(  # noqa: F821
-        back_populates="line_item", cascade="all, delete-orphan", uselist=False
+    #: Every cost build-up ever priced for this line - one per despatch
+    #: location a trader chose to compare, plus the original unlabelled one.
+    #: Almost everything in the app wants only the *selected* one; use the
+    #: `pricing` property below for that, not this list, unless you are
+    #: specifically building the location-comparison UI.
+    pricing_options: Mapped[list["QuotationPricing"]] = relationship(  # noqa: F821
+        back_populates="line_item",
+        cascade="all, delete-orphan",
+        order_by="QuotationPricing.id",
     )
+
+    @property
+    def pricing(self) -> "QuotationPricing | None":
+        """The one build-up that counts: what drafts, PDFs and every report
+        read. Kept as the same name and shape callers already use, so adding
+        location comparison did not require touching every reader in the
+        codebase that only ever cared about "the" price."""
+        return next((p for p in self.pricing_options if p.is_selected), None)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<QuotationLineItem q={self.quotation_request_id} #{self.line_no}>"
