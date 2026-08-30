@@ -499,3 +499,28 @@ def test_marking_the_same_priority_product_twice_does_not_duplicate(client, plat
 
     listed = client.get("/api/v1/priority-products").json()
     assert len(listed) == 1
+
+
+# --- A historical quotation must not change when the customer record does --
+
+
+def test_the_list_never_falls_back_to_the_live_customer_name_or_company(
+    db, client, quoted_quotation
+):
+    """A quotation's `customer_name`/`customer_company` are what the enquiry
+    actually said, frozen at creation. Filling in (or correcting) the
+    customer's record afterwards must not retroactively change what an old
+    quotation is shown to have said - the customer's company changing next
+    week does not mean last week's enquiry said something different."""
+    quoted_quotation.customer_company_raw = None
+    db.commit()
+
+    quoted_quotation.customer.company = "Renamed Trading Co"
+    db.commit()
+
+    body = client.get("/api/v1/quotations").json()
+    row = next(q for q in body["items"] if q["id"] == quoted_quotation.id)
+
+    assert row["customer_company"] is None
+    assert row["customer_company"] != "Renamed Trading Co"
+    assert row["customer_name"] == quoted_quotation.customer_name_raw

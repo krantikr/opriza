@@ -288,9 +288,12 @@ def quotation_out(
         quotation_number=quotation.quotation_number,
         email_id=quotation.email_id,
         customer_id=quotation.customer_id,
+        # Frozen at enquiry time, deliberately never falling back to the live
+        # `Customer` row: a customer's name/company can be filled in or
+        # corrected later, and a historical quotation must keep showing what
+        # was actually true when it was raised, not today's value.
         customer_name=quotation.customer_name_raw,
-        customer_company=quotation.customer_company_raw
-        or (quotation.customer.company if quotation.customer else None),
+        customer_company=quotation.customer_company_raw,
         customer_email=quotation.customer_email,
         status=quotation.status.value,
         stage=stage_of(quotation),
