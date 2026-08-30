@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -12,6 +14,9 @@ from app.core.db import utcnow
 from app.core.logging import get_logger
 from app.models import (
     PRICING_FROZEN_STATUSES,
+    NotSentReason,
+    PriorityProduct,
+    QuotationLineItem,
     QuotationPricing,
     QuotationRequest,
     QuotationStatus,
@@ -24,6 +29,7 @@ from app.schemas.quotations import (
     ApproveIn,
     DraftUpdateIn,
     FollowUpIn,
+    NotSentReasonIn,
     PastOrdersOut,
     QuotationDetailOut,
     QuotationDetailsIn,
@@ -48,13 +54,19 @@ router = APIRouter(prefix="/quotations", tags=["quotations"])
 def _loaded(query):
     """Eager-load the relationships every quotation response touches."""
     return query.options(
-        selectinload(QuotationRequest.line_items),
+        selectinload(QuotationRequest.line_items).selectinload(
+            QuotationLineItem.matched_stock_item
+        ),
         selectinload(QuotationRequest.drafts),
         selectinload(QuotationRequest.customer),
         selectinload(QuotationRequest.email),
         selectinload(QuotationRequest.follow_ups),
         selectinload(QuotationRequest.replies),
     )
+
+
+def _priority_products(db) -> set[tuple[str, str]]:
+    return {(p.grade, p.make) for p in db.scalars(select(PriorityProduct))}
 
 
 @router.get("/{quotation_id}/thread", response_model=ThreadOut)
@@ -119,7 +131,10 @@ def list_quotations(
         _loaded(query).order_by(QuotationRequest.created_at.desc()).limit(limit).offset(offset)
     ).all()
 
-    return Page(items=[quotation_out(q) for q in rows], total=total, limit=limit, offset=offset)
+    pairs = _priority_products(db)
+    return Page(
+        items=[quotation_out(q, pairs) for q in rows], total=total, limit=limit, offset=offset
+    )
 
 
 @router.get("/export", response_model=None, tags=["quotations"])
@@ -127,6 +142,8 @@ def export_quotations(
     db: TenantDb,
     status_filter: QuotationStatus | None = Query(default=None, alias="status"),
     search: str | None = Query(default=None),
+    stage: str | None = Query(default=None),
+    days: int | None = Query(default=None, ge=1),
 ) -> Response:
     """The quotation list as a real .xlsx workbook.
 
@@ -156,10 +173,19 @@ def export_quotations(
             | QuotationRequest.customer_company_raw.ilike(pattern)
             | QuotationRequest.customer_email.ilike(pattern)
         )
+    if days:
+        query = query.where(
+            QuotationRequest.created_at >= utcnow() - timedelta(days=days)
+        )
 
     rows = db.scalars(
         _loaded(query).order_by(QuotationRequest.created_at.desc())
     ).all()
+
+    if stage:
+        from app.services.quotations.stages import stage_of
+
+        rows = [q for q in rows if stage_of(q) == stage]
 
     headers = [
         "Quotation",
@@ -325,7 +351,7 @@ def get_quotation_detail(
     ).first()
     if quotation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Quotation {quotation_id} not found")
-    return quotation_detail_out(quotation)
+    return quotation_detail_out(quotation, _priority_products(db))
 
 
 @router.put("/{quotation_id}/draft", response_model=ActionResult)
@@ -733,7 +759,7 @@ def set_stage(
     elif payload.stage == "payment_pending":
         quotation.despatched_at = quotation.despatched_at or utcnow()
         quotation.paid_at = None
-    elif payload.stage == "won":
+    elif payload.stage in ("completed", "won"):
         quotation.despatched_at = quotation.despatched_at or utcnow()
         quotation.paid_at = quotation.paid_at or utcnow()
 
@@ -755,6 +781,38 @@ def set_stage(
 
     return ActionResult(
         detail=f"{quotation.quotation_number} moved to {LABELS.get(payload.stage, payload.stage)}.",
+        quotation_id=quotation.id,
+        status=quotation.status.value,
+    )
+
+
+@router.post("/{quotation_id}/not-sent-reason", response_model=ActionResult)
+def set_not_sent_reason(
+    payload: NotSentReasonIn,
+    db: TenantDb,
+    quotation: QuotationRequest = Depends(get_quotation),
+) -> ActionResult:
+    """Record why a quotation still sitting in "received" hasn't gone out.
+
+    Separate from `set_stage`: the reason can be set, changed, or cleared
+    (pass `not_sent_reason: null`) without the quotation itself moving.
+    """
+    if payload.not_sent_reason is not None:
+        try:
+            quotation.not_sent_reason = NotSentReason(payload.not_sent_reason)
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"{payload.not_sent_reason} is not a reason. Expected one of: "
+                + ", ".join(r.value for r in NotSentReason),
+            ) from exc
+    else:
+        quotation.not_sent_reason = None
+    quotation.not_sent_note = payload.not_sent_note
+    db.commit()
+
+    return ActionResult(
+        detail="Reason updated.",
         quotation_id=quotation.id,
         status=quotation.status.value,
     )

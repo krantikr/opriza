@@ -48,6 +48,14 @@ COMMERCIAL_STAGES: tuple[tuple[str, str, tuple[Q, ...]], ...] = (
         (Q.CUSTOMER_ACCEPTED,),
     ),
     ("payment_pending", "Payment pending", (Q.PAYMENT_PENDING,)),
+    (
+        "completed",
+        "Completed",
+        # Paid in full - the end of the line. Kept as its own stage rather
+        # than folded into "settled"/no-stage, so a trader can filter to
+        # exactly the deals that closed clean.
+        (Q.PAID,),
+    ),
 )
 
 #: Stages a trader may set by hand. Every one of them, deliberately: a deal is
@@ -70,6 +78,9 @@ STATUS_FOR_STAGE: dict[str, Q] = {
     "negotiation": Q.NEGOTIATION,
     "delivery_pending": Q.CUSTOMER_ACCEPTED,
     "payment_pending": Q.PAYMENT_PENDING,
+    "completed": Q.PAID,
+    #: Kept as an alias of "completed" - some callers still move a card to
+    #: "won" rather than "completed", and both must write the same status.
     "won": Q.PAID,
     "lost": Q.CUSTOMER_DECLINED,
 }

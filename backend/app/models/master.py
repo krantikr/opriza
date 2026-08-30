@@ -52,6 +52,10 @@ class Customer(Base, TimestampMixin, TenantMixin):
     # them, but the UI marks them so a reviewer knows the tier and payment
     # terms are defaults nobody has confirmed yet.
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Set by hand on the Customers page. A quotation touching a priority
+    #: customer is highlighted on the Quotations list, regardless of which
+    #: material it's for.
+    is_priority: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Customer {self.id} {self.name!r}>"
@@ -132,5 +136,28 @@ class StockItem(Base, TimestampMixin, TenantMixin):
         return f"<StockItem {self.grade} {self.dimension_text} loc={self.location!r}>"
 
 
+class PriorityProduct(Base, TimestampMixin, TenantMixin):
+    """A grade+make the desk always wants flagged, independent of any lot.
+
+    `StockItem` rows are wiped and replaced wholesale on every import (see
+    the class docstring above), so a priority flag cannot live there - it
+    would vanish on the next upload. Keyed on grade and make rather than a
+    stock item id, because that is how a trader actually thinks about it:
+    "E250BR from JSPL is priority", not "this specific lot is".
+    """
+
+    __tablename__ = "priority_products"
+    __table_args__ = (
+        UniqueConstraint("organisation_id", "grade", "make", name="uq_priority_product"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    grade: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    make: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<PriorityProduct {self.grade} / {self.make}>"
+
+
 # Re-exported for type checkers reading this module in isolation.
-__all__ = ["Customer", "StockItem", "date", "datetime"]
+__all__ = ["Customer", "PriorityProduct", "StockItem", "date", "datetime"]

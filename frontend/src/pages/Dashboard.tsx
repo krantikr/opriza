@@ -9,10 +9,8 @@ import type {
   TrendPoint,
   Trends,
 } from "../api/types";
-import { AreaChart, ColumnChart, DonutChart, FunnelChart } from "../components/charts";
+import { AreaChart, ColumnChart, FunnelChart, HBarChart } from "../components/charts";
 import {
-  ago,
-  Badge,
   Button,
   Card,
   Kpi,
@@ -20,6 +18,7 @@ import {
   ErrorNote,
   inrShort,
   Loading,
+  num,
   Select,
 } from "../components/ui";
 
@@ -46,67 +45,49 @@ const METRIC_SERIES = [
 
 type MetricKey = (typeof METRIC_SERIES)[number]["key"];
 
-function Arrow({ direction }: { direction: "up" | "down" | "flat" }) {
-  if (direction === "flat") return <span aria-hidden="true">→</span>;
-  return (
-    <svg viewBox="0 0 12 12" className="size-3" fill="none" stroke="currentColor" strokeWidth="2">
-      {direction === "up" ? (
-        <path d="M6 10V2M2.5 5.5L6 2l3.5 3.5" strokeLinecap="round" strokeLinejoin="round" />
-      ) : (
-        <path d="M6 2v8M2.5 6.5L6 10l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
-      )}
-    </svg>
-  );
+const VIEWS = [
+  { key: "tonnes", label: "Volume" },
+  { key: "value", label: "Value" },
+  { key: "count", label: "Number" },
+] as const;
+
+type ViewKey = (typeof VIEWS)[number]["key"];
+
+/** An enquiry has a requested tonnage (what the customer asked for, read off
+ *  the line items as extracted) but no value — pricing hasn't run yet, so
+ *  ₹0 there is honest, not a bug. In Value view this stage falls back to a
+ *  count instead of showing a ₹0 that reads like every stage after it. */
+const ENQUIRIES_STAGE = "Enquiries received";
+
+/** One funnel stage's raw figures, reduced to whichever measure the view toggle wants. */
+function pick(
+  view: ViewKey,
+  stage: { stage?: string; count: number; tonnes: number; value: number },
+): number {
+  if (view === "value" && stage.stage === ENQUIRIES_STAGE) return stage.count;
+  return stage[view];
 }
 
-/** A headline figure with its movement against the previous period. */
-function DeltaTile({
-  label,
-  current,
-  changePct,
-  direction,
-  good,
-  unit,
-  format,
-  emphasis = false,
-}: {
-  label: string;
-  current: number;
-  changePct: number | null;
-  direction: "up" | "down" | "flat";
-  good: boolean | null;
-  unit: string;
-  format?: (v: number) => string;
-  emphasis?: boolean;
-}) {
-  const tone =
-    good === null ? "text-ink-faint" : good ? "text-settled" : "text-danger";
-  const rendered = format
-    ? format(current)
-    : `${current.toLocaleString("en-IN")}${unit && unit !== "INR" ? unit : ""}`;
-
-  return (
-    <div
-      className={`flex flex-col gap-1.5 rounded-card border bg-surface px-4 py-3.5 shadow-card ${
-        emphasis ? "border-brand/50" : "border-rule"
-      }`}
-    >
-      <p className="text-xs font-medium text-ink-soft">{label}</p>
-      <p className="tabular text-2xl font-bold leading-none text-ink">{rendered}</p>
-      <div className={`flex items-center gap-1 text-xs font-medium ${tone}`}>
-        <Arrow direction={direction} />
-        <span className="tabular">
-          {changePct === null ? "no change" : `${Math.abs(changePct)}%`}
-        </span>
-        <span className="font-normal text-ink-faint">vs previous</span>
-      </div>
-    </div>
-  );
+function formatView(
+  view: ViewKey,
+  stage: { stage?: string; count: number; tonnes: number; value: number },
+): string {
+  const v = pick(view, stage);
+  // Labelled explicitly rather than left as a bare number: a "7" sitting next
+  // to "₹89.6k" reads as a broken figure in the same unit, when it is
+  // actually a count of emails in a different unit entirely.
+  if (view === "value" && stage.stage === ENQUIRIES_STAGE) {
+    return `${v} enquir${v === 1 ? "y" : "ies"}`;
+  }
+  if (view === "value") return inrShort(v);
+  if (view === "tonnes") return v > 0 ? `${num(v)} MT` : "—";
+  return String(v);
 }
 
 export default function Dashboard() {
   const [days, setDays] = useState("30");
   const [metric, setMetric] = useState<MetricKey>("quotations");
+  const [view, setView] = useState<ViewKey>("tonnes");
   const [running, setRunning] = useState(false);
 
   const metrics = useApi<DashboardMetrics>("/dashboard/metrics", 60_000);
@@ -121,8 +102,6 @@ export default function Dashboard() {
   const m = metrics.data;
   const t = trends.data;
 
-  const deltaFor = (key: string) => t?.deltas.find((d) => d.key === key);
-
   const series = (t?.series ?? []).map((p) => ({
     label: new Date(p.day).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }),
     value: metric === "value" ? Number(p.value) : p[metric],
@@ -134,6 +113,20 @@ export default function Dashboard() {
 
   const needsAttention =
     (m?.quotations.pending_approval ?? 0) + (m?.quotations.needs_information ?? 0);
+
+  const salesStages = funnel.data?.stages ?? [];
+
+  // The three numbers that answer "is the desk winning": how many enquiries
+  // came in, how many got a quote, how many turned into an order — each a
+  // stage the funnel already carries, just picked out and given a rate.
+  const winTiles = ["Enquiries received", "Quotations provided", "Orders received"]
+    .map((label) => salesStages.find((s) => s.stage === label))
+    .filter((s): s is (typeof salesStages)[number] => !!s)
+    .map((s, i, arr) => ({
+      label: s.stage,
+      stage: s,
+      rate: i > 0 && arr[i - 1].count > 0 ? `${Math.round((s.count / arr[i - 1].count) * 100)}%` : "—",
+    }));
 
   async function runPipeline() {
     setRunning(true);
@@ -150,15 +143,25 @@ export default function Dashboard() {
 
   return (
     <div className="flex flex-col gap-4 p-4 sm:gap-5 sm:p-5">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-sm text-ink-soft">
-            {t ? `${t.period_label} · compared with ${t.previous_label}` : "Loading…"}
-          </p>
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex gap-0.5 rounded-lg bg-sunk p-0.5">
+          {VIEWS.map((v) => (
+            <button
+              key={v.key}
+              type="button"
+              onClick={() => setView(v.key)}
+              className={`w-20 rounded-md px-2.5 py-2 text-sm font-medium transition-colors ${
+                view === v.key
+                  ? "bg-surface text-brand-soft-ink shadow-card"
+                  : "text-ink-faint hover:text-ink"
+              }`}
+            >
+              {v.label}
+            </button>
+          ))}
         </div>
         <div className="flex items-center gap-2">
           <Select value={days} onChange={setDays} options={PERIODS} />
-          <Button onClick={() => { metrics.reload(); trends.reload(); }}>Refresh</Button>
           <Button variant="primary" onClick={runPipeline} disabled={running}>
             {running ? "Fetching…" : "Fetch & process email"}
           </Button>
@@ -182,39 +185,6 @@ export default function Dashboard() {
           <span className="text-sm font-medium text-attention-ink">Review →</span>
         </Link>
       )}
-
-      {/* --- The desk, stage by stage ------------------------------------
-          Money moves left to right: an enquiry nobody has answered, through
-          a quotation out with the customer, to cash that has not arrived.
-          Derived from status rather than stored, so a quotation can never sit
-          in a stage that contradicts its own state. */}
-      <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-5">
-        {(p?.stages ?? []).map((stage) => (
-          <Link
-            key={stage.key}
-            to={`/quotations?stage=${stage.key}`}
-            className="rounded-card border border-rule bg-surface px-3 py-2.5 transition-colors hover:border-brand"
-          >
-            <p className="truncate text-[11px] font-medium uppercase tracking-wide text-ink-faint">
-              {stage.label}
-            </p>
-            {/* Tonnage leads. Twelve quotations is not a workload a trader
-                can feel; 340 MT is. The count stays as the smaller figure
-                beside it, because it still answers "how many customers am I
-                dealing with here". */}
-            <p className="tabular mt-0.5 text-xl font-semibold text-ink">
-              {stage.tonnes > 0 ? `${stage.tonnes.toFixed(2)}` : "—"}
-              {stage.tonnes > 0 && (
-                <span className="ml-1 text-xs font-normal text-ink-faint">MT</span>
-              )}
-            </p>
-            <p className="tabular text-xs text-ink-faint">
-              {stage.count} quote{stage.count === 1 ? "" : "s"}
-              {stage.value > 0 && ` · ${inrShort(stage.value)}`}
-            </p>
-          </Link>
-        ))}
-      </div>
 
       {/* --- What the desk has to act on --------------------------------
           Three figures that each mean a job: steel to buy, money arriving,
@@ -304,6 +274,69 @@ export default function Dashboard() {
         </Card>
       )}
 
+      {/* --- Enquiry -> quote -> win, compressed to three numbers --------- */}
+      {salesStages.length > 0 && (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 sm:gap-3">
+          {winTiles.map((t, i) => (
+            <div
+              key={t.label}
+              className="flex flex-col gap-1 rounded-card border border-rule bg-surface px-4 py-3.5 shadow-card"
+            >
+              <p className="text-xs font-medium text-ink-soft">{t.label}</p>
+              <p className="tabular text-2xl font-bold leading-none text-ink">
+                {formatView(view, t.stage)}
+              </p>
+              {i > 0 && (
+                <p className="text-xs text-ink-faint">
+                  {t.rate} of {winTiles[i - 1].label.toLowerCase()}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* --- Sales funnel and payment funnel, side by side ---------------- */}
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card title="Sales funnel" subtitle="Where deals stop">
+          {funnel.data ? (
+            <FunnelChart
+              stages={salesStages.map((s) => ({
+                stage: s.stage,
+                value: pick(view, s),
+                displayValue: formatView(view, s),
+                approx: view === "value" && s.stage === ENQUIRIES_STAGE,
+                note:
+                  view !== "count" && s.stage === ENQUIRIES_STAGE && s.unquantified > 0
+                    ? `+${s.unquantified} qty unknown`
+                    : undefined,
+              }))}
+            />
+          ) : (
+            <Loading label="Building the funnel" />
+          )}
+        </Card>
+
+        <Card title="Payment funnel" subtitle="Money owed, by how soon it's due">
+          {!p ? (
+            <Loading label="Building the funnel" />
+          ) : (
+            <HBarChart
+              data={p.payment_buckets.map((b) => ({
+                label: b.label,
+                value: pick(view, b),
+                tone: b.key === "overdue" ? "bad" : b.key === "due_soon" ? "warn" : "neutral",
+              }))}
+              unit={view === "tonnes" ? "MT" : undefined}
+              emptyMessage="Nothing shipped and unpaid yet."
+            />
+          )}
+        </Card>
+      </div>
+
+      {/* --- Who to chase, and when ---------------------------------------
+          The payment funnel above says how much is at each stage; this says
+          who, so a trader can act rather than just look. */}
       {(p?.payments.length ?? 0) > 0 && (
         <Card
           title="Payments pending"
@@ -355,35 +388,6 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {/* --- Headline movement ------------------------------------------- */}
-      <div className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
-        {(["quotations", "value", "win_rate", "response_hours"] as const).map((key) => {
-          const d = deltaFor(key);
-          if (!d) return null;
-          return (
-            <DeltaTile
-              key={key}
-              label={d.label}
-              current={d.current}
-              changePct={d.change_pct}
-              direction={d.direction}
-              good={d.good}
-              unit={d.unit}
-              emphasis={key === "value"}
-              format={
-                d.unit === "INR"
-                  ? (v) => inrShort(v)
-                  : d.unit === "%"
-                    ? (v) => `${v}%`
-                    : d.unit === "h"
-                      ? (v) => (v ? `${v}h` : "—")
-                      : undefined
-              }
-            />
-          );
-        })}
-      </div>
-
       {/* --- Trend -------------------------------------------------------- */}
       <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
         <Card
@@ -434,94 +438,6 @@ export default function Dashboard() {
           ) : (
             <Empty message="Not enough history yet." />
           )}
-        </Card>
-      </div>
-
-      {/* --- Where work sits ---------------------------------------------- */}
-      <div className="grid gap-4 xl:grid-cols-[1.6fr_1fr]">
-        <Card title="Enquiry to order" subtitle="Where enquiries stop">
-          {funnel.data ? (
-            <FunnelChart stages={funnel.data.stages} />
-          ) : (
-            <Loading label="Building the funnel" />
-          )}
-        </Card>
-
-        <Card title="Quotations by status">
-          <DonutChart
-            data={Object.entries(m?.quotations.by_status ?? {})
-              .filter(([, v]) => v > 0)
-              .map(([label, value]) => ({
-                label: label
-                  .replace(/_/g, " ")
-                  .toLowerCase()
-                  .replace(/^./, (c) => c.toUpperCase()),
-                value,
-              }))}
-            centerValue={String(m?.quotations.total ?? 0)}
-            centerLabel="total quotations"
-          />
-        </Card>
-      </div>
-
-      {/* --- Quality and activity ----------------------------------------- */}
-      <div className="grid gap-4 xl:grid-cols-2">
-        <Card title="Review quality" subtitle="How often a human had to step in">
-          <dl className="flex flex-col divide-y divide-rule">
-            {[
-              ["Decisions recorded", String(m?.approvals.decisions ?? 0)],
-              [
-                "Approval rate",
-                m?.approvals.approval_rate != null
-                  ? `${(m.approvals.approval_rate * 100).toFixed(0)}%`
-                  : "—",
-              ],
-              [
-                "Edit rate",
-                m?.approvals.edit_rate != null
-                  ? `${(m.approvals.edit_rate * 100).toFixed(0)}%`
-                  : "—",
-              ],
-              [
-                "Avg processing time",
-                m?.emails.avg_processing_ms
-                  ? `${(m.emails.avg_processing_ms / 1000).toFixed(1)}s`
-                  : "—",
-              ],
-            ].map(([label, value]) => (
-              <div key={label} className="flex justify-between gap-4 py-2 text-sm">
-                <dt className="text-ink-soft">{label}</dt>
-                <dd className="tabular font-medium text-ink">{value}</dd>
-              </div>
-            ))}
-          </dl>
-          <p className="mt-3 text-xs leading-relaxed text-ink-faint">
-            Edit rate is how often a reviewer changed the draft before sending — the clearest
-            signal of how well the system is actually writing.
-          </p>
-        </Card>
-
-        <Card title="Recent activity" padded={false}>
-          <div className="max-h-72 overflow-y-auto">
-            {m?.recent_activity.length ? (
-              m.recent_activity.slice(0, 12).map((a, i) => (
-                <div
-                  key={`${a.entity_id}-${i}`}
-                  className="flex items-start justify-between gap-3 border-b border-rule px-4 py-2 last:border-0"
-                >
-                  <div className="min-w-0">
-                    <Badge value={a.action} dot={false} />
-                    {a.detail && (
-                      <p className="mt-1 truncate text-xs text-ink-soft">{a.detail}</p>
-                    )}
-                  </div>
-                  <span className="shrink-0 text-[11px] text-ink-faint">{ago(a.at)}</span>
-                </div>
-              ))
-            ) : (
-              <Empty message="Nothing has happened yet." />
-            )}
-          </div>
         </Card>
       </div>
     </div>

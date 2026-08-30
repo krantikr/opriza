@@ -121,6 +121,7 @@ class LineItemOut(ORMModel):
     match_score: float | None = None
     matched_stock_item_id: int | None = None
     matched_stock_item_name: str | None = None
+    matched_stock_item_make: str | None = None
     match_candidates: list[MatchCandidateOut] = Field(default_factory=list)
     stock_availability: StockAvailabilityOut | None = None
     pricing: PricingOut | None = None
@@ -166,6 +167,11 @@ class QuotationOut(ORMModel):
     customer_company: str | None = None
     customer_email: str | None = None
     status: str
+    #: The working stage this status derives to (`stages.py::stage_of`), or
+    #: null once a deal is lost/rejected and has nothing left to work.
+    #: Computed here rather than re-derived in the frontend, so the two
+    #: never drift.
+    stage: str | None = None
     confidence: str | None = None
     delivery_location: str | None = None
     line_count: int = 0
@@ -173,6 +179,11 @@ class QuotationOut(ORMModel):
     headline_product: str | None = None
     headline_availability: str | None = None
     requires_manual_review: bool = False
+    not_sent_reason: str | None = None
+    not_sent_note: str | None = None
+    is_priority_customer: bool = False
+    is_priority_product: bool = False
+    line_items: list[LineItemOut] = Field(default_factory=list)
     created_at: datetime
     sent_at: datetime | None = None
 
@@ -269,6 +280,17 @@ class StageIn(BaseModel):
     #: Why, where a trader wants to say. Kept on the audit entry rather than
     #: the quotation: it explains one move, not the current state.
     reason: str | None = Field(default=None, max_length=500)
+
+
+class NotSentReasonIn(BaseModel):
+    """Why a quotation still sitting in "received" hasn't gone out.
+
+    Independent of the stage-move endpoint: the reason can be set, changed,
+    or cleared without the quotation itself moving anywhere.
+    """
+
+    not_sent_reason: str | None = None
+    not_sent_note: str | None = Field(default=None, max_length=300)
 
 
 class QuotationDetailsIn(BaseModel):

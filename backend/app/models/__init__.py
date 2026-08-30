@@ -25,6 +25,7 @@ from app.models.enums import (
     NotificationChannel,
     NotificationKind,
     NotificationStatus,
+    NotSentReason,
     OrgStatus,
     PricingBasis,
     PricingComponentKind,
@@ -37,7 +38,7 @@ from app.models.enums import (
     StockMovementKind,
     UserRole,
 )
-from app.models.master import Customer, StockItem
+from app.models.master import Customer, PriorityProduct, StockItem
 from app.models.ops import (
     CustomerNote,
     FollowUpRule,
@@ -82,6 +83,7 @@ __all__ = [
     "MailDirection",
     # master data
     "Customer",
+    "PriorityProduct",
     "StockItem",
     # email
     "Email",
@@ -132,6 +134,7 @@ __all__ = [
     "NotificationChannel",
     "NotificationKind",
     "NotificationStatus",
+    "NotSentReason",
     "PricingBasis",
     "PricingComponentKind",
     "ProcessingStatus",

@@ -153,6 +153,7 @@ def line_item_out(item: QuotationLineItem) -> LineItemOut:
         match_score=item.match_score,
         matched_stock_item_id=item.matched_stock_item_id,
         matched_stock_item_name=stock_item.display_name if stock_item else None,
+        matched_stock_item_make=stock_item.make if stock_item else None,
         match_candidates=item.match_candidates or [],
         stock_availability=stock_availability_out(item),
         pricing=PricingOut.model_validate(item.pricing) if item.pricing else None,
@@ -269,9 +270,18 @@ def _availability_label(item: QuotationLineItem | None) -> str | None:
     return "In stock"
 
 
-def quotation_out(quotation: QuotationRequest) -> QuotationOut:
+def quotation_out(
+    quotation: QuotationRequest,
+    priority_products: set[tuple[str, str]] | None = None,
+) -> QuotationOut:
+    """`priority_products` is a set of `(grade, make)` pairs the caller has
+    already fetched once for the whole page - passed in rather than queried
+    here so listing N quotations does not cost N extra lookups."""
+    from app.services.quotations.stages import stage_of
+
     total, needs_review = _quotation_summary(quotation)
     first = quotation.line_items[0] if quotation.line_items else None
+    pairs = priority_products or set()
 
     return QuotationOut(
         id=quotation.id,
@@ -283,6 +293,7 @@ def quotation_out(quotation: QuotationRequest) -> QuotationOut:
         or (quotation.customer.company if quotation.customer else None),
         customer_email=quotation.customer_email,
         status=quotation.status.value,
+        stage=stage_of(quotation),
         confidence=quotation.confidence.value if quotation.confidence else None,
         delivery_location=quotation.delivery_location,
         line_count=len(quotation.line_items),
@@ -290,17 +301,29 @@ def quotation_out(quotation: QuotationRequest) -> QuotationOut:
         headline_product=_headline(first),
         headline_availability=_availability_label(first),
         requires_manual_review=needs_review,
+        not_sent_reason=quotation.not_sent_reason.value if quotation.not_sent_reason else None,
+        not_sent_note=quotation.not_sent_note,
+        is_priority_customer=bool(quotation.customer and quotation.customer.is_priority),
+        is_priority_product=any(
+            (item.grade, item.matched_stock_item.make) in pairs
+            for item in quotation.line_items
+            if item.matched_stock_item
+        ),
+        line_items=[line_item_out(item) for item in quotation.line_items],
         created_at=quotation.created_at,
         sent_at=quotation.sent_at,
     )
 
 
-def quotation_detail_out(quotation: QuotationRequest) -> QuotationDetailOut:
+def quotation_detail_out(
+    quotation: QuotationRequest,
+    priority_products: set[tuple[str, str]] | None = None,
+) -> QuotationDetailOut:
     drafts = sorted(quotation.drafts, key=lambda d: d.version, reverse=True)
     approvals = [a for draft in quotation.drafts for a in draft.approvals]
 
     return QuotationDetailOut(
-        **quotation_out(quotation).model_dump(),
+        **quotation_out(quotation, priority_products).model_dump(),
         required_delivery_date=quotation.required_delivery_date,
         payment_terms=quotation.payment_terms,
         additional_requirements=quotation.additional_requirements or [],
@@ -309,7 +332,6 @@ def quotation_detail_out(quotation: QuotationRequest) -> QuotationDetailOut:
         send_error=quotation.send_error,
         email=email_detail_out(quotation.email) if quotation.email else None,
         replies=[email_detail_out(reply) for reply in quotation.replies],
-        line_items=[line_item_out(item) for item in quotation.line_items],
         current_draft=draft_out(quotation.current_draft) if quotation.current_draft else None,
         drafts=[draft_out(d) for d in drafts],
         approvals=[
@@ -360,4 +382,5 @@ def customer_out(customer: Customer) -> CustomerOut:
         payment_terms=customer.payment_terms,
         status=customer.status.value,
         is_verified=customer.is_verified,
+        is_priority=customer.is_priority,
     )

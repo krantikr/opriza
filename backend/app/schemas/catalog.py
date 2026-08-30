@@ -56,7 +56,22 @@ class StockSummaryOut(ORMModel):
     ageing_min_days: int | None = None
     ageing_max_days: int | None = None
     avg_landed_cost_per_kg: float | None = None
+    #: True if any lot in this spec is a flagged grade+make. A spec can group
+    #: lots from more than one mill (`make` differs lot to lot, per the note
+    #: above), so this is "at least one priority lot here", not "every lot is".
+    is_priority: bool = False
     lots: list[StockItemOut] = Field(default_factory=list)
+
+
+class PriorityProductIn(ORMModel):
+    grade: str = Field(min_length=1, max_length=60)
+    make: str = Field(min_length=1, max_length=80)
+
+
+class PriorityProductOut(ORMModel):
+    id: int
+    grade: str
+    make: str
 
 
 class CustomerOut(ORMModel):
@@ -71,6 +86,7 @@ class CustomerOut(ORMModel):
     payment_terms: str | None = None
     status: str
     is_verified: bool = False
+    is_priority: bool = False
 
 
 class StockCheckRequest(ORMModel):

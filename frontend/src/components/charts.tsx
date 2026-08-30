@@ -405,29 +405,59 @@ export function DonutChart({
 /** Stage-to-stage progression, where the drop between rows is the message. */
 export function FunnelChart({
   stages,
+  format,
 }: {
-  stages: { stage: string; count: number; note?: string }[];
+  stages: {
+    stage: string;
+    value: number;
+    displayValue?: string;
+    note?: string;
+    /** This stage's value isn't in the same unit as the rest (e.g. a count
+     *  of emails sitting among tonnage/value stages) — drawn as an outline
+     *  rather than a filled bar, and excluded from the width comparison so
+     *  it can't dwarf or vanish next to figures it isn't comparable to. */
+    approx?: boolean;
+  }[];
+  /** Renders the bar's own label; defaults to the raw number. */
+  format?: (v: number) => string;
 }) {
-  const peak = Math.max(1, ...stages.map((s) => s.count));
+  const peak = Math.max(1, ...stages.filter((s) => !s.approx).map((s) => s.value));
 
   return (
     <div className="flex flex-col gap-2">
       {stages.map((s, i) => {
-        const previous = i > 0 ? stages[i - 1].count : null;
-        const drop = previous && previous > 0 ? 1 - s.count / previous : null;
+        const previous = i > 0 ? stages[i - 1].value : null;
+        const drop = previous && previous > 0 && !s.approx ? 1 - s.value / previous : null;
+        const label = s.displayValue ?? (format ? format(s.value) : String(s.value));
+        const widthPct = s.approx ? 100 : Math.max((s.value / peak) * 100, s.value ? 6 : 0);
+        const empty = !s.approx && s.value === 0;
+
         return (
           <div key={s.stage} className="flex items-center gap-3">
             <span className="w-36 shrink-0 truncate text-sm text-ink-soft">{s.stage}</span>
-            <div className="h-6 flex-1 overflow-hidden rounded-sm bg-sunk">
-              <div
-                className="flex h-full items-center rounded-sm bg-brand/80 px-2 transition-[width]"
-                style={{ width: `${Math.max((s.count / peak) * 100, s.count ? 6 : 0)}%` }}
-              >
-                <span className="tabular text-[11px] font-semibold text-white">{s.count}</span>
-              </div>
+            <div className="relative h-6 flex-1 overflow-hidden rounded-sm bg-sunk">
+              {!empty && (
+                <div
+                  className={`flex h-full items-center rounded-sm px-2 transition-[width] ${
+                    s.approx ? "border border-dashed border-rule-firm bg-transparent" : "bg-brand/80"
+                  }`}
+                  style={{ width: `${widthPct}%` }}
+                >
+                  <span
+                    className={`tabular text-[11px] font-semibold ${s.approx ? "text-ink-soft" : "text-white"}`}
+                  >
+                    {label}
+                  </span>
+                </div>
+              )}
+              {empty && (
+                <span className="tabular absolute inset-y-0 left-2 flex items-center text-[11px] font-medium text-ink-faint">
+                  {label}
+                </span>
+              )}
             </div>
-            <span className="w-24 shrink-0 text-right text-[11px] text-ink-faint">
-              {drop !== null && drop > 0 ? `−${(drop * 100).toFixed(0)}%` : ""}
+            <span className="w-28 shrink-0 text-right text-[11px] text-ink-faint">
+              {s.note || (drop !== null && drop > 0 ? `−${(drop * 100).toFixed(0)}%` : "")}
             </span>
           </div>
         );

@@ -362,3 +362,19 @@ class LostReason(StrEnum):
     NO_STOCK = "NO_STOCK"
     NO_RESPONSE = "NO_RESPONSE"
     OTHER = "OTHER"
+
+
+class NotSentReason(StrEnum):
+    """Why a quotation hasn't gone out yet.
+
+    A different question from `LostReason` - this is asked before a quote
+    ever reaches the customer, not after it fails to convert. Set by hand:
+    the desk knows which of these is true, and a closed set is what lets
+    "how many are stuck on market rates today" be answered by counting
+    rather than by reading every row.
+    """
+
+    PENDING_MARKET_RATE = "PENDING_MARKET_RATE"
+    PENDING_CUSTOMER_RATE = "PENDING_CUSTOMER_RATE"
+    PENDING_HEAD_APPROVAL = "PENDING_HEAD_APPROVAL"
+    OTHER = "OTHER"

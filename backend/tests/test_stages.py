@@ -31,9 +31,9 @@ class Fake:
 # --- The mapping ------------------------------------------------------------
 
 
-def test_the_five_stages_are_in_working_order():
+def test_the_six_stages_are_in_working_order():
     assert [key for key, _, _ in COMMERCIAL_STAGES] == [
-        "received", "sent", "negotiation", "delivery_pending", "payment_pending",
+        "received", "sent", "negotiation", "delivery_pending", "payment_pending", "completed",
     ]
 
 
@@ -60,10 +60,16 @@ def test_despatched_goods_move_the_stage_without_a_status_change():
     assert stage_of(accepted) == "payment_pending"
 
 
-def test_settled_quotations_are_in_no_stage():
-    """A board is a list of things to do, not an archive."""
-    for status in (Q.PAID, Q.CUSTOMER_DECLINED, Q.REJECTED, Q.FAILED):
+def test_lost_or_rejected_quotations_are_in_no_stage():
+    """A board is a list of things to do, not an archive - a deal that never
+    converted has nothing left to work, so it carries no working stage."""
+    for status in (Q.CUSTOMER_DECLINED, Q.REJECTED, Q.FAILED):
         assert stage_of(Fake(status)) is None, status
+
+
+def test_paid_quotations_are_in_the_completed_stage():
+    """Unlike a lost deal, a paid one closed clean - worth its own filter."""
+    assert stage_of(Fake(Q.PAID)) == "completed"
 
 
 def test_every_stage_can_be_reached_by_hand():
@@ -134,6 +140,17 @@ def test_marking_won_records_both_dates(db, client, quoted_quotation):
     assert fresh.paid_at is not None
 
 
+def test_marking_completed_is_the_same_move_as_won(db, client, quoted_quotation):
+    """"completed" is the label a trader sees; "won" is kept only as an
+    alias so nothing that already calls it breaks."""
+    client.post(f"/api/v1/quotations/{quoted_quotation.id}/stage", json={"stage": "completed"})
+    db.expire_all()
+    fresh = db.get(type(quoted_quotation), quoted_quotation.id)
+    assert fresh.status is Q.PAID
+    assert fresh.paid_at is not None
+    assert fresh.despatched_at is not None
+
+
 def test_moving_a_card_leaves_the_record_of_what_was_sent_alone(db, client, quoted_quotation):
     """The status is where it sits; the draft is what was actually said."""
     from app.models import DraftStatus, QuotationDraft
@@ -168,10 +185,10 @@ def test_the_move_is_recorded_against_the_quotation(db, client, quoted_quotation
 # --- The dashboard ----------------------------------------------------------
 
 
-def test_the_dashboard_reports_all_five_stages(client, quoted_quotation):
+def test_the_dashboard_reports_all_six_stages(client, quoted_quotation):
     body = client.get("/api/v1/dashboard/pipeline").json()
     assert [s["key"] for s in body["stages"]] == [
-        "received", "sent", "negotiation", "delivery_pending", "payment_pending",
+        "received", "sent", "negotiation", "delivery_pending", "payment_pending", "completed",
     ]
 
 
@@ -274,6 +291,49 @@ def test_an_invoice_past_its_terms_is_reported_overdue(db, quoted_quotation):
     assert pipeline.overdue_count == 1
 
 
+def test_payments_are_bucketed_by_how_soon_theyre_due(db, quoted_quotation):
+    from datetime import timedelta
+
+    from app.core.db import utcnow
+    from app.services.quotations.pipeline import build
+
+    quoted_quotation.status = Q.PAYMENT_PENDING
+    quoted_quotation.despatched_at = utcnow() - timedelta(days=45)
+    quoted_quotation.payment_terms = "30 days"
+    db.commit()
+
+    pipeline = build(db)
+    row = pipeline.payments[0]
+    assert row.bucket == "overdue"
+
+    buckets = {b.key: b for b in pipeline.payment_buckets}
+    assert buckets["overdue"].count == 1
+    assert buckets["not_due"].count == 0
+    assert buckets["due_soon"].count == 0
+
+
+def test_a_payment_due_within_the_week_is_due_soon_not_overdue(db, quoted_quotation):
+    from datetime import timedelta
+
+    from app.core.db import utcnow
+    from app.services.quotations.pipeline import build
+
+    # Due in 3 days: 30-day terms, despatched 27 days ago.
+    quoted_quotation.status = Q.PAYMENT_PENDING
+    quoted_quotation.despatched_at = utcnow() - timedelta(days=27)
+    quoted_quotation.payment_terms = "30 days"
+    db.commit()
+
+    pipeline = build(db)
+    row = pipeline.payments[0]
+    assert row.days_overdue == 0
+    assert row.bucket == "due_soon"
+
+    buckets = {b.key: b for b in pipeline.payment_buckets}
+    assert buckets["due_soon"].count == 1
+    assert buckets["overdue"].count == 0
+
+
 def test_a_paid_order_leaves_the_payment_table(db, quoted_quotation):
     from datetime import timedelta
 
@@ -326,3 +386,116 @@ def test_the_pipeline_reports_tonnage_not_only_counts(db, client, quoted_quotati
     received = next(s for s in body["stages"] if s["key"] == "received")
     assert received["tonnes"] > 0
     assert "value" in received and "count" in received
+
+
+# --- Why a quotation hasn't been sent yet -----------------------------------
+
+
+def test_a_not_sent_reason_can_be_set_and_read_back(db, client, quoted_quotation):
+    response = client.post(
+        f"/api/v1/quotations/{quoted_quotation.id}/not-sent-reason",
+        json={"not_sent_reason": "PENDING_MARKET_RATE", "not_sent_note": "waiting on JSPL"},
+    )
+    assert response.status_code == 200
+
+    db.expire_all()
+    fresh = db.get(type(quoted_quotation), quoted_quotation.id)
+    assert fresh.not_sent_reason.value == "PENDING_MARKET_RATE"
+    assert fresh.not_sent_note == "waiting on JSPL"
+
+
+def test_an_unknown_not_sent_reason_is_refused(client, quoted_quotation):
+    response = client.post(
+        f"/api/v1/quotations/{quoted_quotation.id}/not-sent-reason",
+        json={"not_sent_reason": "BECAUSE_I_SAID_SO"},
+    )
+    assert response.status_code == 422
+
+
+def test_the_reason_can_be_cleared(db, client, quoted_quotation):
+    client.post(
+        f"/api/v1/quotations/{quoted_quotation.id}/not-sent-reason",
+        json={"not_sent_reason": "OTHER", "not_sent_note": "no idea"},
+    )
+    client.post(
+        f"/api/v1/quotations/{quoted_quotation.id}/not-sent-reason",
+        json={"not_sent_reason": None},
+    )
+
+    db.expire_all()
+    fresh = db.get(type(quoted_quotation), quoted_quotation.id)
+    assert fresh.not_sent_reason is None
+    assert fresh.not_sent_note is None
+
+
+def test_the_quotation_list_carries_line_items_and_stage(client, quoted_quotation):
+    """The redesigned table renders one row per line item and reads the
+    working stage straight off the response, rather than re-deriving it."""
+    body = client.get("/api/v1/quotations").json()
+    row = next(q for q in body["items"] if q["id"] == quoted_quotation.id)
+    assert row["stage"] == "received"
+    assert len(row["line_items"]) == len(quoted_quotation.line_items)
+    assert row["line_items"][0]["grade"] == quoted_quotation.line_items[0].grade
+
+
+# --- Priority ----------------------------------------------------------------
+
+
+def test_a_customer_can_be_marked_and_unmarked_priority(db, client, customer):
+    assert customer.is_priority is False
+
+    r1 = client.post(f"/api/v1/customers/{customer.id}/priority", json={"is_priority": True})
+    assert r1.status_code == 200
+    assert r1.json()["is_priority"] is True
+
+    db.expire_all()
+    assert db.get(type(customer), customer.id).is_priority is True
+
+    r2 = client.post(f"/api/v1/customers/{customer.id}/priority", json={"is_priority": False})
+    assert r2.status_code == 200
+    db.expire_all()
+    assert db.get(type(customer), customer.id).is_priority is False
+
+
+def test_a_quotation_from_a_priority_customer_is_flagged_on_the_list(
+    db, client, customer, quoted_quotation
+):
+    client.post(f"/api/v1/customers/{customer.id}/priority", json={"is_priority": True})
+
+    body = client.get("/api/v1/quotations").json()
+    row = next(q for q in body["items"] if q["id"] == quoted_quotation.id)
+    assert row["is_priority_customer"] is True
+    assert row["is_priority_product"] is False
+
+
+def test_priority_products_are_matched_on_grade_and_make(db, client, plate, quoted_quotation):
+    plate.make = "JSPL"
+    db.commit()
+
+    create = client.post("/api/v1/priority-products", json={"grade": "E250", "make": "JSPL"})
+    assert create.status_code == 201
+    product_id = create.json()["id"]
+
+    body = client.get("/api/v1/quotations").json()
+    row = next(q for q in body["items"] if q["id"] == quoted_quotation.id)
+    assert row["is_priority_product"] is True
+
+    listed = client.get("/api/v1/priority-products").json()
+    assert any(p["grade"] == "E250" and p["make"] == "JSPL" for p in listed)
+
+    delete = client.delete(f"/api/v1/priority-products/{product_id}")
+    assert delete.status_code == 204
+
+    body = client.get("/api/v1/quotations").json()
+    row = next(q for q in body["items"] if q["id"] == quoted_quotation.id)
+    assert row["is_priority_product"] is False
+
+
+def test_marking_the_same_priority_product_twice_does_not_duplicate(client, plate):
+    plate.make = "JSPL"
+    first = client.post("/api/v1/priority-products", json={"grade": "E250", "make": "JSPL"})
+    second = client.post("/api/v1/priority-products", json={"grade": "E250", "make": "JSPL"})
+    assert first.json()["id"] == second.json()["id"]
+
+    listed = client.get("/api/v1/priority-products").json()
+    assert len(listed) == 1

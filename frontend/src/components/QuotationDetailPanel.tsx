@@ -50,11 +50,11 @@ function SendIcon() {
 
 /** The working stages, in the order the server defines them.
  *
- *  Duplicated from `stages.py` rather than fetched: it is five fixed labels,
+ *  Duplicated from `stages.py` rather than fetched: it is six fixed labels,
  *  and a round trip to render a row of buttons would leave them blank for a
  *  moment on every open. The server remains the authority - it rejects a
  *  stage it does not know, and the test suite pins both lists to the same
- *  five keys. */
+ *  six keys. */
 const STAGES: { key: string; label: string; statuses: string[] }[] = [
   {
     key: "received",
@@ -65,7 +65,7 @@ const STAGES: { key: string; label: string; statuses: string[] }[] = [
   { key: "negotiation", label: "Negotiation", statuses: ["NEGOTIATION"] },
   { key: "delivery_pending", label: "Delivery pending", statuses: ["CUSTOMER_ACCEPTED"] },
   { key: "payment_pending", label: "Payment pending", statuses: ["PAYMENT_PENDING"] },
-  { key: "won", label: "Paid", statuses: ["PAID"] },
+  { key: "completed", label: "Completed", statuses: ["PAID"] },
 ];
 
 function EnquiryTerms({

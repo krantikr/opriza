@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 
 import { api, useApi } from "../api/client";
 import type {
+  PriorityProduct,
   StockHold,
   StockImportResult,
   StockItem,
@@ -21,6 +22,16 @@ import {
   Loading,
   num,
 } from "../components/ui";
+
+/** A spec's lots may span more than one mill; priority is settable only when
+ *  every lot in the group agrees on a grade+make, since that is the only
+ *  case where "toggle this row" points at one unambiguous product. */
+function solePriorityKey(row: StockSummary): { grade: string; make: string } | null {
+  if (!row.grade) return null;
+  const makes = new Set(row.lots.map((l) => l.make).filter(Boolean));
+  if (makes.size !== 1) return null;
+  return { grade: row.grade, make: [...makes][0] as string };
+}
 
 /** A spec key stable across reloads, so an expanded row stays expanded. */
 function specKey(row: StockSummary): string {
@@ -178,6 +189,21 @@ export default function Stock() {
      delays the stock list itself, which is what the page is mostly used for. */
   const positionApi = useApi<StockPosition>("/stock/position");
   const position = positionApi.data;
+
+  const priorityApi = useApi<PriorityProduct[]>("/priority-products");
+  const priorityId = (grade: string, make: string) =>
+    priorityApi.data?.find((p) => p.grade === grade && p.make === make)?.id;
+
+  async function togglePriorityProduct(grade: string, make: string, on: boolean) {
+    if (on) {
+      await api.post("/priority-products", { grade, make });
+    } else {
+      const id = priorityId(grade, make);
+      if (id) await api.del(`/priority-products/${id}`);
+    }
+    priorityApi.reload();
+    reload();
+  }
 
   /* Matched on grade and the three dimensions rather than the product word:
      the server groups "Plate" and "C-45 Plates" together, and matching on the
@@ -382,6 +408,7 @@ export default function Stock() {
                       leaves the reader to infer the unit, which is exactly
                       the inference that must not be left to them. */}
                   <th className="w-8 px-2 py-2" />
+                  <th className="w-8 px-2 py-2" />
                   <th className="px-4 py-2 font-medium">Material</th>
                   <th className="px-4 py-2 font-medium">Location</th>
                   <th className="px-4 py-2 text-right font-medium">In stock (MT)</th>
@@ -401,12 +428,42 @@ export default function Stock() {
                   // Falls back to the plain balance when the position has no
                   // row for this spec, so the column is never blank.
                   const free = Number(demand?.free_mt ?? row.balance_qty_mt);
+                  const solePriority = solePriorityKey(row);
                   return [
                     <tr
                       key={key}
                       onClick={() => toggle(key)}
-                      className={`cursor-pointer hover:bg-sunk ${open ? "bg-sunk" : ""}`}
+                      className={`cursor-pointer hover:bg-sunk ${
+                        row.is_priority ? "bg-attention-wash/40" : ""
+                      } ${open ? "bg-sunk" : ""}`}
                     >
+                      <td className="px-2 py-2 text-center">
+                        {solePriority ? (
+                          <button
+                            type="button"
+                            title={
+                              row.is_priority
+                                ? `Priority (${solePriority.grade} / ${solePriority.make})`
+                                : `Mark ${solePriority.grade} / ${solePriority.make} as priority`
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              togglePriorityProduct(
+                                solePriority.grade,
+                                solePriority.make,
+                                !row.is_priority,
+                              );
+                            }}
+                            className={row.is_priority ? "text-attention" : "text-ink-faint hover:text-attention"}
+                          >
+                            ★
+                          </button>
+                        ) : row.is_priority ? (
+                          <span className="text-attention" title="Priority (mixed makes in this spec)">
+                            ★
+                          </span>
+                        ) : null}
+                      </td>
                       <td className="px-2 py-2 text-center text-ink-400">{open ? "▾" : "▸"}</td>
                       <td className="px-4 py-2">
                         <span className="text-ink">{row.display_name}</span>
@@ -441,7 +498,7 @@ export default function Stock() {
                     </tr>,
                     open ? (
                       <tr key={`${key}-lots`}>
-                        <td colSpan={8} className="p-0">
+                        <td colSpan={9} className="p-0">
                           <LotTable lots={row.lots} onAdjust={setAdjusting} />
                         </td>
                       </tr>

@@ -9,9 +9,11 @@ from sqlalchemy import func, select
 
 from app.api.deps import TenantDb
 from app.api.serializers import customer_out, stock_item_out
-from app.models import Customer, StockItem
+from app.models import Customer, PriorityProduct, StockItem
 from app.schemas.catalog import (
     CustomerOut,
+    PriorityProductIn,
+    PriorityProductOut,
     SpecPositionOut,
     StockCheckRequest,
     StockItemIn,
@@ -72,6 +74,10 @@ def stock_summary(db: TenantDb) -> list[StockSummaryOut]:
         key = (row.product_type, row.grade, row.thickness_mm, row.width_mm, row.length_mm)
         groups.setdefault(key, []).append(row)
 
+    priority_pairs = {
+        (p.grade, p.make) for p in db.scalars(select(PriorityProduct))
+    }
+
     summaries: list[StockSummaryOut] = []
     for lots in groups.values():
         representative = min(lots, key=lambda r: r.ageing_days or 0)
@@ -100,6 +106,7 @@ def stock_summary(db: TenantDb) -> list[StockSummaryOut]:
                 ageing_min_days=min(ageing_values) if ageing_values else None,
                 ageing_max_days=max(ageing_values) if ageing_values else None,
                 avg_landed_cost_per_kg=avg_cost,
+                is_priority=any((lot.grade, lot.make) in priority_pairs for lot in lots),
                 # Oldest first: ageing is what decides which lot to move, so
                 # that is the order a reviewer wants to read them in.
                 lots=[
@@ -201,6 +208,52 @@ def get_stock_item(stock_item_id: int, db: TenantDb) -> StockItemOut:
     if item is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Stock item {stock_item_id} not found")
     return stock_item_out(item)
+
+
+# --- Priority products ---------------------------------------------------
+#
+# Grade + make, not a stock item id: `StockItem` rows are wiped and replaced
+# wholesale on every import, so a flag stored there would vanish on the next
+# upload. This table survives re-imports because it never points at a lot.
+
+
+@router.get("/priority-products", response_model=list[PriorityProductOut], tags=["stock"])
+def list_priority_products(db: TenantDb) -> list[PriorityProductOut]:
+    rows = db.scalars(select(PriorityProduct).order_by(PriorityProduct.grade, PriorityProduct.make))
+    return [PriorityProductOut(id=r.id, grade=r.grade, make=r.make) for r in rows]
+
+
+@router.post(
+    "/priority-products",
+    response_model=PriorityProductOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["stock"],
+)
+def mark_priority_product(payload: PriorityProductIn, db: TenantDb) -> PriorityProductOut:
+    grade = payload.grade.strip()
+    make = payload.make.strip()
+    existing = db.scalar(
+        select(PriorityProduct).where(
+            PriorityProduct.grade == grade, PriorityProduct.make == make
+        )
+    )
+    if existing:
+        return PriorityProductOut(id=existing.id, grade=existing.grade, make=existing.make)
+
+    row = PriorityProduct(grade=grade, make=make)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return PriorityProductOut(id=row.id, grade=row.grade, make=row.make)
+
+
+@router.delete("/priority-products/{priority_product_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["stock"])
+def unmark_priority_product(priority_product_id: int, db: TenantDb) -> None:
+    row = db.get(PriorityProduct, priority_product_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Priority product not found")
+    db.delete(row)
+    db.commit()
 
 
 @router.post("/stock/check", response_model=StockAvailabilityOut, tags=["stock"])

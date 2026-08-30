@@ -30,12 +30,24 @@ from app.models import (
 )
 
 #: Statuses that mean the customer said yes, and that a quote actually went out.
-WON = (QuotationStatus.CUSTOMER_ACCEPTED,)
+#:
+#: An order does not stop being won when it ships or when the money arrives -
+#: PAYMENT_PENDING and PAID are later points on the same journey. Leaving them
+#: out silently dropped every completed order out of the win rate, so a desk
+#: that collected its money looked worse than one that had not.
+WON = (
+    QuotationStatus.CUSTOMER_ACCEPTED,
+    QuotationStatus.PAYMENT_PENDING,
+    QuotationStatus.PAID,
+)
 LOST = (QuotationStatus.CUSTOMER_DECLINED,)
 SENT_ONWARDS = (
     QuotationStatus.SENT,
+    QuotationStatus.NEGOTIATION,
     QuotationStatus.CUSTOMER_ACCEPTED,
     QuotationStatus.CUSTOMER_DECLINED,
+    QuotationStatus.PAYMENT_PENDING,
+    QuotationStatus.PAID,
 )
 
 
@@ -66,6 +78,12 @@ class FunnelStage:
     stage: str
     count: int
     note: str = ""
+    tonnes: Decimal = Decimal("0.000")
+    value: Decimal = Decimal("0.000")
+    #: Of `count`, how many have no usable quantity at all - the customer
+    #: never said how much, so they sit outside `tonnes` entirely rather than
+    #: silently contributing zero to it.
+    unquantified: int = 0
 
 
 @dataclass(slots=True)
@@ -95,46 +113,80 @@ class ReportService:
         """Enquiry to order, stage by stage.
 
         The drop between stages is the operational question a trading desk
-        actually asks: how many enquiries never became a quote, and how many
-        quotes never became a reply.
+        actually asks: how many enquiries never became a quote, how many are
+        stuck waiting on a reply, and how many that got a reply were lost
+        rather than won.
         """
-        received = self._count(
-            select(func.count()).select_from(Email).where(
-                Email.received_at.between(period.start_dt, period.end_dt)
+        enquiry_emails = list(
+            self.db.scalars(
+                select(Email).where(
+                    Email.received_at.between(period.start_dt, period.end_dt),
+                    Email.category == EmailCategory.QUOTATION_REQUEST,
+                )
             )
         )
-        enquiries = self._count(
-            select(func.count()).select_from(Email).where(
-                Email.received_at.between(period.start_dt, period.end_dt),
-                Email.category == EmailCategory.QUOTATION_REQUEST,
-            )
-        )
-        quoted = self._count(self._in_period(select(func.count()).select_from(QuotationRequest), period))
-        sent = self._count(
-            self._in_period(select(func.count()).select_from(QuotationRequest), period).where(
-                QuotationRequest.status.in_(SENT_ONWARDS)
-            )
-        )
-        accepted = self._count(
-            self._in_period(select(func.count()).select_from(QuotationRequest), period).where(
-                QuotationRequest.status.in_(WON)
-            )
-        )
-        declined = self._count(
-            self._in_period(select(func.count()).select_from(QuotationRequest), period).where(
-                QuotationRequest.status.in_(LOST)
-            )
+        enquiries = len(enquiry_emails)
+        # What the customer asked for, not what was ultimately quoted: read
+        # off the line items as extracted, before pricing or stock-check ever
+        # runs. An enquiry that failed extraction has no quotation yet and
+        # contributes nothing here - the count above still counts the email.
+        enquiry_quotations = [e.quotation_request for e in enquiry_emails if e.quotation_request]
+        enquiry_tonnes, enquiry_value = _totals(enquiry_quotations)
+        enquiry_unquantified = _unquantified(enquiry_quotations)
+
+        quotations_in_period = list(
+            self.db.scalars(self._in_period(select(QuotationRequest), period))
         )
 
-        awaiting = sent - accepted - declined
+        def _by_status(*statuses: QuotationStatus) -> list[QuotationRequest]:
+            return [q for q in quotations_in_period if q.status in statuses]
+
+        provided = _by_status(*SENT_ONWARDS)
+        follow_up = _by_status(QuotationStatus.SENT)
+        negotiation = _by_status(QuotationStatus.NEGOTIATION)
+        won = _by_status(*WON)
+        lost = _by_status(*LOST)
+
+        provided_count = len(provided)
+
         return [
-            FunnelStage("Emails received", received),
-            FunnelStage("Enquiries identified", enquiries, _rate(enquiries, received)),
-            FunnelStage("Quotations raised", quoted, _rate(quoted, enquiries)),
-            FunnelStage("Quotations sent", sent, _rate(sent, quoted)),
-            FunnelStage("Awaiting reply", max(awaiting, 0)),
-            FunnelStage("Accepted", accepted, _rate(accepted, sent)),
-            FunnelStage("Declined", declined, _rate(declined, sent)),
+            FunnelStage(
+                "Enquiries received",
+                enquiries,
+                tonnes=enquiry_tonnes,
+                value=enquiry_value,
+                unquantified=enquiry_unquantified,
+            ),
+            FunnelStage(
+                "Quotations provided",
+                provided_count,
+                _rate(provided_count, enquiries),
+                *_totals(provided),
+            ),
+            FunnelStage(
+                "Follow up",
+                len(follow_up),
+                _rate(len(follow_up), provided_count),
+                *_totals(follow_up),
+            ),
+            FunnelStage(
+                "In negotiation",
+                len(negotiation),
+                _rate(len(negotiation), provided_count),
+                *_totals(negotiation),
+            ),
+            FunnelStage(
+                "Orders received",
+                len(won),
+                _rate(len(won), provided_count),
+                *_totals(won),
+            ),
+            FunnelStage(
+                "Lost / cancelled",
+                len(lost),
+                _rate(len(lost), provided_count),
+                *_totals(lost),
+            ),
         ]
 
     # --- Win / loss -------------------------------------------------------
@@ -411,6 +463,37 @@ def _quotation_value(quotation: QuotationRequest) -> Decimal:
         if item.pricing and item.pricing.line_total:
             total += item.pricing.line_total
     return total
+
+
+def _quotation_tonnes(quotation: QuotationRequest) -> Decimal:
+    total = Decimal(0)
+    for item in quotation.line_items:
+        if item.quantity_mt:
+            total += Decimal(str(item.quantity_mt))
+    return total
+
+
+def _totals(quotations: list[QuotationRequest]) -> tuple[Decimal, Decimal]:
+    """(tonnes, value) summed across a set of quotations, for a funnel stage."""
+    tonnes = sum((_quotation_tonnes(q) for q in quotations), Decimal(0))
+    value = sum((_quotation_value(q) for q in quotations), Decimal(0))
+    return tonnes, value
+
+
+def _unquantified(quotations: list[QuotationRequest]) -> int:
+    """How many of these have line items but no usable quantity at all.
+
+    Not "matching failed" - the customer never said how much. A plate's
+    weight quoted as a physical spec ("weighing approx 500kg") or dimensions
+    given with no piece count are both this: nothing to convert, because
+    nothing was stated, so the desk is waiting on the customer, not on the
+    system.
+    """
+    return sum(
+        1
+        for q in quotations
+        if q.line_items and all(item.quantity_mt is None for item in q.line_items)
+    )
 
 
 def _rate(part: int, whole: int) -> str:

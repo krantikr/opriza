@@ -26,7 +26,25 @@ export type QuotationStatus =
   | "REJECTED"
   | "FAILED"
   | "CUSTOMER_ACCEPTED"
-  | "CUSTOMER_DECLINED";
+  | "CUSTOMER_DECLINED"
+  | "NEGOTIATION"
+  | "PAYMENT_PENDING"
+  | "PAID";
+
+/** The six working stages, in the order a desk reads them. */
+export type QuotationStage =
+  | "received"
+  | "sent"
+  | "negotiation"
+  | "delivery_pending"
+  | "payment_pending"
+  | "completed";
+
+export type NotSentReason =
+  | "PENDING_MARKET_RATE"
+  | "PENDING_CUSTOMER_RATE"
+  | "PENDING_HEAD_APPROVAL"
+  | "OTHER";
 
 export type ReplyIntent = "ACCEPTED" | "DECLINED" | "NEEDS_REVIEW";
 
@@ -144,6 +162,7 @@ export interface LineItem {
   match_score: number | null;
   matched_stock_item_id: number | null;
   matched_stock_item_name: string | null;
+  matched_stock_item_make: string | null;
   match_candidates: MatchCandidate[];
   stock_availability: StockAvailability | null;
   pricing: QuotationPricing | null;
@@ -189,6 +208,9 @@ export interface Quotation {
   customer_company: string | null;
   customer_email: string | null;
   status: QuotationStatus;
+  /** The working stage this status derives to, or null once a deal is lost
+   *  / rejected and has nothing left to work. Computed server-side. */
+  stage: QuotationStage | null;
   confidence: Confidence | null;
   delivery_location: string | null;
   line_count: number;
@@ -196,6 +218,11 @@ export interface Quotation {
   headline_product: string | null;
   headline_availability: string | null;
   requires_manual_review: boolean;
+  not_sent_reason: NotSentReason | null;
+  not_sent_note: string | null;
+  is_priority_customer: boolean;
+  is_priority_product: boolean;
+  line_items: LineItem[];
   created_at: string;
   sent_at: string | null;
 }
@@ -209,7 +236,6 @@ export interface QuotationDetail extends Quotation {
   send_error: string | null;
   email: Email | null;
   replies: Email[];
-  line_items: LineItem[];
   current_draft: Draft | null;
   drafts: Draft[];
   approvals: ApprovalRecord[];
@@ -253,8 +279,17 @@ export interface StockSummary {
   ageing_min_days: number | null;
   ageing_max_days: number | null;
   avg_landed_cost_per_kg: number | null;
+  /** True if any lot in this spec is a flagged grade+make - a spec can span
+   *  more than one mill, so this is "at least one priority lot", not "all". */
+  is_priority: boolean;
   /** The underlying rows, so a spec can be expanded to per-lot detail. */
   lots: StockItem[];
+}
+
+export interface PriorityProduct {
+  id: number;
+  grade: string;
+  make: string;
 }
 
 export interface StockImportResult {
@@ -281,6 +316,7 @@ export interface Customer {
   status: string;
   /** False for records built from an email signature and not yet confirmed. */
   is_verified: boolean;
+  is_priority: boolean;
 }
 
 export interface DashboardMetrics {
@@ -679,7 +715,14 @@ export interface ReportResult {
 
 export interface FunnelReport {
   period: string;
-  stages: { stage: string; count: number; note: string }[];
+  stages: {
+    stage: string;
+    count: number;
+    note: string;
+    tonnes: number;
+    value: number;
+    unquantified: number;
+  }[];
 }
 
 /* ---------------------------------------------------------------------------
@@ -1025,11 +1068,13 @@ export interface PaymentDue {
   quotation_id: number;
   quotation_number: string;
   customer: string;
+  tonnes: number;
   value: number;
   despatched_on: string | null;
   terms: string | null;
   due_on: string | null;
   days_overdue: number;
+  bucket: "not_due" | "due_soon" | "overdue";
 }
 
 export interface PipelineReport {
@@ -1040,4 +1085,5 @@ export interface PipelineReport {
   overdue_count: number;
   deliveries: DeliveryDue[];
   payments: PaymentDue[];
+  payment_buckets: Stage[];
 }

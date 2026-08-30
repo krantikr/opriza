@@ -164,6 +164,11 @@ class CustomerIn(BaseModel):
     tier: str = Field(default="B", pattern="^[ABC]$")
     payment_terms: str | None = Field(default=None, max_length=200)
     is_verified: bool = False
+    is_priority: bool = False
+
+
+class PriorityIn(BaseModel):
+    is_priority: bool
 
 
 class CustomerNoteIn(BaseModel):

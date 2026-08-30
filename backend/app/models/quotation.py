@@ -20,6 +20,7 @@ from app.models.enums import (
     DraftStatus,
     LostReason,
     MatchStatus,
+    NotSentReason,
     QuantityUnit,
     QuotationStatus,
 )
@@ -103,6 +104,11 @@ class QuotationRequest(Base, TimestampMixin, TenantMixin):
     #: aggregate: free text cannot answer "how many did we lose on price".
     lost_reason: Mapped[LostReason | None] = mapped_column(enum_col(LostReason))
     lost_note: Mapped[str | None] = mapped_column(String(300))
+    #: Why it hasn't gone out yet - set by hand, before the quote ever reaches
+    #: the customer. Distinct from `lost_reason`, which is asked only after a
+    #: sent quote fails to convert.
+    not_sent_reason: Mapped[NotSentReason | None] = mapped_column(enum_col(NotSentReason))
+    not_sent_note: Mapped[str | None] = mapped_column(String(300))
 
     email: Mapped["Email"] = relationship(  # noqa: F821
         back_populates="quotation_request", foreign_keys="[QuotationRequest.email_id]"

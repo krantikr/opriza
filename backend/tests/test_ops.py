@@ -336,9 +336,35 @@ def test_the_funnel_counts_each_stage(db, quoted_quotation, default_user):
     stages = ReportService(db).funnel(DateRange.last_days(30))
     by_name = {s.stage: s.count for s in stages}
 
-    assert by_name["Emails received"] >= 1
-    assert by_name["Quotations raised"] == 1
-    assert by_name["Quotations sent"] == 0
+    assert by_name["Enquiries received"] >= 0
+    assert by_name["Quotations provided"] == 0
+    assert by_name["Orders received"] == 0
+    assert by_name["Lost / cancelled"] == 0
+
+
+def test_enquiries_received_carries_the_requested_tonnage(db, quoted_quotation, default_user):
+    """What the customer asked for, read off the line item before pricing runs."""
+    stages = {s.stage: s for s in ReportService(db).funnel(DateRange.last_days(30))}
+
+    enquiries = stages["Enquiries received"]
+    assert enquiries.count == 1
+    assert enquiries.tonnes == Decimal("20")
+
+
+def test_an_enquiry_with_no_stated_quantity_is_flagged_not_zeroed(db, quoted_quotation, default_user):
+    """A plate's weight given as a physical spec, or dimensions with no piece
+    count, is not a zero-tonne order - it is an order the desk cannot size
+    yet. It must not silently vanish into the tonnage total."""
+    quoted_quotation.line_items[0].quantity_mt = None
+    quoted_quotation.line_items[0].quantity = None
+    db.commit()
+
+    stages = {s.stage: s for s in ReportService(db).funnel(DateRange.last_days(30))}
+    enquiries = stages["Enquiries received"]
+
+    assert enquiries.count == 1
+    assert enquiries.tonnes == Decimal("0")
+    assert enquiries.unquantified == 1
 
 
 def test_win_loss_reports_the_rate_and_the_value(db, quoted_quotation, default_user):

@@ -83,6 +83,23 @@ class DeliveryRow:
     material: str
 
 
+#: Bucket keys in the order a trader should read them: money not yet due,
+#: money to chase this week, money already late.
+PAYMENT_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("not_due", "Not due yet"),
+    ("due_soon", "Due this week"),
+    ("overdue", "Overdue"),
+)
+
+
+def _payment_bucket(due_on: date | None, days_overdue: int, today: date) -> str:
+    if days_overdue > 0:
+        return "overdue"
+    if due_on is not None and today <= due_on <= today + timedelta(days=7):
+        return "due_soon"
+    return "not_due"
+
+
 @dataclass(slots=True)
 class PaymentRow:
     """One shipped order that has not been paid for."""
@@ -90,11 +107,13 @@ class PaymentRow:
     quotation_id: int
     quotation_number: str
     customer: str
+    tonnes: Decimal
     value: Decimal
     despatched_on: date | None
     terms: str | None
     due_on: date | None
     days_overdue: int
+    bucket: str
 
 
 @dataclass(slots=True)
@@ -102,6 +121,7 @@ class Pipeline:
     stages: list[StageTotal] = field(default_factory=list)
     deliveries: list[DeliveryRow] = field(default_factory=list)
     payments: list[PaymentRow] = field(default_factory=list)
+    payment_buckets: list[StageTotal] = field(default_factory=list)
 
     # Headline figures, so the interface does not re-derive them.
     to_buy_mt: Decimal = ZERO
@@ -234,16 +254,19 @@ def build(db: Session, *, today: date | None = None) -> Pipeline:
 
         shipped_on = shipped.date()
         due = shipped_on + timedelta(days=payment_days(quotation))
+        days_overdue = max((today - due).days, 0)
         pipeline.payments.append(
             PaymentRow(
                 quotation_id=quotation.id,
                 quotation_number=quotation.quotation_number,
                 customer=_customer(quotation),
+                tonnes=tonnes.get(quotation.id, ZERO),
                 value=value.get(quotation.id, ZERO),
                 despatched_on=shipped_on,
                 terms=quotation.payment_terms,
                 due_on=due,
-                days_overdue=max((today - due).days, 0),
+                days_overdue=days_overdue,
+                bucket=_payment_bucket(due, days_overdue, today),
             )
         )
 
@@ -261,6 +284,14 @@ def build(db: Session, *, today: date | None = None) -> Pipeline:
         ),
         ZERO,
     )
+
+    buckets = {key: StageTotal(key=key, label=label) for key, label in PAYMENT_BUCKETS}
+    for row in pipeline.payments:
+        bucket = buckets[row.bucket]
+        bucket.count += 1
+        bucket.tonnes += row.tonnes
+        bucket.value += row.value
+    pipeline.payment_buckets = [buckets[key] for key, _ in PAYMENT_BUCKETS]
 
     # Soonest wanted first, and anything with no date last: a delivery with a
     # stated date is a promise, and it outranks one without.

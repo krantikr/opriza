@@ -55,6 +55,7 @@ from app.schemas.ops import (
     NotificationOut,
     NotificationRuleIn,
     NotificationRuleOut,
+    PriorityIn,
     PushDeviceIn,
     PushDeviceOut,
     PushStatusOut,
@@ -835,6 +836,19 @@ def verify_customer(customer_id: int, db: TenantDb) -> dict:
     return {"id": customer.id, "is_verified": True}
 
 
+@router.post("/customers/{customer_id}/priority", response_model=dict, tags=["customers"])
+def set_customer_priority(customer_id: int, payload: PriorityIn, db: TenantDb) -> dict:
+    """Flag or unflag a customer as priority, from the Customers or
+    Quotations list row - a toggle, unlike `verify`, which only ever moves
+    one way."""
+    customer = db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    customer.is_priority = payload.is_priority
+    db.commit()
+    return {"id": customer.id, "is_priority": customer.is_priority}
+
+
 @router.get(
     "/customers/{customer_id}/notes", response_model=list[CustomerNoteOut], tags=["customers"]
 )
@@ -954,7 +968,17 @@ def funnel_report(
     stages = ReportService(db).funnel(period)
     return {
         "period": period.label(),
-        "stages": [{"stage": s.stage, "count": s.count, "note": s.note} for s in stages],
+        "stages": [
+            {
+                "stage": s.stage,
+                "count": s.count,
+                "note": s.note,
+                "tonnes": float(s.tonnes),
+                "value": float(s.value),
+                "unquantified": s.unquantified,
+            }
+            for s in stages
+        ],
     }
 
 

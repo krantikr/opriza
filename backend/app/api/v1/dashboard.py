@@ -218,13 +218,25 @@ def dashboard_pipeline(db: TenantDb) -> dict:
                 "quotation_id": p.quotation_id,
                 "quotation_number": p.quotation_number,
                 "customer": p.customer,
+                "tonnes": float(p.tonnes),
                 "value": float(p.value),
                 "despatched_on": p.despatched_on.isoformat() if p.despatched_on else None,
                 "terms": p.terms,
                 "due_on": p.due_on.isoformat() if p.due_on else None,
                 "days_overdue": p.days_overdue,
+                "bucket": p.bucket,
             }
             for p in pipeline.payments
+        ],
+        "payment_buckets": [
+            {
+                "key": b.key,
+                "label": b.label,
+                "count": b.count,
+                "tonnes": float(b.tonnes),
+                "value": float(b.value),
+            }
+            for b in pipeline.payment_buckets
         ],
     }
 

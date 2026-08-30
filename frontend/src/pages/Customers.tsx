@@ -14,6 +14,7 @@ import {
   Input,
   Loading,
   Scroller,
+  Toggle,
   when,
 } from "../components/ui";
 
@@ -148,6 +149,12 @@ function Detail({ id, onChanged }: { id: number; onChanged: () => void }) {
     }
   }
 
+  async function togglePriority(is_priority: boolean) {
+    await api.post(`/customers/${id}/priority`, { is_priority });
+    reload();
+    onChanged();
+  }
+
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-rule px-5 py-4">
@@ -161,7 +168,8 @@ function Detail({ id, onChanged }: { id: number; onChanged: () => void }) {
               <p className="truncate text-xs text-ink-faint">{data.email ?? "no email on file"}</p>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-3">
+            <Toggle checked={data.is_priority} onChange={togglePriority} label="Priority" />
             <Badge value={`TIER ${data.tier}`} dot={false} />
             {!data.is_verified && (
               <Button variant="primary" disabled={busy} onClick={verify}>
@@ -274,6 +282,11 @@ export default function Customers() {
                   </p>
                   <p className="truncate text-xs text-ink-faint">{c.email ?? c.name}</p>
                 </div>
+                {c.is_priority && (
+                  <span className="shrink-0 text-attention" title="Priority customer">
+                    ★
+                  </span>
+                )}
                 {!c.is_verified && (
                   <span
                     className="size-1.5 shrink-0 rounded-full bg-attention"
