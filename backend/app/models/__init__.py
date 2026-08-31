@@ -14,7 +14,6 @@ from app.models.enums import (
     EmailCategory,
     EmailSourceType,
     FollowUpStatus,
-    FollowUpTrigger,
     ImportEntity,
     ImportStatus,
     InviteStatus,
@@ -41,8 +40,6 @@ from app.models.enums import (
 from app.models.master import Customer, PriorityProduct, StockItem
 from app.models.ops import (
     CustomerNote,
-    FollowUpRule,
-    FollowUpSchedule,
     Notification,
     NotificationRule,
     PushDevice,
@@ -109,8 +106,6 @@ __all__ = [
     "NotificationRule",
     "PushDevice",
     "Notification",
-    "FollowUpRule",
-    "FollowUpSchedule",
     "StockMovement",
     "CustomerNote",
     # system
@@ -126,7 +121,6 @@ __all__ = [
     "EmailCategory",
     "EmailSourceType",
     "FollowUpStatus",
-    "FollowUpTrigger",
     "LostReason",
     "ImportEntity",
     "ImportStatus",

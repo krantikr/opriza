@@ -4,12 +4,12 @@ Three properties carry the design and are pinned here:
 
 * **Exactly one turn per quotation**, resolved by urgency. A quotation counted
   in two tabs makes every number on the screen a lie.
-* **A customer who replied and was never answered is visible.** This is the
-  case the schedule-shaped screen structurally could not show, because the
-  reply cancels the schedule. If this regresses the screen is worthless.
-* **Ordering is money, not time.** A large quotation outranks a small one that
-  went quiet earlier, and the factors that produced the ranking are returned
-  so the UI can show its working.
+* **A customer who replied and was never answered is visible.** The single
+  most urgent thing on a desk. If this regresses the screen is worthless.
+* **Ordering is latest activity.** The board reads as a live feed - whatever
+  moved most recently is the top row. Money at risk is still computed, and the
+  factors behind it are still returned so the UI can show its working; it just
+  no longer decides the order.
 """
 
 from __future__ import annotations
@@ -23,8 +23,6 @@ from app.models import (
     Email,
     EmailCategory,
     EmailSourceType,
-    FollowUpSchedule,
-    FollowUpStatus,
     MailDirection,
     ProcessingStatus,
     QuotationLineItem,
@@ -88,11 +86,7 @@ def reply(db, quotation, *, body="Rate is high sir.", category=EmailCategory.PRI
 
 
 def test_unanswered_reply_is_your_turn(db, sent_quotation):
-    """The case the old screen could never show.
-
-    A reply cancels the follow-up schedule, so a queue of schedules hides the
-    single most urgent thing on a desk: a customer actively waiting.
-    """
+    """A customer actively waiting is the most urgent row on the board."""
     reply(db, sent_quotation)
 
     rows = ChaseService(db).board()
@@ -150,23 +144,6 @@ def test_future_promise_is_not_yet_yours(db, sent_quotation):
     assert ChaseService(db).board()[0].turn is ChaseTurn.THEIRS
 
 
-def test_due_schedule_makes_it_your_turn(db, sent_quotation):
-    """A nudge the scheduler queued is still work sitting on the trader."""
-    db.add(
-        FollowUpSchedule(
-            quotation_request_id=sent_quotation.id,
-            attempt_no=1,
-            due_at=datetime.now(UTC) - timedelta(hours=2),
-            status=FollowUpStatus.DUE,
-        )
-    )
-    db.commit()
-
-    row = ChaseService(db).board()[0]
-    assert row.turn is ChaseTurn.YOURS
-    assert row.schedule_id is not None
-
-
 def test_long_silence_goes_cold(db, sent_quotation):
     sent_quotation.sent_at = datetime.now(UTC) - timedelta(days=COLD_AFTER_DAYS + 4)
     db.commit()
@@ -212,14 +189,6 @@ def test_every_row_has_exactly_one_turn(db, sent_quotation):
     """One quotation, one bucket - so the tab counts cannot double-count."""
     reply(db, sent_quotation)
     sent_quotation.promised_date = date.today() - timedelta(days=2)
-    db.add(
-        FollowUpSchedule(
-            quotation_request_id=sent_quotation.id,
-            attempt_no=1,
-            due_at=datetime.now(UTC) - timedelta(hours=2),
-            status=FollowUpStatus.DUE,
-        )
-    )
     db.commit()
 
     service = ChaseService(db)
@@ -240,11 +209,50 @@ def test_unsent_quotations_are_not_chased(db, quoted_quotation):
     assert ChaseService(db).board() == []
 
 
-def test_despatched_quotations_leave_the_board(db, sent_quotation):
+def test_a_despatched_quotation_stays_on_the_board_awaiting_payment(db, sent_quotation):
+    """Despatch is not the end of the follow-up: the money is still out.
+
+    The board used to drop these, which handed the trader back the job of
+    remembering which delivered orders had not been paid for.
+    """
+    sent_quotation.status = QuotationStatus.CUSTOMER_ACCEPTED
     sent_quotation.despatched_at = datetime.now(UTC)
     db.commit()
 
+    rows = ChaseService(db).board()
+
+    assert [r.stage for r in rows] == ["payment_pending"]
+
+
+def test_a_paid_quotation_leaves_the_board(db, sent_quotation):
+    """Paid is finished - nothing is owed in either direction."""
+    sent_quotation.status = QuotationStatus.PAID
+    db.commit()
+
     assert ChaseService(db).board() == []
+
+
+def test_a_flagged_buyer_marks_the_row_priority(db, sent_quotation):
+    """The same highlight the quotations list gives, on the same deal.
+
+    A row that is starred on one screen and plain on the other teaches a
+    trader that the star means something screen-specific, which it does not.
+    """
+    assert ChaseService(db).board()[0].is_priority is False
+
+    sent_quotation.customer.is_priority = True
+    db.commit()
+
+    assert ChaseService(db).board()[0].is_priority is True
+
+
+def test_a_negotiating_quotation_is_still_followed_up(db, sent_quotation):
+    sent_quotation.status = QuotationStatus.NEGOTIATION
+    db.commit()
+
+    rows = ChaseService(db).board()
+
+    assert [r.stage for r in rows] == ["negotiation"]
 
 
 # ---------------------------------------------------------------------------
@@ -252,30 +260,30 @@ def test_despatched_quotations_leave_the_board(db, sent_quotation):
 # ---------------------------------------------------------------------------
 
 
-def test_ordered_by_money_not_by_age(db, sent_quotation, plate, customer):
-    """A big quotation outranks a small one that went quiet earlier.
+def test_ordered_by_latest_activity_not_by_money(db, sent_quotation, plate, customer):
+    """The most recently touched thread is the top row.
 
-    This is the whole reason the board exists rather than `order_by(due_at)`.
+    The board reads as a live feed: a small quotation that moved yesterday
+    sits above a larger one nobody has touched in three weeks. Money at risk
+    is still computed and still shown - it just no longer decides the order.
     """
-    small = _second_quotation(db, customer, value=Decimal("50000.00"), days_ago=20)
+    recent = _second_quotation(db, customer, value=Decimal("50000.00"), days_ago=1)
 
     rows = ChaseService(db).board()
 
-    assert [r.quotation_id for r in rows][0] == sent_quotation.id
-    assert rows[0].value_at_risk > rows[1].value_at_risk
-    assert small.id == rows[1].quotation_id
+    assert rows[0].quotation_id == recent.id
+    assert rows[0].value < rows[1].value  # ...despite being the smaller quote
+    assert rows[1].quotation_id == sent_quotation.id
 
 
-def test_your_turn_outweighs_a_larger_quiet_quotation(db, sent_quotation, customer):
-    """Somebody actively waiting beats any amount of silence."""
-    big = _second_quotation(db, customer, value=Decimal("2000000.00"), days_ago=4)
-    reply(db, sent_quotation)
+def test_a_fresh_reply_goes_straight_to_the_top(db, sent_quotation, customer):
+    """A reply that just landed is the row a trader wants first."""
+    _second_quotation(db, customer, value=Decimal("2000000.00"), days_ago=2)
+    reply(db, sent_quotation, days_ago=0)
 
     rows = ChaseService(db).board()
 
     assert rows[0].quotation_id == sent_quotation.id
-    assert rows[0].value < rows[1].value  # ...despite being the smaller quote
-    assert big.id == rows[1].quotation_id
 
 
 def test_factors_explain_the_ranking(db, sent_quotation):
@@ -400,45 +408,6 @@ def test_quote_age_is_separate_from_time_waiting(db, sent_quotation):
     row = ChaseService(db).board()[0]
     assert row.quote_age_days == 6
     assert row.days_waiting == 1
-
-
-def test_chase_deadline_speaks_only_when_it_is_near(db, sent_quotation):
-    """The desk's give-up date, and only once it changes today's decision."""
-    from app.models import FollowUpRule
-
-    db.add(FollowUpRule(label="Standard", stop_after_days=7))
-    db.commit()
-
-    row = ChaseService(db).board()[0]
-    # Sent 6 days ago on a 7-day window, so there is one day left to chase.
-    assert row.chase_until == (sent_quotation.sent_at + timedelta(days=7)).date()
-    assert row.chase_note == "1 day left to chase"
-
-
-def test_a_distant_chase_deadline_stays_quiet(db, sent_quotation):
-    """A month out it is noise, so the row says nothing."""
-    from app.models import FollowUpRule
-
-    db.add(FollowUpRule(label="Standard", stop_after_days=60))
-    db.commit()
-
-    row = ChaseService(db).board()[0]
-    assert row.chase_until is not None
-    assert row.chase_note is None
-
-
-def test_chase_deadline_is_never_called_validity(db, sent_quotation):
-    """`stop_after_days` is when we give up chasing, not how long the price
-    stands. The second is a promise to the customer that nothing in this
-    system records, so it must never be inferred from the first."""
-    from app.models import FollowUpRule
-
-    db.add(FollowUpRule(label="Standard", stop_after_days=7))
-    db.commit()
-
-    note = ChaseService(db).board()[0].chase_note or ""
-    assert "valid" not in note.lower()
-    assert "expire" not in note.lower()
 
 
 def test_terms_travel_with_the_row(db, sent_quotation):

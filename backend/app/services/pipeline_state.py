@@ -5,8 +5,8 @@ The mailbox is a queue of work, not a filing cabinet. Every message resolves to
 
     ENQUIRY   an enquiry arrived, no quotation has gone out yet
        |      ...we send the quotation
-    FOLLOW_UP the quotation went out and the customer has not replied. The
-       |      rule says when a nudge is owed; until then it is simply waiting
+    FOLLOW_UP the quotation went out and the customer has not replied. When
+       |      to chase is the trader's call; until then it is simply waiting
        |      ...they reply asking something
     NEEDS_REPLY  they asked; nobody has answered
        |      ...we answer
@@ -35,7 +35,7 @@ from enum import StrEnum
 from app.models import (
     Email,
     EmailCategory,
-    FollowUpStatus,
+    MailDirection,
     QuotationRequest,
     QuotationStatus,
 )
@@ -108,8 +108,8 @@ def resolve_state(email: Email) -> PipelineState:
         if quotation.status in UNSENT:
             return PipelineState.ENQUIRY
 
-        # 6. It went out and nobody has replied. Owed a chase now, or waiting
-        #    on the clock - either way it is the trader's to keep an eye on.
+        # 6. It went out and nobody has replied - the trader's to keep an
+        #    eye on until the customer answers.
         if quotation.status in IN_FLIGHT and _awaiting_reply(quotation):
             return PipelineState.FOLLOW_UP
 
@@ -130,31 +130,33 @@ def _quotation_for(email: Email) -> QuotationRequest | None:
     return email.quotation_request or email.replied_to_quotation
 
 
-#: A nudge that has not happened yet - either owed now, or on the clock.
-PENDING_NUDGE = (FollowUpStatus.DUE, FollowUpStatus.SCHEDULED)
-
-
 def _awaiting_reply(quotation: QuotationRequest) -> bool:
     """Whether this sent quotation is still waiting on the customer.
 
-    A quotation belongs here from the moment it goes out, not only once its
-    timer expires. Waiting until `DUE` left a sent quotation in no tab at all
-    for the whole of its first interval - the trader had sent something, was
-    owed a reply, and the mailbox showed nothing anywhere.
-
-    Read from the scheduler's own queue rather than recomputed, so the tab and
-    the follow-up screen can never disagree about what is outstanding.
+    Two halves, and both matter. It belongs here from the moment it goes out -
+    there is no timer to consult any more, so a quotation is outstanding the
+    instant it reaches the customer. But it stops being outstanding as soon as
+    they answer: at that point the ball is back with us, and the reply's own
+    row carries the conversation (NEEDS_REPLY until somebody deals with it).
+    Counting a replied-to quotation as still "waiting on them" would leave a
+    settled conversation permanently unfinished.
     """
-    return any(s.status in PENDING_NUDGE for s in quotation.follow_up_schedules)
+    if quotation.sent_at is None:
+        return False
+    return not any(
+        reply.direction is MailDirection.INBOUND for reply in quotation.replies
+    )
 
 
 def follow_up_is_due(quotation: QuotationRequest) -> bool:
-    """Whether a nudge is owed *now* - the trader should act today.
+    """Kept as the tab's "act today" marker.
 
-    Distinct from being in the tab: everything in Follow up is waiting, but
-    only some of it is overdue, and the interface says which is which.
+    Nothing schedules a nudge any more, so nothing is ever *overdue* by the
+    machine's reckoning - the trader decides. Always False rather than
+    removed, because the Inbox still distinguishes "waiting" from "act now"
+    and other signals may earn that flag later.
     """
-    return any(s.status is FollowUpStatus.DUE for s in quotation.follow_up_schedules)
+    return False
 
 
 __all__ = ["PipelineState", "follow_up_is_due", "resolve_state"]

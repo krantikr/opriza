@@ -13,6 +13,7 @@ import Customers from "./pages/Customers";
 import Dashboard from "./pages/Dashboard";
 import Inbox from "./pages/Inbox";
 import FollowUps from "./pages/FollowUps";
+import Marketing from "./pages/Marketing";
 import MailSchedule from "./pages/MailSchedule";
 import Pricing from "./pages/Pricing";
 import Quotations from "./pages/Quotations";
@@ -122,11 +123,33 @@ function Desk() {
   );
 }
 
+/** The root URL: the public page to a visitor, the desk to a trader.
+ *
+ *  A signed-in trader opens "/" every morning out of habit, so they are sent
+ *  straight through to their dashboard rather than being made to click past
+ *  a page selling them what they already bought. */
+function Root() {
+  const { user, loading } = useAuth();
+
+  // Same hold as `Desk`: without it somebody with a valid session sees the
+  // marketing page flash past on every refresh.
+  if (loading) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-ground">
+        <Loading />
+      </div>
+    );
+  }
+
+  return user ? <Desk /> : <Marketing />;
+}
+
 export default function App() {
   return (
     <AuthProvider>
       <Routes>
-        {/* The two routes reachable without a session. */}
+        {/* The routes reachable without a session. */}
+        <Route path="/" element={<Root />} />
         <Route path="/sign-in" element={<SignIn />} />
         <Route path="/accept-invite" element={<AcceptInvite />} />
         <Route path="*" element={<Desk />} />

@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, useApi } from "../api/client";
-import type { ChaseBoard, ChaseRow, FollowUpRule, LostReason } from "../api/types";
+import type {
+  ChaseBoard,
+  ChaseRow,
+  LineItem,
+  LostReason,
+  QuotationStage,
+} from "../api/types";
 import ThreadView, { type Thread as ThreadData } from "../components/Thread";
 import {
   ago,
@@ -12,54 +18,53 @@ import {
   Input,
   inrShort,
   Loading,
+  num,
   SearchInput,
   Select,
-  Toggle,
 } from "../components/ui";
+import {
+  hueFor,
+  initials,
+  pcsText,
+  PERIODS,
+  sizeText,
+  STAGE_COLOR,
+  STAGES,
+} from "../lib/lineItems";
 
 /* ---------------------------------------------------------------------------
    The chase board.
 
-   A row is an open **quotation**, not a scheduled nudge. That inversion is the
-   whole design, and it fixes what the schedule-shaped screen could not:
-
-   * a customer who replied and was never answered now has somewhere to appear
-     (their reply cancels the schedule, so the old screen structurally hid the
-     most urgent thing on the desk);
-   * ordering is money at risk rather than `due_at`, so an ₹18 lakh quotation
-     never sits under a ₹2,000 one that went overdue an hour earlier.
+   A row is an open **quotation**. It appears the moment the quotation reaches
+   the customer and stays until the deal settles; nothing schedules a nudge on
+   the trader's behalf, and the newest activity sits at the top.
 
    Reading and replying happen in a drawer over the list rather than on another
    route: a trader clearing fifteen follow-ups should never lose their place,
    and the reply is written with the customer's actual words still on screen.
 
-   The rules that decide *when* a nudge is owed live behind the Rules button.
-   They are configured a few times a year; this screen is opened every morning.
    --------------------------------------------------------------------------- */
 
 type Turn = ChaseRow["turn"];
 
-const TABS: { key: Turn; label: string; hint: string }[] = [
-  {
-    key: "YOURS",
-    label: "Your turn",
-    hint: "They replied, sent an order, or a promised date passed — and nobody has answered.",
-  },
-  {
-    key: "THEIRS",
-    label: "Their turn",
-    hint: "You answered. The ball is with them and it has gone quiet.",
-  },
-  {
-    key: "COLD",
-    label: "Going cold",
-    hint: "Nothing has moved for three weeks. One decision each: chase hard, or write it off.",
-  },
-  {
-    key: "SNOOZED",
-    label: "Snoozed",
-    hint: "Parked until a date you chose. Nothing here needs you yet.",
-  },
+/** The lifecycle as this screen offers it: everything except "Received".
+ *
+ *  A quotation only reaches this board once it has gone out, so moving one
+ *  back to "received" would drop it off the screen it was moved from - a
+ *  control whose only effect is to make the row vanish. */
+const FOLLOWUP_LIFECYCLE = STAGES.filter((s) => s.key !== "received");
+
+/** The sub-states of a follow-up, as cards over the table.
+ *
+ *  The same shape as the Quotations cards - "why hasn't this moved yet" - but
+ *  asked of a quotation that has already gone out, so the answer is read off
+ *  the lifecycle stage rather than a hand-set reason. Every row on this board
+ *  is in exactly one of them. */
+const FOLLOWUP_STAGES: { key: QuotationStage; label: string }[] = [
+  { key: "sent", label: "Follow up pending" },
+  { key: "negotiation", label: "Negotiation" },
+  { key: "delivery_pending", label: "Pending PO" },
+  { key: "payment_pending", label: "Payment pending" },
 ];
 
 const LOST_REASONS: { value: LostReason; label: string }[] = [
@@ -71,265 +76,14 @@ const LOST_REASONS: { value: LostReason; label: string }[] = [
   { value: "OTHER", label: "Something else" },
 ];
 
-/** Stable hue per customer, matching the Inbox: the same buyer is always the
- *  same colour, so the eye learns the list faster than it reads it. */
-function hueFor(name: string): number {
-  const hues = [212, 340, 152, 28, 265, 190];
-  let total = 0;
-  for (const ch of name) total += ch.charCodeAt(0);
-  return hues[total % hues.length];
-}
-
-function initials(name: string): string {
-  return name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((w) => w[0] ?? "")
-    .join("")
-    .toUpperCase();
-}
-
+/** The stripe down a row's left edge: whose move it is, read before any word
+ *  on the row is. Red is ours to answer, amber is theirs and quiet. */
 const TURN_STRIPE: Record<Turn, string> = {
   YOURS: "bg-danger",
   THEIRS: "bg-attention",
   COLD: "bg-rule-firm",
   SNOOZED: "bg-brand-soft",
 };
-
-/* --------------------------------------------------------------------------
-   Rules, in a panel rather than on the page
-   -------------------------------------------------------------------------- */
-
-function RuleEditor({ rule, onSaved }: { rule: FollowUpRule; onSaved: () => void }) {
-  const [draft, setDraft] = useState(rule);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => setDraft(rule), [rule]);
-
-  const dirty = JSON.stringify(draft) !== JSON.stringify(rule);
-  const promised = draft.trigger === "PROMISED_DATE";
-
-  async function save() {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.put(`/follow-up-rules/${rule.id}`, draft);
-      onSaved();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const numberField = (
-    key: "first_after_days" | "interval_days" | "max_attempts" | "stop_after_days",
-    label: string,
-    unit: string,
-  ) => (
-    <label className="flex flex-col gap-1">
-      <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint">
-        {label}
-      </span>
-      <span className="flex items-center gap-1.5">
-        <Input
-          type="number"
-          value={String(draft[key] ?? "")}
-          onChange={(v) =>
-            setDraft({ ...draft, [key]: v === "" ? null : Number(v) } as FollowUpRule)
-          }
-          className="w-16 text-center tabular-nums"
-        />
-        <span className="text-xs text-ink-faint">{unit}</span>
-      </span>
-    </label>
-  );
-
-  return (
-    <section
-      className={`rounded-card border p-4 transition-colors ${
-        draft.is_active ? "border-rule bg-surface" : "border-rule bg-sunk/60"
-      }`}
-    >
-      {/* The switch sits on its own line above the name. Beside it, a long
-          label and the Save button competed for the same row and the flex
-          parent compressed the switch until its text lost a letter. */}
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <Toggle
-          checked={draft.is_active}
-          onChange={(is_active) => setDraft({ ...draft, is_active })}
-          label={draft.is_active ? "Active" : "Paused"}
-        />
-        <Button variant="primary" compact disabled={!dirty || busy} onClick={save}>
-          {busy ? "Saving…" : dirty ? "Save" : "Saved"}
-        </Button>
-      </div>
-
-      <Input
-        value={draft.label}
-        onChange={(label) => setDraft({ ...draft, label })}
-        className="mb-3 font-medium"
-      />
-
-      <label className="mb-3 flex flex-col gap-1">
-        <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint">
-          Start the clock
-        </span>
-        <Select
-          value={draft.trigger}
-          onChange={(v) => setDraft({ ...draft, trigger: v as FollowUpRule["trigger"] })}
-          options={[
-            { value: "ELAPSED", label: "When the quotation went out" },
-            { value: "PROMISED_DATE", label: "On the date the customer gave" },
-          ]}
-          className="w-full"
-        />
-      </label>
-
-      {promised ? (
-        <label className="flex flex-col gap-1">
-          <span className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint">
-            Remind before
-          </span>
-          <span className="flex items-center gap-1.5">
-            <Input
-              type="number"
-              value={String(draft.remind_before_hours)}
-              onChange={(v) => setDraft({ ...draft, remind_before_hours: Number(v) })}
-              className="w-16 text-center tabular-nums"
-            />
-            <span className="text-xs text-ink-faint">hours · 0 means on the day</span>
-          </span>
-        </label>
-      ) : (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {numberField("first_after_days", "First after", "days")}
-          {numberField("interval_days", "Then every", "days")}
-          {numberField("max_attempts", "At most", "times")}
-          {numberField("stop_after_days", "Give up after", "days")}
-        </div>
-      )}
-
-      <p className="mt-3 border-t border-rule pt-3 text-xs leading-relaxed text-ink-soft">
-        {promised
-          ? draft.remind_before_hours === 0
-            ? "Raises a reminder on the day the customer said they would decide."
-            : `Raises a reminder ${draft.remind_before_hours} hours before the date the customer gave.`
-          : `Chases ${draft.max_attempts} time${draft.max_attempts === 1 ? "" : "s"}, first ${
-              draft.first_after_days
-            } day${draft.first_after_days === 1 ? "" : "s"} after sending, then every ${
-              draft.interval_days
-            } days.`}
-        {draft.mark_cold_when_exhausted && " Marked cold once the attempts are spent."}
-      </p>
-
-      {draft.auto_send && (
-        <div className="mt-3">
-          <Banner tone="attention">
-            This rule sends without asking. Every other rule queues its nudge for a person.
-          </Banner>
-        </div>
-      )}
-      {error && (
-        <div className="mt-3">
-          <ErrorNote message={error} />
-        </div>
-      )}
-    </section>
-  );
-}
-
-/** Rules live in a modal, not on the page.
- *
- *  They are configured a few times a year; the board is opened every morning.
- *  Inline, four number fields per rule pushed the actual work below the fold
- *  and made the screen read as a settings page that happens to list quotations. */
-function RulesModal({ onClose }: { onClose: () => void }) {
-  const rules = useApi<FollowUpRule[]>("/follow-up-rules");
-  const [running, setRunning] = useState(false);
-  const [ran, setRan] = useState<string | null>(null);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  async function runNow() {
-    setRunning(true);
-    try {
-      const r = await api.post<{ due: number; scheduled: number }>("/follow-ups/run");
-      setRan(`${r.due} due now, ${r.scheduled} scheduled.`);
-    } catch (e) {
-      setRan((e as Error).message);
-    } finally {
-      setRunning(false);
-    }
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 backdrop-blur-[1px] sm:items-center sm:p-4"
-      onClick={onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Follow-up rules"
-        onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-card border border-rule bg-surface shadow-raised sm:max-w-2xl sm:rounded-card"
-      >
-        <header className="flex shrink-0 items-start justify-between gap-3 border-b border-rule px-5 py-3.5">
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold text-ink">When a quotation gets chased</h2>
-            <p className="text-xs text-ink-faint">
-              The rules work out when a nudge is owed and draft it. You still press send.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="shrink-0 rounded-lg p-1.5 text-ink-faint hover:bg-sunk hover:text-ink"
-          >
-            <svg viewBox="0 0 24 24" className="size-5" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" />
-            </svg>
-          </button>
-        </header>
-
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-ground px-5 py-4">
-          {rules.loading && !rules.data ? (
-            <Loading label="Loading rules" />
-          ) : rules.data?.length ? (
-            rules.data.map((rule) => (
-              <RuleEditor key={rule.id} rule={rule} onSaved={rules.reload} />
-            ))
-          ) : (
-            <Empty message="No rules yet, so nothing is chased automatically. You can still chase any row by hand." />
-          )}
-        </div>
-
-        <footer className="flex shrink-0 flex-wrap items-center gap-3 border-t border-rule px-5 py-3">
-          <span className="text-xs text-ink-faint">
-            {ran ?? "Rules are evaluated on a timer."}
-          </span>
-          <span className="ml-auto flex gap-2">
-            <Button compact disabled={running} onClick={runNow}>
-              {running ? "Checking…" : "Check now"}
-            </Button>
-            <Button compact variant="primary" onClick={onClose}>
-              Done
-            </Button>
-          </span>
-        </footer>
-      </div>
-    </div>
-  );
-}
 
 /* --------------------------------------------------------------------------
    The drawer: thread above, the reply you are about to send below
@@ -364,8 +118,7 @@ function ChaseDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // A fresh draft per quotation. Seeded from the nudge the scheduler already
-  // wrote where there is one, so the trader edits rather than composes.
+  // A fresh draft per quotation, so the trader edits rather than composes.
   useEffect(() => {
     setSent(false);
     setError(null);
@@ -381,7 +134,6 @@ function ChaseDrawer({
         // No subject: this goes into the existing thread, so the server keeps
         // the one the customer already has in their inbox.
         body,
-        schedule_id: row.schedule_id,
       });
       setSent(true);
       thread.reload();
@@ -522,11 +274,10 @@ function ChaseDrawer({
                     : "first quote"
                 }
               />
-              <Fact label="Delivery" value={row.delivery_location ?? "not stated"} />
-              {row.required_by && <Fact label="Needed by" value={row.required_by} />}
+              <Fact label="Deliver to" value={row.delivery_location ?? "not stated"} />
+              {row.required_by && <Fact label="Delivery date" value={row.required_by} />}
               {row.payment_terms && <Fact label="Payment" value={row.payment_terms} />}
               {row.promised_words && <Fact label="They said" value={row.promised_words} />}
-              {row.chase_note && <Fact label="Chasing" value={row.chase_note} />}
             </dl>
           </details>
         </header>
@@ -660,7 +411,10 @@ function Fact({ label, value }: { label: string; value: string }) {
       <dt className="text-[10.5px] font-semibold uppercase tracking-wider text-ink-faint">
         {label}
       </dt>
-      <dd className="truncate text-[13px] font-medium tabular-nums text-ink">{value}</dd>
+      {/* Wraps rather than truncates: a payment term runs to a full sentence
+          ("30 days credit from date of receipt…"), and cutting it at the
+          column edge hides the half that carries the condition. */}
+      <dd className="text-[13px] font-medium leading-snug tabular-nums text-ink">{value}</dd>
     </div>
   );
 }
@@ -721,153 +475,198 @@ function Chip({
   );
 }
 
-function Row({
+/** One material line within a follow-up's row-group.
+ *
+ *  Deliberately the same shape as the quotations list's `LineRow`: the
+ *  quotation-level cells (customer, value, stage, waiting, next step) carry a
+ *  rowSpan over the whole group, and each line contributes only its own
+ *  specification. A trader crossing between the two screens reads one table,
+ *  not two that happen to list the same steel. */
+function LineRow({
   row,
+  item,
+  rowSpan,
   selected,
   onOpen,
+  onStage,
 }: {
   row: ChaseRow;
+  item: LineItem | null;
+  rowSpan: number | null;
   selected: boolean;
   onOpen: () => void;
+  onStage: (stage: QuotationStage) => void;
 }) {
   const hue = hueFor(row.customer_name);
   const urgent = row.turn === "YOURS";
-  const inbound = row.last_direction === "INBOUND";
 
   return (
     <tr
-      onClick={onOpen}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onOpen();
-        }
-      }}
-      tabIndex={0}
-      aria-selected={selected}
-      className={`cursor-pointer border-b border-rule align-top outline-none last:border-0 focus-visible:bg-sunk ${
-        selected ? "bg-brand-wash" : "hover:bg-ground"
+      className={`border-b border-rule align-top last:border-0 ${
+        selected
+          ? "bg-brand-wash"
+          : row.is_priority
+            ? "bg-attention-wash/30 hover:bg-attention-wash/50"
+            : "hover:bg-ground"
       } ${row.turn === "COLD" ? "opacity-75" : ""}`}
     >
       {/* --- who ---------------------------------------------------------- */}
-      <td className="relative py-2.5 pl-3 pr-3">
-        <span
-          className={`absolute inset-y-0 left-0 w-1 ${TURN_STRIPE[row.turn]}`}
-          aria-hidden
-        />
-        <div className="flex items-start gap-2.5">
+      {rowSpan !== null && (
+        <td
+          rowSpan={rowSpan}
+          onClick={onOpen}
+          className={`relative cursor-pointer border-r border-rule py-2.5 pl-3 pr-3 align-top ${
+            row.is_priority ? "bg-attention-wash/20" : ""
+          }`}
+        >
+          {/* The left edge stays the turn stripe rather than the priority one
+              the quotations list draws there: on this screen whose move it is
+              is the thing that orders the day. Priority shows as the row wash
+              and the star, exactly as it does over there. */}
           <span
-            className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full text-[10px] font-semibold text-white"
-            style={{ background: `hsl(${hue} 62% 45%)` }}
-          >
-            {initials(row.customer_name)}
-          </span>
-          <span className="min-w-0">
-            <span
-              className={`block truncate text-[13.5px] leading-tight text-ink ${
-                urgent ? "font-semibold" : "font-medium"
-              }`}
-            >
-              {row.customer_name}
-            </span>
-            <span className="block truncate text-[11.5px] text-ink-faint">
-              {row.customer_note}
-            </span>
-          </span>
-        </div>
-      </td>
-
-      {/* --- what, and whether we can actually supply it ------------------- */}
-      <td className="px-3 py-2.5">
-        <span className="block text-[13px] leading-tight text-ink">{row.material}</span>
-        <span className="block text-[11.5px] tabular-nums text-ink-faint">{row.quantity}</span>
-        {(row.stock_note || row.delivery_location) && (
-          <span className="mt-1 flex flex-wrap gap-1">
-            {row.stock_note && (
-              <Chip tone={row.stock_short ? "danger" : "attention"}>{row.stock_note}</Chip>
-            )}
-            {row.delivery_location && <Chip tone="quiet">{row.delivery_location}</Chip>}
-          </span>
-        )}
-      </td>
-
-      {/* --- the exact last movement on the thread ------------------------- */}
-      <td className="px-3 py-2.5">
-        <span className="flex items-center gap-1.5 text-[12.5px] leading-tight">
-          <span
-            className={`inline-block size-1.5 shrink-0 rounded-full ${
-              inbound ? "bg-attention" : "bg-brand-soft"
-            }`}
+            className={`absolute inset-y-0 left-0 w-1 ${TURN_STRIPE[row.turn]}`}
             aria-hidden
           />
-          <span className={inbound ? "font-medium text-ink" : "text-ink-soft"}>
-            {row.last_actor}
-          </span>
-        </span>
-        <span className="mt-0.5 block whitespace-nowrap text-[11.5px] tabular-nums text-ink-faint">
-          {stamp(row.last_at)}
-        </span>
-        <span className="mt-1 flex flex-wrap gap-1">
-          <Chip tone="quiet">
-            {row.message_count} {row.message_count === 1 ? "msg" : "msgs"}
-          </Chip>
-          {row.has_attachment && <Chip tone="info">attachment</Chip>}
-          {row.attempts > 0 && (
-            <Chip tone="quiet">
-              chased {row.attempts}×
-              {row.last_chased_at ? ` · ${ago(row.last_chased_at)}` : ""}
-            </Chip>
-          )}
-        </span>
+          <div className="flex items-start gap-2.5">
+            <span
+              className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full text-[10px] font-semibold text-white"
+              style={{ background: `hsl(${hue} 62% 45%)` }}
+            >
+              {initials(row.customer_name)}
+            </span>
+            <span className="min-w-0">
+              <span className="flex items-center gap-1.5">
+                <span
+                  className={`truncate text-[13.5px] leading-tight text-ink ${
+                    urgent ? "font-semibold" : "font-medium"
+                  }`}
+                >
+                  {row.customer_name}
+                </span>
+                {row.is_priority && (
+                  <span className="shrink-0 text-attention" title="Priority">
+                    ★
+                  </span>
+                )}
+              </span>
+              <span className="block truncate text-[11.5px] text-ink-faint">
+                {row.customer_email ?? "no address on file"}
+              </span>
+            </span>
+          </div>
+        </td>
+      )}
+
+      {/* --- the specification, line by line ------------------------------- */}
+      <td className="cursor-pointer px-3 py-2 text-[13px] text-ink" onClick={onOpen}>
+        {item?.grade ?? "—"}
+      </td>
+      <td className="cursor-pointer px-3 py-2 text-[13px] text-ink-soft" onClick={onOpen}>
+        {item?.product_type ?? "—"}
+      </td>
+      <td className="cursor-pointer px-3 py-2 text-[13px] text-ink-soft" onClick={onOpen}>
+        {item ? sizeText(item) : "—"}
+      </td>
+      <td
+        className="tabular cursor-pointer px-3 py-2 text-right text-[13px] text-ink"
+        onClick={onOpen}
+      >
+        {item?.quantity_mt ? num(item.quantity_mt) : "—"}
+      </td>
+      <td
+        className="tabular cursor-pointer px-3 py-2 text-right text-[13px] text-ink-soft"
+        onClick={onOpen}
+      >
+        {item ? pcsText(item) : "—"}
+      </td>
+      <td className="cursor-pointer px-3 py-2 text-[13px] text-ink-soft" onClick={onOpen}>
+        {item?.matched_stock_item_make ?? "—"}
       </td>
 
       {/* --- money -------------------------------------------------------- */}
-      <td className="px-3 py-2.5 text-right">
-        <span className="block whitespace-nowrap text-[14px] font-semibold tabular-nums text-ink">
-          {inrShort(row.value)}
-        </span>
-        {row.quoted_rate ? (
-          <span className="block whitespace-nowrap text-[11px] tabular-nums text-ink-faint">
-            ₹{row.quoted_rate.toLocaleString("en-IN", { maximumFractionDigits: 0 })}/MT
-          </span>
-        ) : null}
-      </td>
-
-      {/* --- the two clocks: ball-in-court, and the quote's own shelf life -- */}
-      <td className="px-3 py-2.5 text-right">
-        <span
-          className={`block whitespace-nowrap text-[13px] tabular-nums ${
-            urgent ? "font-semibold text-danger-ink" : "text-ink-soft"
-          }`}
+      {rowSpan !== null && (
+        <td
+          rowSpan={rowSpan}
+          className="cursor-pointer border-l border-rule px-3 py-2 text-right align-top"
+          onClick={onOpen}
         >
-          {row.days_waiting === 0 ? "today" : `${row.days_waiting}d`}
-        </span>
-        <span className="block whitespace-nowrap text-[11px] text-ink-faint">
-          {row.waiting_note}
-        </span>
-        {/* Only appears when the desk's own give-up deadline is close. It is
-            deliberately not called validity: how long a price stands is a
-            promise to the customer that this system never recorded. */}
-        {row.chase_note && (
-          <span className="mt-1 block whitespace-nowrap text-[10.5px] font-medium text-attention-ink">
-            {row.chase_note}
-          </span>
-        )}
-      </td>
+          {row.value > 0 ? (
+            <>
+              <span className="block whitespace-nowrap text-[13px] font-semibold tabular-nums text-ink">
+                {inrShort(row.value)}
+              </span>
+              {row.quoted_rate ? (
+                <span className="block whitespace-nowrap text-[11px] tabular-nums text-ink-faint">
+                  ₹{row.quoted_rate.toLocaleString("en-IN", { maximumFractionDigits: 0 })}/MT
+                </span>
+              ) : null}
+            </>
+          ) : (
+            <span className="text-ink-faint">—</span>
+          )}
+        </td>
+      )}
 
-      {/* --- what to do about it ------------------------------------------- */}
-      <td className="border-l border-rule py-2.5 pl-4 pr-4">
-        <span
-          className={`block text-[12.5px] leading-tight ${
-            urgent ? "font-semibold text-ink" : "font-medium text-ink-soft"
-          }`}
+      {/* --- where it sits commercially ------------------------------------ */}
+      {rowSpan !== null && (
+        <td rowSpan={rowSpan} className="border-l border-rule px-3 py-2 align-top">
+          {/* The click is stopped here: the row opens the drawer, and a trader
+              reaching for the stage picker is not asking to read the thread. */}
+          <select
+            value={row.stage}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => onStage(e.target.value as QuotationStage)}
+            className={`rounded-md border border-rule bg-surface px-1.5 py-1 text-[11.5px] font-medium focus:border-brand focus:outline-none ${
+              STAGE_COLOR[row.stage] ?? "text-ink"
+            }`}
+          >
+            {FOLLOWUP_LIFECYCLE.map((s) => (
+              <option key={s.key} value={s.key}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+
+          {/* Who moved last and how many messages there are used to sit here.
+              Both are in the drawer, which is one click away and shows the
+              actual thread - under a stage picker they were three lines of
+              detail wrapped around the one control this column exists for.
+
+              The stock note stays: it is not thread history but a warning
+              that the yard cannot cover what was quoted, and it changes
+              whether chasing this row is worth doing at all. */}
+          {row.stock_note && (
+            <span className="mt-1.5 flex">
+              <Chip tone={row.stock_short ? "danger" : "attention"}>{row.stock_note}</Chip>
+            </span>
+          )}
+        </td>
+      )}
+
+      {/* --- how long the ball has sat ------------------------------------- */}
+      {rowSpan !== null && (
+        <td
+          rowSpan={rowSpan}
+          className="cursor-pointer border-l border-rule px-3 py-2 pr-4 text-right align-top"
+          onClick={onOpen}
         >
-          {row.next_step}
-        </span>
-        <span className="mt-0.5 block text-[11px] leading-snug text-ink-faint">
-          {row.reason}
-        </span>
-      </td>
+          <span
+            className={`block whitespace-nowrap text-[13px] tabular-nums ${
+              urgent ? "font-semibold text-danger-ink" : "text-ink-soft"
+            }`}
+          >
+            {row.days_waiting === 0 ? "today" : `${row.days_waiting}d`}
+          </span>
+          <span className="block whitespace-nowrap text-[11px] text-ink-faint">
+            {row.waiting_note}
+          </span>
+          {row.attempts > 0 && (
+            <span className="mt-1 block whitespace-nowrap text-[10.5px] text-ink-faint">
+              chased {row.attempts}×
+            </span>
+          )}
+        </td>
+      )}
     </tr>
   );
 }
@@ -881,30 +680,94 @@ export default function FollowUps() {
   /* Their turn, not yours. "Your turn" is empty on a desk that is keeping up,
      so opening there shows an empty screen most days; the quotations sitting
      with a customer are the ones a trader actually works down. */
-  const [tab, setTab] = useState<Turn>("THEIRS");
   const [search, setSearch] = useState("");
+  const [days, setDays] = useState("30");
+  const [stage, setStage] = useState<QuotationStage | "all">("all");
+  const [stageFilter, setStageFilter] = useState<QuotationStage | null>(null);
   const [openId, setOpenId] = useState<number | null>(null);
-  const [showRules, setShowRules] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
+  const [stageError, setStageError] = useState<string | null>(null);
 
-  const rows = useMemo(() => {
+  /* The same filter chain as the quotations list, in the same order:
+     search, then how far back, then the stage dropdown, then a card. Each
+     stage's counts are taken from the step above it, so a dropdown option
+     never claims more rows than picking it would show. */
+  const searched = useMemo(() => {
     const term = search.trim().toLowerCase();
+    if (term === "") return board.data?.rows ?? [];
     return (
-      board.data?.rows.filter(
-        (r) =>
-          r.turn === tab &&
-          (term === "" ||
-            [r.customer_name, r.material, r.quotation_number, r.customer_email]
-              .some((field) => field?.toLowerCase().includes(term))),
+      board.data?.rows.filter((r) =>
+        [r.customer_name, r.material, r.quotation_number, r.customer_email].some((field) =>
+          field?.toLowerCase().includes(term),
+        ),
       ) ?? []
     );
-  }, [board.data, tab, search]);
+  }, [board.data, search]);
+
+  /* Dated from when the quotation went out, not when the enquiry arrived:
+     this board only holds quotations that have been sent, and "how long has
+     it been out" is the question the screen is about. */
+  const periodFiltered = useMemo(() => {
+    if (days === "all") return searched;
+    const cutoff = Date.now() - Number(days) * 24 * 60 * 60 * 1000;
+    return searched.filter((r) => !r.sent_at || new Date(r.sent_at).getTime() >= cutoff);
+  }, [searched, days]);
+
+  const countFor = (key: QuotationStage | "all") =>
+    key === "all"
+      ? periodFiltered.length
+      : periodFiltered.filter((r) => r.stage === key).length;
+
+  const stageFiltered = useMemo(
+    () => (stage === "all" ? periodFiltered : periodFiltered.filter((r) => r.stage === stage)),
+    [periodFiltered, stage],
+  );
+
+  /** Count, tonnage and money per sub-state, for the cards. Scoped to the
+   *  period rather than the stage dropdown - the cards are how a trader
+   *  picks a stage, so scoping them to the stage already picked would leave
+   *  three of the four permanently reading zero. */
+  const byStage = useMemo(() => {
+    const totals: Record<string, { count: number; tonnes: number; value: number }> = {};
+    for (const s of FOLLOWUP_STAGES) totals[s.key] = { count: 0, tonnes: 0, value: 0 };
+    for (const r of periodFiltered) {
+      const bucket = totals[r.stage];
+      if (!bucket) continue;
+      bucket.count += 1;
+      bucket.tonnes += r.tonnes;
+      bucket.value += r.value;
+    }
+    return totals;
+  }, [periodFiltered]);
+
+  const rows = useMemo(
+    () => (stageFilter ? periodFiltered.filter((r) => r.stage === stageFilter) : stageFiltered),
+    [periodFiltered, stageFiltered, stageFilter],
+  );
   const openRow = board.data?.rows.find((r) => r.quotation_id === openId) ?? null;
 
   const onActed = useCallback(
     (message: string) => {
       setFlash(message);
       board.reload();
+    },
+    [board],
+  );
+
+  /* The same endpoint the Quotations list posts to. Reloading the board is
+     what keeps the cards honest: moving a row to "payment pending" has to
+     move the tonnage between two cards, not just relabel the row. */
+  const moveStage = useCallback(
+    async (quotationId: number, stage: QuotationStage) => {
+      setStageError(null);
+      try {
+        await api.post(`/quotations/${quotationId}/stage`, { stage });
+        board.reload();
+      } catch (e) {
+        // Not the flash banner: that one is green, and a refused stage change
+        // reported in the colour of success is worse than no message at all.
+        setStageError((e as Error).message);
+      }
     },
     [board],
   );
@@ -917,9 +780,6 @@ export default function FollowUps() {
 
   if (board.loading && !board.data) return <Loading label="Working out who needs chasing" />;
   if (board.error) return <ErrorNote message={board.error} />;
-
-  const counts = board.data?.counts ?? {};
-  const hint = TABS.find((t) => t.key === tab)?.hint;
 
   return (
     <div className="flex flex-col gap-3 p-5">
@@ -934,27 +794,57 @@ export default function FollowUps() {
           className="w-full sm:w-72"
         />
         <div className="ml-auto flex items-center gap-2">
+          <Select value={days} onChange={setDays} options={PERIODS} className="py-1.5" />
           <Select
-            value={tab}
-            onChange={(v) => setTab(v as Turn)}
-            options={TABS.map((t) => ({
-              value: t.key,
+            value={stage}
+            onChange={(v) => {
+              setStage(v as QuotationStage | "all");
+              // The dropdown and the cards ask the same question, so picking
+              // one clears the other rather than quietly intersecting.
+              setStageFilter(null);
+            }}
+            options={[
               // The count rides on the option: a filter that hides how much it
               // is hiding makes an empty table look like a broken one.
-              label: `${t.label} (${counts[t.key] ?? 0})`,
-            }))}
+              { value: "all", label: `All (${countFor("all")})` },
+              ...FOLLOWUP_LIFECYCLE.map((s) => ({
+                value: s.key,
+                label: `${s.label} (${countFor(s.key)})`,
+              })),
+            ]}
             className="py-1.5"
           />
-          <Button onClick={() => setShowRules(true)}>Rules</Button>
         </div>
       </header>
 
-      {flash && <Banner tone="settled">{flash}</Banner>}
+      {/* --- Where the followed-up money actually sits -------------------- */}
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {FOLLOWUP_STAGES.map((s) => (
+          <button
+            key={s.key}
+            type="button"
+            onClick={() => setStageFilter((cur) => (cur === s.key ? null : s.key))}
+            className={`rounded-card border px-3 py-2.5 text-left transition-colors ${
+              stageFilter === s.key
+                ? "border-brand bg-brand-wash"
+                : "border-rule bg-surface hover:border-brand/50"
+            }`}
+          >
+            <p className="truncate text-[11px] font-medium uppercase tracking-wide text-ink-faint">
+              {s.label}
+            </p>
+            <p className="tabular mt-0.5 text-xl font-semibold text-ink">
+              {byStage[s.key]?.count ?? 0}
+            </p>
+            <p className="tabular truncate text-[11px] text-ink-faint">
+              {num(byStage[s.key]?.tonnes ?? 0)} MT · {inrShort(byStage[s.key]?.value ?? 0)}
+            </p>
+          </button>
+        ))}
+      </div>
 
-      {/* What the selected filter means. Carried the tab strip's weight once
-          the strip became a dropdown - "Their turn" alone does not say the
-          ball is with the customer and has gone quiet. */}
-      <p className="text-xs text-ink-faint">{hint}</p>
+      {flash && <Banner tone="settled">{flash}</Banner>}
+      {stageError && <ErrorNote message={stageError} />}
 
       <div className="overflow-hidden rounded-card border border-rule bg-surface shadow-card">
         {rows.length === 0 ? (
@@ -964,10 +854,8 @@ export default function FollowUps() {
                  nothing in it: one is fixed by changing the term, the other by
                  changing the filter. */
               search.trim()
-                ? `No ${(TABS.find((t) => t.key === tab)?.label ?? "").toLowerCase()} quotation matches “${search.trim()}”.`
-                : tab === "YOURS"
-                  ? "Nothing is waiting on you. That is the whole point of this screen."
-                  : "Nothing here."
+                ? `No quotation matches “${search.trim()}”.`
+                : "Nothing here. Quotations appear once they have gone out."
             }
           />
         ) : (
@@ -977,11 +865,15 @@ export default function FollowUps() {
                 <tr className="border-b border-rule">
                   {[
                     ["Customer", "pl-4 pr-3 text-left"],
-                    ["Material", "px-3 text-left"],
-                    ["Last activity", "px-3 text-left"],
-                    ["Value", "px-3 text-right"],
-                    ["Waiting", "px-3 text-right"],
-                    ["Next step", "pl-4 pr-4 text-left"],
+                    ["Grade", "px-3 text-left"],
+                    ["Type", "px-3 text-left"],
+                    ["Size", "px-3 text-left"],
+                    ["Weight (MT)", "px-3 text-right"],
+                    ["PCS", "px-3 text-right"],
+                    ["Make", "px-3 text-left"],
+                    ["Price", "px-3 text-right"],
+                    ["Status", "px-3 text-left"],
+                    ["Waiting", "px-3 pr-4 text-right"],
                   ].map(([label, cls]) => (
                     <th
                       key={label}
@@ -993,14 +885,22 @@ export default function FollowUps() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
-                  <Row
-                    key={row.quotation_id}
-                    row={row}
-                    selected={row.quotation_id === openId}
-                    onOpen={() => setOpenId(row.quotation_id)}
-                  />
-                ))}
+                {rows.map((row) => {
+                  // A quotation with no extracted lines still gets one row, so
+                  // it never silently vanishes from the board.
+                  const items = row.line_items.length > 0 ? row.line_items : [null];
+                  return items.map((item, i) => (
+                    <LineRow
+                      key={item ? item.id : `${row.quotation_id}-empty`}
+                      row={row}
+                      item={item}
+                      rowSpan={i === 0 ? items.length : null}
+                      selected={row.quotation_id === openId}
+                      onOpen={() => setOpenId(row.quotation_id)}
+                      onStage={(stage) => moveStage(row.quotation_id, stage)}
+                    />
+                  ));
+                })}
               </tbody>
             </table>
           </div>
@@ -1010,7 +910,6 @@ export default function FollowUps() {
       {openRow && (
         <ChaseDrawer row={openRow} onClose={() => setOpenId(null)} onActed={onActed} />
       )}
-      {showRules && <RulesModal onClose={() => setShowRules(false)} />}
     </div>
   );
 }

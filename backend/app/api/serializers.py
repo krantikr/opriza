@@ -13,7 +13,6 @@ from app.models import (
     Customer,
     Email,
     FollowUp,
-    FollowUpStatus,
     QuotationDraft,
     QuotationLineItem,
     QuotationRequest,
@@ -64,18 +63,7 @@ def email_out(email: Email) -> EmailOut:
         # Being in the Follow up tab and being overdue are different things:
         # everything there is waiting, only some of it is owed a nudge today.
         follow_up_due=bool(quotation and follow_up_is_due(quotation)),
-        follow_up_at=next(
-            (
-                s.due_at
-                for s in sorted(
-                    quotation.follow_up_schedules, key=lambda s: s.due_at
-                )
-                if s.status in (FollowUpStatus.SCHEDULED, FollowUpStatus.DUE)
-            ),
-            None,
-        )
-        if quotation
-        else None,
+        follow_up_at=None,
         replied_to_quotation_id=email.replied_to_quotation_id,
         reply_intent=email.reply_intent.value if email.reply_intent else None,
         reply_intent_confidence=email.reply_intent_confidence,

@@ -1,9 +1,9 @@
-"""Notifications, follow-up rules, stock movement, customer management, reports.
+"""Notifications, follow-ups, stock movement, customer management, reports.
 
-The follow-up endpoints are worth reading carefully: `POST /follow-ups/{id}/send`
-is the only route that mails a customer, and it delegates to `FollowUpService`,
-which refuses anything that is not already `SENT`. The scheduler can mark a
-nudge due; nothing here lets it deliver one on its own.
+`POST /follow-ups/quotation/{id}/send` is the only route that mails a customer,
+and it delegates to `FollowUpService`, which refuses anything that is not
+already `SENT`. Nothing sends on its own: a quotation appears on the board the
+moment it goes out, and a human decides when to chase it.
 """
 
 from __future__ import annotations
@@ -18,15 +18,13 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, Up
 from sqlalchemy import func, select
 
 from app.api.deps import CurrentUser, TenantDb, current_user
+from app.api.serializers import line_item_out
 from app.core.config import settings
 from app.core.db import utcnow
 from app.models import (
     Customer,
     CustomerNote,
     CustomerTier,
-    FollowUpRule,
-    FollowUpSchedule,
-    FollowUpStatus,
     Notification,
     NotificationChannel,
     NotificationRule,
@@ -48,9 +46,6 @@ from app.schemas.ops import (
     CustomerIn,
     CustomerNoteIn,
     CustomerNoteOut,
-    FollowUpRuleIn,
-    FollowUpRuleOut,
-    FollowUpScheduleOut,
     MarkLostIn,
     NotificationOut,
     NotificationRuleIn,
@@ -73,7 +68,6 @@ from app.services.insights import InsightService
 from app.services.notifications import NotificationService
 from app.services.notifications.channels import get_channel
 from app.services.quotations.followup import FollowUpError, FollowUpService
-from app.services.quotations.followup_rules import FollowUpScheduler
 from app.services.reports import DateRange, ReportService
 from app.services.stock.movements import StockMovementService
 from app.services.stock.resync import StockResyncService
@@ -188,130 +182,6 @@ def delete_notification_rule(rule_id: int, db: TenantDb) -> None:
 # ---------------------------------------------------------------------------
 # Follow-up rules and queue
 # ---------------------------------------------------------------------------
-
-
-@router.get("/follow-up-rules", response_model=list[FollowUpRuleOut], tags=["follow-ups"])
-def list_follow_up_rules(db: TenantDb) -> list[FollowUpRule]:
-    return list(db.scalars(select(FollowUpRule).order_by(FollowUpRule.id)))
-
-
-@router.post(
-    "/follow-up-rules",
-    response_model=FollowUpRuleOut,
-    status_code=status.HTTP_201_CREATED,
-    tags=["follow-ups"],
-)
-def create_follow_up_rule(payload: FollowUpRuleIn, db: TenantDb) -> FollowUpRule:
-    rule = FollowUpRule(**payload.model_dump())
-    db.add(rule)
-    db.commit()
-    db.refresh(rule)
-    return rule
-
-
-@router.put("/follow-up-rules/{rule_id}", response_model=FollowUpRuleOut, tags=["follow-ups"])
-def update_follow_up_rule(
-    rule_id: int, payload: FollowUpRuleIn, db: TenantDb
-) -> FollowUpRule:
-    rule = db.get(FollowUpRule, rule_id)
-    if rule is None:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    for key, value in payload.model_dump().items():
-        setattr(rule, key, value)
-    db.commit()
-    db.refresh(rule)
-    return rule
-
-
-@router.delete(
-    "/follow-up-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["follow-ups"]
-)
-def delete_follow_up_rule(rule_id: int, db: TenantDb) -> None:
-    rule = db.get(FollowUpRule, rule_id)
-    if rule is None:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    db.delete(rule)
-    db.commit()
-
-
-@router.get("/follow-ups/queue", response_model=list[FollowUpScheduleOut], tags=["follow-ups"])
-def follow_up_queue(db: TenantDb) -> list[FollowUpSchedule]:
-    """Nudges a rule says are owed, waiting for a human to send them."""
-    return list(
-        db.scalars(
-            select(FollowUpSchedule)
-            .where(FollowUpSchedule.status == FollowUpStatus.DUE)
-            .order_by(FollowUpSchedule.due_at)
-        )
-    )
-
-
-@router.post("/follow-ups/run", tags=["follow-ups"])
-def run_scheduler(db: TenantDb) -> dict[str, int]:
-    """Evaluate the rules now rather than waiting for the timer."""
-    result = FollowUpScheduler(db).run()
-    return {
-        "scheduled": len(result.scheduled),
-        "due": len(result.due),
-        "cancelled": len(result.cancelled),
-        "marked_cold": result.marked_cold,
-    }
-
-
-@router.post("/follow-ups/{schedule_id}/send", response_model=ActionResult, tags=["follow-ups"])
-def send_follow_up(
-    schedule_id: int,
-    db: TenantDb,
-    user: User | None = Depends(current_user),
-) -> ActionResult:
-    """Send a queued nudge. The human step the scheduler deliberately leaves."""
-    schedule = db.get(FollowUpSchedule, schedule_id)
-    if schedule is None:
-        raise HTTPException(status_code=404, detail="Follow-up not found")
-    if schedule.status is not FollowUpStatus.DUE:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Follow-up is {schedule.status.value}, not DUE.",
-        )
-
-    quotation = schedule.quotation_request
-    try:
-        result = FollowUpService(db).send(
-            quotation,
-            user_id=user.id if user else None,
-            subject=schedule.subject,
-            body=schedule.body,
-        )
-    except FollowUpError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-    schedule.status = FollowUpStatus.SENT
-    schedule.follow_up_id = result.follow_up.id
-    schedule.resolved_at = utcnow()
-    db.commit()
-
-    return ActionResult(
-        ok=result.sent,
-        detail="Follow-up sent." if result.sent else f"Send failed: {result.send.error}",
-        quotation_id=quotation.id,
-        status=quotation.status.value,
-    )
-
-
-@router.post("/follow-ups/{schedule_id}/skip", response_model=ActionResult, tags=["follow-ups"])
-def skip_follow_up(
-    schedule_id: int, db: TenantDb
-) -> ActionResult:
-    schedule = db.get(FollowUpSchedule, schedule_id)
-    if schedule is None:
-        raise HTTPException(status_code=404, detail="Follow-up not found")
-    schedule.status = FollowUpStatus.SKIPPED
-    schedule.resolved_at = utcnow()
-    schedule.resolution_note = "Skipped by a reviewer."
-    db.commit()
-    return ActionResult(
-        detail="Follow-up skipped.", quotation_id=schedule.quotation_request_id
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -498,12 +368,29 @@ def chase_board(db: TenantDb) -> ChaseBoardOut:
 
 
 def _row_dict(row) -> dict:
-    """`ChaseRow` is a slotted dataclass, so `asdict` is the honest conversion."""
+    """`ChaseRow` is a slotted dataclass, so `asdict` is the honest conversion.
+
+    `line_items` is the exception: it holds ORM models, which `asdict` would
+    walk into and mangle. It is serialised through the same `line_item_out`
+    the quotations API uses, so both tables render identical columns from
+    identical payloads.
+    """
     from dataclasses import asdict
 
-    data = asdict(row)
+    items = row.line_items
+    data = asdict(_replace_items(row, []))
     data["turn"] = row.turn.value
+    data["line_items"] = [line_item_out(i) for i in items]
     return data
+
+
+def _replace_items(row, items):
+    """A shallow copy with `line_items` swapped out, so `asdict` never sees
+    the ORM objects. `dataclasses.replace` re-runs `__init__`, which is safe
+    here - `ChaseRow` has no post-init behaviour."""
+    from dataclasses import replace
+
+    return replace(row, line_items=items)
 
 
 @router.post("/follow-ups/quotation/{quotation_id}/send", response_model=ActionResult, tags=["follow-ups"])
@@ -515,11 +402,10 @@ def send_chase(
 ) -> ActionResult:
     """Send the follow-up the trader just read and edited in the drawer.
 
-    Distinct from `/follow-ups/{schedule_id}/send`, which mails whatever the
-    scheduler drafted days ago. Here the text arrives from the screen, so what
-    the trader saw under the thread is exactly what goes out. It still routes
-    through `FollowUpService.send`, which remains the only function that mails
-    a customer and still refuses anything that is not `SENT`.
+    The text arrives from the screen, so what the trader saw under the thread
+    is exactly what goes out. It routes through `FollowUpService.send`, which
+    is the only function that mails a customer and still refuses anything that
+    is not `SENT`.
     """
     quotation = db.get(QuotationRequest, quotation_id)
     if quotation is None:
@@ -534,16 +420,6 @@ def send_chase(
         )
     except FollowUpError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-    # A nudge the scheduler was still holding for this quotation is now
-    # redundant: the trader has just chased by hand. Leaving it DUE would show
-    # the same row as outstanding tomorrow morning.
-    if payload.schedule_id is not None:
-        schedule = db.get(FollowUpSchedule, payload.schedule_id)
-        if schedule is not None and schedule.status is FollowUpStatus.DUE:
-            schedule.status = FollowUpStatus.SENT
-            schedule.follow_up_id = result.follow_up.id
-            schedule.resolved_at = utcnow()
 
     db.commit()
     return ActionResult(
@@ -576,7 +452,6 @@ def snooze_quotation(quotation_id: int, payload: SnoozeIn, db: TenantDb) -> Acti
         quotation.review_notes = _with_note(quotation.review_notes, payload.note)
 
     # The scheduler must not chase something deliberately parked.
-    FollowUpScheduler(db).cancel_for(quotation, "Snoozed by a reviewer.")
     db.commit()
 
     return ActionResult(
@@ -601,7 +476,6 @@ def mark_lost(quotation_id: int, payload: MarkLostIn, db: TenantDb) -> ActionRes
     quotation.lost_reason = payload.reason
     quotation.lost_note = payload.note
     quotation.status = QuotationStatus.CUSTOMER_DECLINED
-    FollowUpScheduler(db).cancel_for(quotation, f"Marked lost: {payload.reason.value}.")
     db.commit()
 
     return ActionResult(

@@ -143,11 +143,6 @@ class QuotationRequest(Base, TimestampMixin, TenantMixin):
         cascade="all, delete-orphan",
         order_by="FollowUp.created_at",
     )
-    follow_up_schedules: Mapped[list["FollowUpSchedule"]] = relationship(  # noqa: F821
-        back_populates="quotation_request",
-        cascade="all, delete-orphan",
-        order_by="FollowUpSchedule.due_at",
-    )
 
     @property
     def current_draft(self) -> "QuotationDraft | None":

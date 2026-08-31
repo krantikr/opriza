@@ -523,35 +523,6 @@ export interface VehicleRate {
    Operations
    --------------------------------------------------------------------------- */
 
-export interface FollowUpRule {
-  id: number;
-  label: string;
-  is_active: boolean;
-  trigger: "ELAPSED" | "PROMISED_DATE";
-  first_after_hours: number;
-  remind_before_hours: number;
-  first_after_days: number;
-  interval_days: number;
-  max_attempts: number;
-  stop_after_days: number | null;
-  auto_send: boolean;
-  mark_cold_when_exhausted: boolean;
-  conditions: Record<string, unknown> | null;
-  subject_template: string | null;
-  body_template: string | null;
-}
-
-export interface FollowUpSchedule {
-  id: number;
-  quotation_request_id: number;
-  attempt_no: number;
-  due_at: string;
-  status: string;
-  subject: string | null;
-  body: string | null;
-  resolution_note: string | null;
-}
-
 export interface ScoreFactor {
   label: string;
   factor: number;
@@ -559,7 +530,7 @@ export interface ScoreFactor {
 
 /** One open quotation on the chase board. The row is the quotation, not a
  *  scheduled nudge - a due schedule is only one of the signals that makes it
- *  hot, carried here as `schedule_id`. */
+ */
 export interface ChaseRow {
   quotation_id: number;
   quotation_number: string;
@@ -592,8 +563,6 @@ export interface ChaseRow {
   quote_age_days: number;
   days_waiting: number;
   waiting_note: string;
-  chase_until: string | null;
-  chase_note: string | null;
 
   delivery_location: string | null;
   required_by: string | null;
@@ -602,13 +571,23 @@ export interface ChaseRow {
   stock_note: string | null;
   stock_short: boolean;
 
+  /** Commercial stage, the same key the Quotations board uses. Distinct from
+   *  `turn`, which is only about who owes the next message. */
+  stage: QuotationStage;
+  tonnes: number;
+  /** A flagged buyer, or a flagged grade+make on any line - the same
+   *  highlight the quotations list gives the same deal. */
+  is_priority: boolean;
+  /** The specification line by line, so the follow-ups table can show the
+   *  same Grade/Type/Size columns as the quotations list. */
+  line_items: LineItem[];
+
   promised_date: string | null;
   promised_words: string | null;
   snoozed_until: string | null;
   has_attachment: boolean;
   attempts: number;
   last_chased_at: string | null;
-  schedule_id: number | null;
 
   value_at_risk: number;
   factors: ScoreFactor[];

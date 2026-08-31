@@ -32,7 +32,6 @@ __all__ = [
     "NotificationKind",
     "NotificationStatus",
     "FollowUpStatus",
-    "FollowUpTrigger",
     "StockMovementKind",
 ]
 
@@ -313,17 +312,6 @@ class FollowUpStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
-class FollowUpTrigger(StrEnum):
-    """What starts the clock on a follow-up.
-
-    `ELAPSED` counts from the moment the quotation went out. `PROMISED_DATE`
-    counts from a date the customer themselves gave - "we will decide by the
-    14th" - which is a far better moment to call than an arbitrary interval,
-    and is the difference between chasing and following up.
-    """
-
-    ELAPSED = "ELAPSED"
-    PROMISED_DATE = "PROMISED_DATE"
 
 
 class StockMovementKind(StrEnum):

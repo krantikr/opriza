@@ -17,6 +17,15 @@ import {
   Select,
   when,
 } from "../components/ui";
+import {
+  hueFor,
+  initials,
+  pcsText,
+  PERIODS,
+  sizeText,
+  STAGE_COLOR,
+  STAGES,
+} from "../lib/lineItems";
 
 /* ---------------------------------------------------------------------------
    Quotations: a mill-sheet-style table, with the open one in a drawer over it.
@@ -31,83 +40,15 @@ import {
 
 const PAGE_SIZE = 20;
 
-const PERIODS = [
-  { value: "7", label: "Last 7 days" },
-  { value: "30", label: "Last 30 days" },
-  { value: "90", label: "Last quarter" },
-  { value: "180", label: "Last 6 months" },
-  { value: "365", label: "Last year" },
-  { value: "all", label: "All time" },
-];
-
-/** The six working stages, mirrored from `stages.py::COMMERCIAL_STAGES`.
- *  Duplicated rather than fetched for the same reason the detail drawer's
- *  stage picker duplicates it: a round trip to render six tabs would leave
- *  them blank for a moment on every load, and the server remains the
- *  authority - it rejects a stage it does not know. */
-const STAGES: { key: QuotationStage; label: string }[] = [
-  { key: "received", label: "Received" },
-  { key: "sent", label: "Sent" },
-  { key: "negotiation", label: "Negotiation" },
-  { key: "delivery_pending", label: "Delivery pending" },
-  { key: "payment_pending", label: "Payment pending" },
-  { key: "completed", label: "Completed" },
-];
-
-/** One colour per stage, so the dropdown reads before its label does -
- *  amber while waiting on the desk, blue while out with the customer,
- *  settling to green once the money is in. */
-const STAGE_COLOR: Record<QuotationStage, string> = {
-  received: "text-attention-ink",
-  sent: "text-brand-ink",
-  negotiation: "text-info-ink",
-  delivery_pending: "text-attention-ink",
-  payment_pending: "text-attention-ink",
-  completed: "text-settled-ink",
-};
-
+/** Why a quotation has not gone out yet, as the cards over the table. */
 const REASONS: { key: NotSentReason; label: string }[] = [
   { key: "PENDING_MARKET_RATE", label: "Pending rates from market" },
   { key: "PENDING_CUSTOMER_RATE", label: "Pending customer rate" },
   { key: "PENDING_HEAD_APPROVAL", label: "Pending head approval" },
 ];
 
-/** Stable hue per customer, matching the chase board and the Inbox: the same
- *  buyer is always the same colour on every screen. */
-function hueFor(name: string): number {
-  const hues = [212, 340, 152, 28, 265, 190];
-  let total = 0;
-  for (const ch of name) total += ch.charCodeAt(0);
-  return hues[total % hues.length];
-}
-
-function initials(name: string): string {
-  return name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((w) => w[0] ?? "")
-    .join("")
-    .toUpperCase();
-}
-
 /** thickness x width x length, or OD x thickness for round stock - the same
  *  formatting `StockItem.dimension_text` uses server-side. */
-function sizeText(item: LineItem): string {
-  if (item.diameter_mm) {
-    const base = `OD ${item.diameter_mm}mm`;
-    return item.thickness_mm ? `${base} x ${item.thickness_mm}mm` : base;
-  }
-  const dims = [item.thickness_mm, item.width_mm, item.length_mm].filter(
-    (d): d is number => d != null,
-  );
-  return dims.length ? `${dims.join(" x ")} mm` : "—";
-}
-
-function pcsText(item: LineItem): string {
-  if (item.quantity_unit !== "PCS" || !item.quantity) return "—";
-  return num(item.quantity, 0);
-}
-
 /** One material line within a quotation's row-group. `first` carries the
  *  quotation-level cells (customer, status, raised), rendered with a rowSpan
  *  covering the whole group; later rows omit them entirely. */

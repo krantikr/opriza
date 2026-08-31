@@ -132,7 +132,7 @@ const NAV = [
   { to: "/", label: "Home", end: true, icon: Icons.dashboard },
   { to: "/inbox", label: "Inbox", icon: Icons.inbox },
   { to: "/quotations", label: "Quotes", icon: Icons.quotations },
-  { to: "/follow-ups", label: "Chase", icon: Icons.followup },
+  { to: "/follow-ups", label: "Follow-ups", icon: Icons.followup },
   { to: "/stock", label: "Stock", icon: Icons.stock },
   { to: "/customers", label: "Clients", icon: Icons.customers },
   { to: "/pricing", label: "Pricing", icon: Icons.pricing },
@@ -144,10 +144,10 @@ const NAV = [
 
 /* What the top bar calls the current page.
 
-   Separate from the rail labels on purpose: the rail is abbreviated to keep
-   eleven destinations on one line each ("Quotes", "Chase"), while the header
-   is the page's own title and matches what the page used to print above its
-   own content ("Quotations", "Follow-ups"). Longest prefix wins, so
+   Separate from the rail labels on purpose: the rail is abbreviated where it
+   needs to be to keep eleven destinations on one line each ("Quotes"), while
+   the header is the page's own title and matches what the page used to print
+   above its own content ("Quotations"). Longest prefix wins, so
    /quotations/17 still reads "Quotations". */
 const PAGE_TITLES: [string, string][] = [
   ["/inbox", "Inbox"],
@@ -175,7 +175,7 @@ export function pageTitle(pathname: string): string {
    arrives, the reference data behind a quote, and the desk itself. Dividers
    cost nothing vertically and stop the eye from counting. */
 const RAIL_GROUPS: { items: typeof NAV }[] = [
-  { items: NAV.slice(0, 4) },   // Home, Inbox, Quotes, Chase
+  { items: NAV.slice(0, 4) },   // Home, Inbox, Quotes, Follow-ups
   { items: NAV.slice(4, 8) },   // Stock, Clients, Pricing, Reports
   { items: NAV.slice(8) },      // Activity, Team, Settings
 ];
@@ -586,12 +586,10 @@ function UserMenu() {
 export default function Shell({ children }: { children: React.ReactNode }) {
   const { organisation } = useAuth();
   const { data: status } = useApi<SystemStatus>("/system/status", 60_000);
-  const { data: queue } = useApi<{ id: number }[]>("/follow-ups/queue", 60_000);
   const [menuOpen, setMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useRailCollapsed();
   const title = pageTitle(useLocation().pathname);
 
-  const dueCount = queue?.length ?? 0;
 
   return (
     <div className="flex h-full w-full overflow-hidden">
@@ -663,21 +661,10 @@ export default function Shell({ children }: { children: React.ReactNode }) {
                       />
                       <span className="relative shrink-0">
                         <item.icon className="size-[17px]" />
-                        {/* Collapsed there is no room for a count, but the
-                            queue still has to announce itself - so it becomes
-                            a dot on the icon. */}
-                        {collapsed && item.to === "/follow-ups" && dueCount > 0 && (
-                          <span className="absolute -right-1 -top-1 size-2 rounded-full bg-attention ring-2 ring-rail" />
-                        )}
                       </span>
                       {!collapsed && (
                         <>
                           <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                          {item.to === "/follow-ups" && dueCount > 0 && (
-                            <span className="grid h-4 min-w-4 shrink-0 place-items-center rounded-full bg-attention px-1 text-[10px] font-bold text-white">
-                              {dueCount}
-                            </span>
-                          )}
                         </>
                       )}
                     </>
@@ -846,9 +833,6 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           >
             <item.icon className="size-5" />
             <span className="truncate">{item.label}</span>
-            {item.to === "/quotations" && dueCount > 0 && (
-              <span className="absolute right-1/4 top-1 size-1.5 rounded-full bg-attention" />
-            )}
           </NavLink>
         ))}
       </nav>

@@ -9,8 +9,6 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.models.enums import (
-    FollowUpStatus,
-    FollowUpTrigger,
     LostReason,
     NotificationChannel,
     NotificationKind,
@@ -18,6 +16,7 @@ from app.models.enums import (
     StockMovementKind,
 )
 from app.schemas.common import ORMModel
+from app.schemas.quotations import LineItemOut
 
 # --- Notifications ---------------------------------------------------------
 
@@ -62,57 +61,6 @@ class NotificationRuleOut(ORMModel):
 
 
 # --- Follow-ups ------------------------------------------------------------
-
-
-class FollowUpRuleIn(BaseModel):
-    label: str = Field(min_length=1, max_length=120)
-    is_active: bool = True
-    trigger: FollowUpTrigger = FollowUpTrigger.ELAPSED
-    #: Hours, so "confirm within 24 hours" is a rule rather than a rounding.
-    first_after_hours: int = Field(default=72, ge=1, le=8760)
-    #: PROMISED_DATE only: how far ahead of the customer's date to remind.
-    remind_before_hours: int = Field(default=0, ge=0, le=720)
-    first_after_days: int = Field(default=3, ge=1, le=365)
-    interval_days: int = Field(default=5, ge=1, le=365)
-    max_attempts: int = Field(default=2, ge=1, le=10)
-    stop_after_days: int | None = Field(default=30, ge=1, le=365)
-    auto_send: bool = False
-    mark_cold_when_exhausted: bool = True
-    conditions: dict[str, Any] | None = None
-    subject_template: str | None = Field(default=None, max_length=300)
-    body_template: str | None = None
-
-
-class FollowUpRuleOut(ORMModel):
-    id: int
-    label: str
-    is_active: bool
-    trigger: FollowUpTrigger
-    first_after_hours: int
-    remind_before_hours: int
-    first_after_days: int
-    interval_days: int
-    max_attempts: int
-    stop_after_days: int | None = None
-    auto_send: bool
-    mark_cold_when_exhausted: bool
-    conditions: dict[str, Any] | None = None
-    subject_template: str | None = None
-    body_template: str | None = None
-
-
-class FollowUpScheduleOut(ORMModel):
-    id: int
-    quotation_request_id: int
-    attempt_no: int
-    due_at: datetime
-    status: FollowUpStatus
-    subject: str | None = None
-    body: str | None = None
-    resolution_note: str | None = None
-
-
-# --- Stock movement --------------------------------------------------------
 
 
 class StockMovementIn(BaseModel):
@@ -236,8 +184,6 @@ class ChaseRowOut(BaseModel):
     quote_age_days: int
     days_waiting: int
     waiting_note: str
-    chase_until: date | None = None
-    chase_note: str | None = None
 
     delivery_location: str | None = None
     required_by: str | None = None
@@ -252,7 +198,17 @@ class ChaseRowOut(BaseModel):
     has_attachment: bool
     attempts: int
     last_chased_at: datetime | None = None
-    schedule_id: int | None = None
+
+    #: Commercial stage, the same key the Quotations board uses. Defaulted so
+    #: an older client reading this schema still parses a row.
+    stage: str = "sent"
+    tonnes: float = 0.0
+    is_priority: bool = False
+
+    #: The specification, line by line, so this table can show the same
+    #: Grade/Type/Size/Weight columns as the Quotations list rather than a
+    #: single flattened "material" string.
+    line_items: list[LineItemOut] = Field(default_factory=list)
 
     value_at_risk: float
     factors: list[ScoreFactorOut]
@@ -291,7 +247,6 @@ class ChaseSendIn(BaseModel):
 
     subject: str | None = Field(default=None, max_length=500)
     body: str = Field(min_length=1)
-    schedule_id: int | None = None
 
 
 # --- Push devices ----------------------------------------------------------

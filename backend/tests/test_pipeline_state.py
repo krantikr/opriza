@@ -19,8 +19,6 @@ from app.models import (
     Email,
     EmailCategory,
     EmailSourceType,
-    FollowUpSchedule,
-    FollowUpStatus,
     ProcessingStatus,
     QuotationStatus,
 )
@@ -90,82 +88,26 @@ def test_sending_the_quotation_takes_it_out_of_enquiries(db, quoted_quotation):
 def test_a_sent_quotation_is_in_follow_up_from_the_moment_it_goes_out(
     db, quoted_quotation
 ):
-    """Waiting on the clock is still waiting.
+    """Sending it is what puts it in the tab.
 
-    Requiring `DUE` left a quotation that had just been sent in no tab at all
-    for the whole of its first interval - the trader had sent something, was
-    owed a reply, and the mailbox showed it nowhere.
+    There is no schedule to consult any more: the desk decides when to chase,
+    and until the customer answers the quotation is outstanding.
     """
     quoted_quotation.status = QuotationStatus.SENT
     quoted_quotation.sent_at = utcnow()
-    db.add(
-        FollowUpSchedule(
-            quotation_request_id=quoted_quotation.id,
-            attempt_no=1,
-            due_at=utcnow() + timedelta(hours=24),
-            status=FollowUpStatus.SCHEDULED,
-        )
-    )
     db.commit()
     db.refresh(quoted_quotation)
 
     assert resolve_state(quoted_quotation.email) is PipelineState.FOLLOW_UP
-    # In the tab, but not yet overdue - the interface says which.
+    # Nothing marks a nudge overdue on the trader's behalf.
     assert follow_up_is_due(quoted_quotation) is False
 
 
-def test_the_nudge_falling_due_marks_it_as_owed_without_moving_it(
-    db, quoted_quotation
-):
-    """Becoming due changes the emphasis, not the tab."""
-    quoted_quotation.status = QuotationStatus.SENT
-    quoted_quotation.sent_at = utcnow() - timedelta(days=1)
-    schedule = FollowUpSchedule(
-        quotation_request_id=quoted_quotation.id,
-        attempt_no=1,
-        due_at=utcnow(),
-        status=FollowUpStatus.DUE,
-    )
-    db.add(schedule)
-    db.commit()
-    db.refresh(quoted_quotation)
+def test_an_unsent_quotation_is_not_in_follow_up(db, quoted_quotation):
+    """Nothing reached the customer, so there is nothing to follow up."""
+    assert quoted_quotation.sent_at is None
 
-    assert resolve_state(quoted_quotation.email) is PipelineState.FOLLOW_UP
-    assert follow_up_is_due(quoted_quotation) is True
-
-
-def test_a_sent_quotation_with_no_rule_at_all_is_not_pending(db, quoted_quotation):
-    """Nothing scheduled means nobody decided to chase it, so it is not work."""
-    quoted_quotation.status = QuotationStatus.SENT
-    quoted_quotation.sent_at = utcnow() - timedelta(days=1)
-    db.commit()
-
-    assert resolve_state(quoted_quotation.email) is PipelineState.DONE
-
-
-def test_sending_the_nudge_clears_it_until_the_next_is_scheduled(
-    db, quoted_quotation
-):
-    """Acting on it removes it - the property the whole tab design rests on."""
-    quoted_quotation.status = QuotationStatus.SENT
-    quoted_quotation.sent_at = utcnow() - timedelta(days=1)
-    schedule = FollowUpSchedule(
-        quotation_request_id=quoted_quotation.id,
-        attempt_no=1,
-        due_at=utcnow(),
-        status=FollowUpStatus.DUE,
-    )
-    db.add(schedule)
-    db.commit()
-    db.refresh(quoted_quotation)
-    assert resolve_state(quoted_quotation.email) is PipelineState.FOLLOW_UP
-
-    schedule.status = FollowUpStatus.SENT
-    schedule.resolved_at = utcnow()
-    db.commit()
-    db.refresh(quoted_quotation)
-
-    assert resolve_state(quoted_quotation.email) is PipelineState.DONE
+    assert resolve_state(quoted_quotation.email) is not PipelineState.FOLLOW_UP
 
 
 # --- Needs reply -----------------------------------------------------------
@@ -190,14 +132,6 @@ def test_a_question_outranks_a_quotation_gone_quiet(db, quoted_quotation):
     quoted_quotation.status = QuotationStatus.SENT
     quoted_quotation.sent_at = utcnow() - timedelta(days=5)
     quoted_quotation.email.awaiting_us = True
-    db.add(
-        FollowUpSchedule(
-            quotation_request_id=quoted_quotation.id,
-            attempt_no=1,
-            due_at=utcnow(),
-            status=FollowUpStatus.DUE,
-        )
-    )
     db.commit()
     db.refresh(quoted_quotation)
 

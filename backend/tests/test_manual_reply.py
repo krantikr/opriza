@@ -108,31 +108,23 @@ def test_the_enquiry_leaves_the_pending_queue(db, quoted_quotation):
     assert resolve_state(quoted_quotation.email) is not PipelineState.ENQUIRY
 
 
-def test_chasing_starts_from_when_the_reply_actually_went_out(db, quoted_quotation, default_org):
-    """A nudge is owed relative to the real send, not to when we noticed."""
-    from sqlalchemy import select
+def test_following_up_starts_from_when_the_reply_actually_went_out(
+    db, quoted_quotation, default_org
+):
+    """The clock runs from the real send, not from when we noticed it.
 
-    from app.models import FollowUpRule, FollowUpSchedule, FollowUpTrigger
+    A reply composed in Gmail is what put the quotation in front of the
+    customer, so `sent_at` is its timestamp - the Follow-ups board dates and
+    orders every row by it.
+    """
+    reply = _reply(quoted_quotation)
 
-    db.add(
-        FollowUpRule(
-            organisation_id=default_org,
-            label="Confirm within 24 hours",
-            trigger=FollowUpTrigger.ELAPSED,
-            first_after_hours=24,
-        )
-    )
+    EmailIngestionService(db, _Fixed([reply])).ingest()
     db.commit()
+    db.refresh(quoted_quotation)
 
-    EmailIngestionService(db, _Fixed([_reply(quoted_quotation)])).ingest()
-    db.commit()
-
-    schedule = db.scalars(
-        select(FollowUpSchedule).where(
-            FollowUpSchedule.quotation_request_id == quoted_quotation.id
-        )
-    ).first()
-    assert schedule is not None
+    assert quoted_quotation.sent_at is not None
+    assert quoted_quotation.sent_at == reply.received_at
 
 
 def test_no_draft_is_invented_for_a_reply_we_never_composed(db, quoted_quotation):
@@ -179,19 +171,3 @@ def test_a_second_reply_does_not_re_date_the_first_send(db, quoted_quotation):
     assert quoted_quotation.sent_at == first
 
 
-def test_a_new_desk_can_chase_from_day_one(db, platform_db):
-    """Without a follow-up rule nothing is ever chased, and the Follow up tab
-    stays empty forever with no indication why."""
-    from sqlalchemy import select
-
-    from app.models import FollowUpRule
-    from app.services import auth as auth_service
-
-    org, _, _ = auth_service.create_organisation(
-        platform_db, name="Fresh Desk", owner_email="fresh@example.com"
-    )
-    rules = platform_db.scalars(
-        select(FollowUpRule).where(FollowUpRule.organisation_id == org.id)
-    ).all()
-    assert len(rules) == 2
-    assert all(rule.is_active for rule in rules)

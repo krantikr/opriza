@@ -1,20 +1,10 @@
 """Which open quotations are owed a chase, and in what order.
 
-The Follow-ups screen used to list `FollowUpSchedule` rows: nudges a rule had
-already decided were due. That is the machine's to-do list, not the trader's.
-Two things went wrong with it.
-
-* **The dangerous quotations were invisible.** A customer replying *cancels*
-  the schedule (`FollowUpScheduler._cancel_settled`), so the single most urgent
-  thing on a desk - somebody waiting on an answer - was the one thing the
-  screen could never show.
-* **Chronological order fought the trader.** `order_by(due_at)` puts a ₹2,000
-  nudge above an ₹18 lakh quotation because it went overdue an hour earlier.
-
-So the row here is the **quotation**, and a due schedule is merely one of the
-signals that makes it hot. The states mirror `pipeline_state.resolve_state`:
-exactly one per quotation, resolved by urgency rather than chronology, and a
-quotation leaves the moment somebody acts on it.
+A row is a **quotation**, not a scheduled nudge. It appears the moment the
+quotation reaches the customer and stays until the deal is paid or written
+off; nothing decides on the trader's behalf when it is "due". The states
+mirror `pipeline_state.resolve_state`: exactly one per quotation, resolved by
+urgency rather than chronology.
 
     YOURS   they replied, sent an order, or the date they promised has passed
             - and nobody has answered
@@ -22,11 +12,10 @@ quotation leaves the moment somebody acts on it.
     COLD    nothing has moved for a long time; chase hard or write it off
     SNOOZED deliberately parked until a date the trader chose
 
-Ordering is by **money at risk**, not time: value weighted by whose turn it is,
-how long it has been quiet, and how good the customer is. `ChaseRow.score`
-carries its own factor breakdown so the UI can show why a row ranked where it
-did - an unexplained ranking is one a trader stops trusting, and a ranking he
-does not trust is one he scrolls past.
+Ordering is by **latest activity**: the board reads as a live feed, so whatever
+moved most recently is the top row. `value_at_risk` and its factor breakdown
+are still computed and still shown - they explain how much is riding on a row,
+they just no longer decide where it sits.
 """
 
 from __future__ import annotations
@@ -44,13 +33,12 @@ from app.models import (
     Email,
     EmailCategory,
     FollowUp,
-    FollowUpRule,
-    FollowUpSchedule,
-    FollowUpStatus,
     MailDirection,
+    PriorityProduct,
     QuotationRequest,
     QuotationStatus,
 )
+from app.services.quotations.stages import stage_of
 
 # --------------------------------------------------------------------------
 # States
@@ -72,7 +60,19 @@ COLD_AFTER_DAYS = 21
 
 #: A quotation only appears once it has actually reached the customer. Before
 #: that it is the Inbox's problem, not the chase list's.
-IN_FLIGHT = (QuotationStatus.SENT, QuotationStatus.APPROVED)
+#:
+#: Every stage *after* the send is here too, not just the ones awaiting a
+#: reply: a won deal still needs despatching, a despatched one still needs
+#: paying, and a screen that drops a quotation the moment it is accepted
+#: hands the trader back the job of remembering it. `PAID` is absent
+#: deliberately - that one is finished.
+IN_FLIGHT = (
+    QuotationStatus.SENT,
+    QuotationStatus.APPROVED,
+    QuotationStatus.NEGOTIATION,
+    QuotationStatus.CUSTOMER_ACCEPTED,
+    QuotationStatus.PAYMENT_PENDING,
+)
 
 #: The customer has decided. Nothing is owed either way.
 SETTLED = (
@@ -151,12 +151,6 @@ class ChaseRow:
     days_waiting: int
     #: Short label under the age: what the clock is actually counting.
     waiting_note: str
-    #: When the desk gives up chasing (`FollowUpRule.stop_after_days`). This
-    #: is *not* price validity, which the system does not record - see
-    #: `_validity`. Silent unless the deadline is near enough to matter.
-    chase_until: date | None
-    chase_note: str | None
-
     delivery_location: str | None
     required_by: str | None
     payment_terms: str | None
@@ -172,10 +166,27 @@ class ChaseRow:
     has_attachment: bool
     attempts: int
     last_chased_at: datetime | None
-    schedule_id: int | None
+
+    #: Where this sits commercially, as the same key the Quotations board and
+    #: the stage picker use. Distinct from `turn`, which is only about who owes
+    #: the next message: a deal can be "delivery pending" and still be waiting
+    #: on us for a despatch date.
+    stage: str
+    #: Tonnage on the quotation, for the per-stage totals above the table.
+    tonnes: float
+
+    #: A flagged buyer, or a flagged grade+make on any line. Derived exactly
+    #: as the quotations list derives it, so the same deal is highlighted on
+    #: both screens rather than only on the one that happened to check.
+    is_priority: bool
 
     value_at_risk: float
     factors: list[ScoreFactor] = field(default_factory=list)
+
+    #: The ORM line items, kept as models rather than serialised here: the API
+    #: layer owns the wire shape, and this dataclass is read directly by the
+    #: tests and the digest. Excluded from `asdict` at the boundary.
+    line_items: list = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -189,13 +200,37 @@ class ChaseService:
     def __init__(self, db: Session, *, now: datetime | None = None) -> None:
         self.db = db
         self.now = now or utcnow()
+        self._priority_pairs: set[tuple[str, str]] | None = None
+
+    @property
+    def priority_pairs(self) -> set[tuple[str, str]]:
+        """Flagged `(grade, make)` combinations, read once per board build
+        rather than once per row - it is the same small table every time."""
+        if self._priority_pairs is None:
+            self._priority_pairs = {
+                (p.grade, p.make) for p in self.db.scalars(select(PriorityProduct))
+            }
+        return self._priority_pairs
 
     # -- public ------------------------------------------------------------
 
     def board(self) -> list[ChaseRow]:
-        """Every open quotation, most money at risk first."""
+        """Every open quotation, most recently active first.
+
+        Ordered by the last thing that happened on the thread rather than by
+        money at risk. The board is now read as a live feed - a reply that
+        just landed is the row a trader wants at the top, and burying it
+        under a larger deal that has not moved in a fortnight is what makes
+        a follow-up screen stop being opened. `value_at_risk` is still
+        computed and still shown; it just no longer decides the order.
+        """
         rows = [self._row(q) for q in self._open_quotations()]
-        rows.sort(key=lambda r: r.value_at_risk, reverse=True)
+        # `last_at` is None only for a quotation with no thread at all; those
+        # sort last rather than crashing the comparison.
+        rows.sort(
+            key=lambda r: (r.last_at is not None, r.last_at or self.now),
+            reverse=True,
+        )
         return rows
 
     def counts(self, rows: list[ChaseRow]) -> dict[str, int]:
@@ -218,7 +253,6 @@ class ChaseService:
                 .where(
                     QuotationRequest.status.in_(IN_FLIGHT),
                     QuotationRequest.sent_at.is_not(None),
-                    QuotationRequest.despatched_at.is_(None),
                 )
                 .order_by(QuotationRequest.sent_at.desc())
             )
@@ -237,7 +271,6 @@ class ChaseService:
         material, quantity, rate, value = self._what(q)
         stock_note, stock_short = self._stock(q)
         last_nudge = self._last_nudge(q)
-        chase_until, chase_note = self._validity(q)
 
         # The last movement on the thread is our own quotation when nothing
         # has come back since - otherwise the row would read as though the
@@ -279,8 +312,6 @@ class ChaseService:
             quote_age_days=max(0, (self.now - q.sent_at).days) if q.sent_at else 0,
             days_waiting=days,
             waiting_note=waiting_note,
-            chase_until=chase_until,
-            chase_note=chase_note,
             delivery_location=q.delivery_location,
             required_by=q.required_delivery_date,
             payment_terms=q.payment_terms,
@@ -292,8 +323,19 @@ class ChaseService:
             has_attachment=bool(latest and latest.has_attachments),
             attempts=self._attempts(q),
             last_chased_at=last_nudge,
-            schedule_id=self._due_schedule_id(q),
+            # `stage_of` reads despatch as well as status, so an accepted
+            # quotation whose steel has gone reads "payment pending" here
+            # exactly as it does on the dashboard.
+            stage=stage_of(q) or "sent",
+            tonnes=sum(float(i.quantity_mt or 0) for i in q.line_items),
+            is_priority=bool(customer and customer.is_priority)
+            or any(
+                (i.grade, i.matched_stock_item.make) in self.priority_pairs
+                for i in q.line_items
+                if i.matched_stock_item
+            ),
             value_at_risk=0.0,
+            line_items=list(q.line_items or []),
         )
         row.factors = self._factors(row)
         row.value_at_risk = row.value * _product(row.factors)
@@ -352,17 +394,7 @@ class ChaseService:
                 "past promise",
             )
 
-        # 3. A rule says a nudge is owed and it is still sitting in the queue.
-        schedule_id = self._due_schedule_id(q)
-        if schedule_id is not None:
-            return (
-                ChaseTurn.YOURS,
-                "A nudge is due and waiting for you to send it.",
-                q.sent_at,
-                "nudge due",
-            )
-
-        # 4. Nothing has moved for a long time.
+        # 3. Nothing has moved for a long time.
         quiet_since = self._last_activity(q)
         quiet_days = max(0, (self.now - quiet_since).days) if quiet_since else 0
         if quiet_days >= COLD_AFTER_DAYS:
@@ -473,42 +505,6 @@ class ChaseService:
             replies += 1
         return max(replies, 1) + self._attempts(q)
 
-    def _validity(self, q: QuotationRequest) -> tuple[date | None, str | None]:
-        """When the desk stops chasing this quotation - *not* price validity.
-
-        These were conflated in a first pass and it is worth naming why that
-        was wrong. `FollowUpRule.stop_after_days` is "give up after 30 days",
-        an internal decision about effort. How long a *price* stands is a
-        commitment made to the customer, and this system does not record it
-        anywhere. Rendering the first as though it were the second would put a
-        number on screen that a trader might honour, so the label says exactly
-        what the date is and nothing more.
-
-        It only speaks when the deadline is close enough to change what the
-        trader does today; a month out it is noise.
-        """
-        if q.sent_at is None:
-            return (None, None)
-
-        window = self.db.scalar(
-            select(FollowUpRule.stop_after_days)
-            .where(FollowUpRule.is_active.is_(True), FollowUpRule.stop_after_days.is_not(None))
-            .order_by(FollowUpRule.stop_after_days)
-            .limit(1)
-        )
-        if not window:
-            return (None, None)
-
-        until = (q.sent_at + timedelta(days=int(window))).date()
-        left = (until - self.now.date()).days
-        if left < 0:
-            return (until, "chasing stopped")
-        if left == 0:
-            return (until, "last day to chase")
-        if left <= 5:
-            return (until, f"{_plural(left, 'day')} left to chase")
-        return (until, None)
-
     def _stock(self, q: QuotationRequest) -> tuple[str | None, bool]:
         """Whether the yard can cover what was quoted.
 
@@ -574,17 +570,6 @@ class ChaseService:
         if turn is ChaseTurn.COLD:
             return "Last attempt, or mark lost"
         return "Chase for a decision"
-
-    def _due_schedule_id(self, q: QuotationRequest) -> int | None:
-        return self.db.scalar(
-            select(FollowUpSchedule.id)
-            .where(
-                FollowUpSchedule.quotation_request_id == q.id,
-                FollowUpSchedule.status == FollowUpStatus.DUE,
-            )
-            .order_by(FollowUpSchedule.due_at)
-            .limit(1)
-        )
 
     def _history(self, q: QuotationRequest) -> tuple[int, int]:
         """(won, total) quotations for this customer, this one included."""

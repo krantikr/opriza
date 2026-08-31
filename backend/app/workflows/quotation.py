@@ -490,18 +490,8 @@ class QuotationWorkflow:
             details={"quotation_number": quotation.quotation_number, "reason": state.get("reply_reason")},
         )
         self.db.commit()
-        self._stop_chasing(quotation, "The customer accepted.")
         self._notify_reply(quotation, "accepted")
         return {"outcome": "CUSTOMER_ACCEPTED", "status": quotation.status.value}
-
-    def _stop_chasing(self, quotation: QuotationRequest, reason: str) -> None:
-        """A customer who has replied must never be chased again."""
-        from app.services.quotations.followup_rules import FollowUpScheduler
-
-        try:
-            FollowUpScheduler(self.db).cancel_for(quotation, reason)
-        except Exception:  # noqa: BLE001 - never break reply handling
-            logger.exception("Could not cancel follow-ups for %s", quotation.quotation_number)
 
     def _notify_reply(self, quotation: QuotationRequest, intent: str) -> None:
         try:
@@ -537,7 +527,6 @@ class QuotationWorkflow:
             details={"quotation_number": quotation.quotation_number, "reason": state.get("reply_reason")},
         )
         self.db.commit()
-        self._stop_chasing(quotation, "The customer declined.")
         self._notify_reply(quotation, "declined")
         return {"outcome": "CUSTOMER_DECLINED", "status": quotation.status.value, "notes": notes}
 

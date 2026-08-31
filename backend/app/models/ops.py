@@ -23,8 +23,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
 from app.models.enums import (
-    FollowUpStatus,
-    FollowUpTrigger,
     NotificationChannel,
     NotificationKind,
     NotificationStatus,
@@ -165,98 +163,6 @@ class PushDevice(Base, TimestampMixin, TenantMixin):
 # ---------------------------------------------------------------------------
 
 
-class FollowUpRule(Base, TimestampMixin, TenantMixin):
-    """When to chase a quotation that has gone quiet.
-
-    Two shapes of rule, because a desk needs both:
-
-    * **Elapsed** - "chase 24 hours after sending, then every 5 days". Timed
-      from when the quotation went out, and measured in *hours* so a same-day
-      confirmation is expressible; a day is just 24 of them.
-    * **Promised date** - "the customer said they would decide on the 14th, so
-      remind me on the 14th". Timed from what the customer actually said,
-      which is a far better moment to call than an arbitrary interval.
-
-    `auto_send` exists and defaults to False on purpose. The rule decides
-    *when* a nudge is owed and drafts it; a human still presses send. Turning
-    it on is a deliberate, per-rule, auditable choice - not a global setting
-    someone flips without noticing that the system now mails customers on its
-    own.
-    """
-
-    __tablename__ = "follow_up_rules"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    label: Mapped[str] = mapped_column(String(120), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-
-    trigger: Mapped[FollowUpTrigger] = mapped_column(
-        enum_col(FollowUpTrigger), default=FollowUpTrigger.ELAPSED, nullable=False
-    )
-    #: Hours after sending before the first nudge. Kept in hours rather than
-    #: days so "confirm within 24 hours" is a rule, not an approximation.
-    first_after_hours: Mapped[int] = mapped_column(Integer, default=72, nullable=False)
-    #: For PROMISED_DATE: how long before the date the reminder is raised.
-    #: Zero means on the day itself.
-    remind_before_hours: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-
-    first_after_days: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
-    interval_days: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
-    max_attempts: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
-    stop_after_days: Mapped[int | None] = mapped_column(Integer, default=30)
-
-    auto_send: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    # Marked cold once the attempts are spent, so the pipeline reflects reality.
-    mark_cold_when_exhausted: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-
-    # e.g. {"min_value": 100000, "customer_tier": ["A"]}
-    conditions: Mapped[dict | None] = mapped_column(JSON)
-    subject_template: Mapped[str | None] = mapped_column(String(300))
-    body_template: Mapped[str | None] = mapped_column(Text)
-
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return f"<FollowUpRule {self.label} +{self.first_after_days}d x{self.max_attempts}>"
-
-
-class FollowUpSchedule(Base, TimestampMixin, TenantMixin):
-    """A nudge a rule says is owed, waiting for a human to send it."""
-
-    __tablename__ = "follow_up_schedules"
-    __table_args__ = (Index("ix_follow_up_due", "status", "due_at"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    quotation_request_id: Mapped[int] = mapped_column(
-        ForeignKey("quotation_requests.id", ondelete="CASCADE"), nullable=False, index=True
-    )
-    rule_id: Mapped[int | None] = mapped_column(ForeignKey("follow_up_rules.id"))
-    follow_up_id: Mapped[int | None] = mapped_column(ForeignKey("follow_ups.id"))
-
-    attempt_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    due_at: Mapped[datetime] = mapped_column(nullable=False, index=True)
-    status: Mapped[FollowUpStatus] = mapped_column(
-        enum_col(FollowUpStatus), default=FollowUpStatus.SCHEDULED, nullable=False, index=True
-    )
-
-    subject: Mapped[str | None] = mapped_column(String(500))
-    body: Mapped[str | None] = mapped_column(Text)
-
-    resolved_at: Mapped[datetime | None] = mapped_column()
-    resolution_note: Mapped[str | None] = mapped_column(String(300))
-
-    quotation_request: Mapped["QuotationRequest"] = relationship(  # noqa: F821
-        back_populates="follow_up_schedules"
-    )
-    rule: Mapped[FollowUpRule | None] = relationship()
-
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return f"<FollowUpSchedule q={self.quotation_request_id} #{self.attempt_no} {self.status}>"
-
-
-# ---------------------------------------------------------------------------
-# Stock movement
-# ---------------------------------------------------------------------------
-
-
 class StockMovement(Base, CreatedAtMixin, TenantMixin):
     """A change in stock that did not come from re-importing the sheet.
 
@@ -333,8 +239,6 @@ class CustomerNote(Base, TimestampMixin, TenantMixin):
 __all__ = [
     "NotificationRule",
     "Notification",
-    "FollowUpRule",
-    "FollowUpSchedule",
     "StockMovement",
     "CustomerNote",
 ]

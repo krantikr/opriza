@@ -106,7 +106,6 @@ class EmailIngestionService:
         """
         from app.core.db import utcnow
         from app.models import QuotationStatus
-        from app.services.quotations.followup_rules import FollowUpScheduler
 
         quotation = _quotation_in_thread(self.db, email)
         if quotation is None or quotation.sent_at is not None:
@@ -124,12 +123,6 @@ class EmailIngestionService:
         if quotation.email is not None:
             quotation.email.answered_at = quotation.sent_at
         self.db.flush()
-
-        # Chasing starts from when the reply actually went out.
-        try:
-            FollowUpScheduler(self.db).schedule_for(quotation)
-        except Exception:  # noqa: BLE001 - a missing nudge must not lose the mail
-            logger.exception("Could not schedule follow-up for %s", quotation.quotation_number)
 
         logger.info(
             "Recorded a reply sent outside Steel Desk for %s", quotation.quotation_number

@@ -166,52 +166,16 @@ def create_organisation(
 def _seed_defaults(db: Session, organisation_id: int) -> None:
     """Give a new desk the rules it needs to work on day one.
 
-    Without a follow-up rule nothing is ever chased, and a trader would send
-    their first quotation and see the Follow up tab stay empty forever with no
-    indication why. Without a pricing rule set the Pricing screen has nothing
-    to show and every enquiry prices as unquotable - the desk cannot do the one
-    thing it exists to do. These are the rules the product is designed around;
-    an owner can edit or disable them once they are in.
+    Without a pricing rule set the Pricing screen has nothing to show and every
+    enquiry prices as unquotable - the desk cannot do the one thing it exists
+    to do.
 
     Seeded without committing, so onboarding remains one transaction: a desk is
     never left half-configured by a failure part way through.
     """
-    from app.models import FollowUpRule, FollowUpTrigger
     from app.services.pricing import seed_pricing_defaults
 
-    # Pricing is seeded on its own idempotency check rather than the follow-up
-    # one below, so a desk created before this was wired in still gets rules.
     seed_pricing_defaults(db, organisation_id=organisation_id, commit=False)
-
-    existing = db.scalars(
-        select(FollowUpRule).where(FollowUpRule.organisation_id == organisation_id)
-    ).first()
-    if existing is not None:
-        return
-
-    db.add_all(
-        [
-            FollowUpRule(
-                organisation_id=organisation_id,
-                label="Confirm within 24 hours",
-                trigger=FollowUpTrigger.ELAPSED,
-                first_after_hours=24,
-                interval_days=3,
-                max_attempts=2,
-                is_active=True,
-            ),
-            FollowUpRule(
-                organisation_id=organisation_id,
-                label="Follow up on the customer's own date",
-                trigger=FollowUpTrigger.PROMISED_DATE,
-                first_after_hours=72,
-                interval_days=5,
-                max_attempts=2,
-                is_active=True,
-            ),
-        ]
-    )
-    db.flush()
 
 
 # --- Invitations -----------------------------------------------------------
