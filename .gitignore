@@ -43,3 +43,6 @@ data/sent/
 *service-account*.json
 *serviceAccount*.json
 firebase-adminsdk-*.json
+
+# Playwright MCP cache
+.playwright-mcp/
