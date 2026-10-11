@@ -7,7 +7,9 @@ send an email, press the button, watch it appear.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
+import hmac
+
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.api.deps import TenantDb
@@ -16,6 +18,7 @@ from app.core.db import session_scope
 from app.core.logging import get_logger
 from app.services.email.factory import get_email_source
 from app.services.email.ingestion import EmailIngestionService
+from app.services.poller import poll_all_organisations
 from app.workflows.quotation import process_pending_emails
 
 logger = get_logger(__name__)
@@ -108,3 +111,39 @@ def ingest_and_process(background: BackgroundTasks, limit: int = Query(default=2
 
     background.add_task(_cycle)
     return {"detail": "Pipeline run started."}
+
+
+@router.post("/cron", status_code=status.HTTP_202_ACCEPTED)
+def cron_tick(background: BackgroundTasks, x_cron_secret: str | None = Header(default=None)):
+    """One poll tick across *every* active desk, driven by an external cron.
+
+    This is the production replacement for the in-process scheduler. On a free
+    host that spins down when idle, a `BackgroundScheduler` cannot be trusted to
+    keep ticking, so an external cron (GitHub Actions, cron-job.org) calls this
+    on a schedule. Each call also wakes a sleeping host as a side effect.
+
+    Unlike `/run`, this is *not* tenant-scoped: it loops over all organisations
+    via `poll_all_organisations`, each one checked only if its own crawl window
+    says it is due. It is guarded by a shared secret rather than a user session,
+    because no user sits behind a cron. The secret is compared in constant time.
+
+    Returns 202 immediately: a full sweep over real mailboxes outlives any
+    cron's request timeout, so the work runs in the background.
+    """
+    if not settings.cron_secret:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "CRON_SECRET is not set, so the cron trigger is disabled.",
+        )
+    if x_cron_secret is None or not hmac.compare_digest(x_cron_secret, settings.cron_secret):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or missing cron secret.")
+
+    def _tick() -> None:
+        try:
+            result = poll_all_organisations()
+            logger.info("Cron poll tick: %s", result.summary())
+        except Exception:  # noqa: BLE001 - background task must not crash the server
+            logger.exception("Cron poll tick failed")
+
+    background.add_task(_tick)
+    return {"detail": "Poll tick started."}

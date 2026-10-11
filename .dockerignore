@@ -1,0 +1,18 @@
+# Keep the build context small and never ship local secrets or the host venv.
+.venv/
+node_modules/
+frontend/node_modules/
+frontend/dist/
+.git/
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+data/secrets/
+*.sqlite
+*.db
+.DS_Store
+docs/

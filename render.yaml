@@ -1,0 +1,49 @@
+# Render blueprint for the backend. Import this from the Render dashboard
+# (New > Blueprint) after pushing, or create the service by hand with the same
+# settings. The database is NOT defined here: it lives on Neon (free Postgres),
+# because the app's row-level-security isolation needs a NOSUPERUSER /
+# NOBYPASSRLS role, which you create on Neon and pass in as DATABASE_URL.
+services:
+  - type: web
+    name: quotation-copilot-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon
+    healthCheckPath: /health
+    envVars:
+      # --- Database (Neon) ---------------------------------------------------
+      # The connection string for the dedicated app role. It MUST be a
+      # NOSUPERUSER NOBYPASSRLS role or the app refuses to boot (see
+      # app.core.tenancy.assert_rls_enforced). Prefix must be
+      # postgresql+psycopg:// so psycopg3 is used. Set this value in the
+      # dashboard - never commit it.
+      - key: DATABASE_URL
+        sync: false
+      # --- Secrets -----------------------------------------------------------
+      # Signs session tokens; changing it signs everyone out.
+      - key: JWT_SECRET
+        generateValue: true
+      # Shared secret the external cron sends as the X-Cron-Secret header.
+      # The same value goes into the GitHub Actions repo secret CRON_SECRET.
+      - key: CRON_SECRET
+        generateValue: true
+      # Encrypts mailbox refresh tokens at rest. Generate a Fernet key and set
+      # it in the dashboard (see setup notes). Losing it orphans stored
+      # mailbox credentials, so keep a copy.
+      - key: CREDENTIAL_KEY
+        sync: false
+      # --- LLM (OpenRouter) --------------------------------------------------
+      - key: OPENROUTER_API_KEY
+        sync: false
+      # --- App ---------------------------------------------------------------
+      - key: APP_ENV
+        value: production
+      # The in-process poller stays OFF. Email sync is driven by the external
+      # cron hitting /api/v1/pipeline/cron, which suits a host that sleeps.
+      - key: POLLING_ENABLED
+        value: "false"
+      # Lock CORS to the deployed frontend. Set this to the Vercel URL once the
+      # frontend is deployed (e.g. https://your-app.vercel.app).
+      - key: CORS_ORIGINS
+        sync: false

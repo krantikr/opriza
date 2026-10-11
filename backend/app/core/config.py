@@ -139,6 +139,11 @@ class Settings(BaseSettings):
     #: desk is checked is decided from its own crawl window, so this only
     #: bounds how precisely those windows are honoured.
     poll_tick_seconds: int = 60
+    #: Shared secret for the external cron trigger (POST /api/v1/pipeline/cron).
+    #: On a free host that sleeps when idle, an in-process scheduler cannot be
+    #: relied on, so an external cron calls that endpoint instead. Empty means
+    #: the endpoint is disabled and returns 503 - it never runs unauthenticated.
+    cron_secret: str = ""
 
     # --- Safety -----------------------------------------------------------
     # Spec Rule 4: the MVP never sends without a recorded human approval.
