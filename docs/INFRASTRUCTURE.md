@@ -107,14 +107,19 @@ never from the public surface.
 ### The normal path
 
 ```bash
-echo "DATABASE_URL='postgresql+psycopg://steeldesk_app:…@…neon.tech/neondb?sslmode=require'" > deploy.env
-scripts/deploy.sh
+# Put the Neon URL in a git-ignored file (so it stays out of shell history):
+echo "DATABASE_URL='postgresql+psycopg://steeldesk_app:…@ep-silent-king-…neon.tech/neondb?sslmode=require'" > deploy.env
+
+# Then:
+scripts/deploy.sh                 # full deploy, prompts before push
+scripts/deploy.sh --no-push       # run all checks, stop before pushing (safe)
+scripts/deploy.sh --yes           # no confirmation prompt
 ```
 
 [`scripts/deploy.sh`](../scripts/deploy.sh) runs the test suites, typecheck and
 build; migrates the production DB and re-checks RLS; pushes `main` (which triggers
 Render and Vercel to redeploy from GitHub); then polls `/health` and the site.
-Flags: `--no-push` (checks only), `--skip-tests`, `--skip-migrate`, `--yes`.
+Other flags: `--skip-tests`, `--skip-migrate`.
 
 Auto-deploy is on for both hosts, so a plain `git push origin main` also deploys —
 the script just wraps it with the right pre-flight and verification. The Render

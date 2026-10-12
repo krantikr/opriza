@@ -124,12 +124,13 @@ database and re-checks row-level security; pushes `main` (which triggers Render
 and Vercel to redeploy from GitHub); then polls `/health` and the live site.
 
 ```bash
-# Put the production DB URL in a git-ignored file (keeps it out of history):
-echo "DATABASE_URL='postgresql+psycopg://steeldesk_app:…@…neon.tech/neondb?sslmode=require'" > deploy.env
+# Put the Neon URL in a git-ignored file (so it stays out of shell history):
+echo "DATABASE_URL='postgresql+psycopg://steeldesk_app:…@ep-silent-king-…neon.tech/neondb?sslmode=require'" > deploy.env
 
-scripts/deploy.sh            # full deploy, prompts before the push
-scripts/deploy.sh --no-push  # run every check, stop before pushing
-scripts/deploy.sh --yes      # skip the confirmation prompt
+# Then:
+scripts/deploy.sh                 # full deploy, prompts before push
+scripts/deploy.sh --no-push       # run all checks, stop before pushing (safe)
+scripts/deploy.sh --yes           # no confirmation prompt
 ```
 
 It never prints a secret (DB host only) and refuses to run against a `localhost`
