@@ -64,7 +64,7 @@ from app.models.quotation import (
     QuotationRequest,
     StockAvailability,
 )
-from app.models.system import AuditLog, ImportBatch, LLMCall
+from app.models.system import AuditLog, ImportBatch, Lead, LLMCall
 from app.models.tenancy import Invite, Mailbox, Organisation, User
 
 __all__ = [
@@ -113,6 +113,7 @@ __all__ = [
     "AuditLog",
     "LLMCall",
     "ImportBatch",
+    "Lead",
     # enums
     "ApprovalAction",
     "ConfidenceLevel",

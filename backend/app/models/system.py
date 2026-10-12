@@ -96,3 +96,31 @@ class ImportBatch(Base, CreatedAtMixin, TenantMixin):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<ImportBatch {self.entity_type} {self.source_file} {self.status}>"
+
+
+class Lead(Base, CreatedAtMixin):
+    """A design-partner request from the public marketing site.
+
+    Platform-level on purpose: a prospect is not a tenant yet, so this table
+    carries no `organisation_id` and therefore no row-level-security policy -
+    which is what lets the unauthenticated `/api/v1/leads` route insert into
+    it. It is append-only (CreatedAtMixin, no updates); the team reads it from
+    the admin console, never the trading desk.
+    """
+
+    __tablename__ = "leads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    company: Mapped[str] = mapped_column(String(200), nullable=False)
+    email: Mapped[str] = mapped_column(String(254), nullable=False, index=True)
+    monthly_enquiries: Mapped[str | None] = mapped_column(String(60))
+    note: Mapped[str | None] = mapped_column(Text)
+    #: Where the request came from, so we can tell the contact form from any
+    #: later channel without guessing.
+    source: Mapped[str] = mapped_column(String(60), default="marketing_site", nullable=False)
+    #: Light abuse signal, never shown to the prospect.
+    user_agent: Mapped[str | None] = mapped_column(String(400))
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<Lead {self.company} {self.email}>"

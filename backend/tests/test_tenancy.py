@@ -212,8 +212,9 @@ def test_business_routes_take_a_bound_session():
     """
     routes = pathlib.Path(__file__).resolve().parents[1] / "app/api/v1"
     # `auth` and `admin` legitimately run before a tenant is known, or across
-    # tenants; every other router serves one desk.
-    allowed = {"auth.py", "admin.py", "router.py", "__init__.py"}
+    # tenants; `leads` is the public marketing-site capture, which has no tenant
+    # and whose table has no RLS. Every other router serves one desk.
+    allowed = {"auth.py", "admin.py", "leads.py", "router.py", "__init__.py"}
 
     offenders: list[str] = []
     for path in sorted(routes.glob("*.py")):

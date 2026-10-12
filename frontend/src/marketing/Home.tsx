@@ -7,6 +7,55 @@
 import { Link } from "react-router-dom";
 
 import { CountUp, Phone, Reveal, useSeo } from "./lib";
+import { MockCollections, MockDocuments, MockProcurement, MockReports, MockSales } from "./Mocks";
+
+const AGENTS = [
+  {
+    no: "01",
+    live: true,
+    when: "",
+    title: "Sales agent",
+    engine: "Quotation engine",
+    body: "Captures requests across WhatsApp, email and calls, and prices each one accurately — against your stock, freight, payment terms and the customer's own history.",
+    mock: <MockSales />,
+  },
+  {
+    no: "02",
+    live: false,
+    when: "Months 3–4",
+    title: "Collections agent",
+    engine: "Receivables engine",
+    body: "Runs your collection process so cash comes in on time — prioritising follow-ups by amount, ageing and payment behaviour, and forecasting what you'll actually collect.",
+    mock: <MockCollections />,
+  },
+  {
+    no: "03",
+    live: false,
+    when: "Months 5–6",
+    title: "Procurement agent",
+    engine: "Demand engine",
+    body: "Keeps supply at the right time and the right price — liquidating aging stock, flagging stock-out risk, and timing replenishment before you run short.",
+    mock: <MockProcurement />,
+  },
+  {
+    no: "04",
+    live: false,
+    when: "Later",
+    title: "Document manager",
+    engine: "",
+    body: "Easy access and sharing of every document — PO, dispatch, weighbridge, invoice, test certificates — reconciled against each other and sent to the right people.",
+    mock: <MockDocuments />,
+  },
+  {
+    no: "05",
+    live: false,
+    when: "Later",
+    title: "Branch manager",
+    engine: "",
+    body: "Accurate, insightful business reports — a daily, weekly and monthly snapshot of sales, collections, stock and payables, with the actions that matter surfaced.",
+    mock: <MockReports />,
+  },
+];
 
 const BRIEF = [
   { html: "<b>Good morning, Mr Sharma.</b> Here’s your day:", max: "96%" },
@@ -130,33 +179,35 @@ export default function Home() {
         </div>
       </div>
 
-      {/* ---------- WHAT'S LIVE TODAY (real app) ---------- */}
+      {/* ---------- THE AGENTS ---------- */}
       <section>
         <div className="wrap">
           <Reveal>
-            <p className="eyebrow">Live today · the Quotation Copilot</p>
-            <h2 className="h2" style={{ maxWidth: "16ch" }}>
-              The vision runs on WhatsApp. The first agent is already working.
+            <p className="eyebrow">One brain, one agent at a time</p>
+            <h2 className="h2" style={{ maxWidth: "18ch" }}>
+              Five agents that run the desk. The first one's already working.
             </h2>
             <p className="lead" style={{ marginTop: 14 }}>
-              An enquiry lands, Oprisa reads it, prices it against your stock and the customer's past rates, and drafts
-              the quote. You approve before anything sends — nothing goes out on its own.
+              Each agent owns one job a promoter holds in their head — and reports into the same morning brief, so the
+              whole business arrives in one thread instead of seven screens.
             </p>
           </Reveal>
 
-          <div className="shots">
-            <Reveal delay={60} className="shot shot-wide">
-              <img src="/shot-inbox.webp" alt="Oprisa inbox turning incoming enquiries into structured quote requests" loading="lazy" />
-              <span className="shot-cap">Enquiries become structured requests — product, grade, size, quantity, delivery.</span>
-            </Reveal>
-            <Reveal delay={140} className="shot">
-              <img src="/shot-pricing.webp" alt="The pricing engine showing margin, freight and customer history on a quote" loading="lazy" />
-              <span className="shot-cap">Priced against stock cost, freight, payment terms and past margin.</span>
-            </Reveal>
-            <Reveal delay={220} className="shot">
-              <img src="/shot-quotations.webp" alt="A drafted quotation waiting for human approval before it is sent" loading="lazy" />
-              <span className="shot-cap">A draft you approve — the human stays in the loop, always.</span>
-            </Reveal>
+          <div className="agents">
+            {AGENTS.map((a, i) => (
+              <Reveal key={a.no} className={`agent${i % 2 ? " rev" : ""}`}>
+                <div className="agent-copy">
+                  <div className="agent-no">
+                    {a.no}
+                    <span className={`st ${a.live ? "live" : "soon"}`}>{a.live ? "Live" : a.when}</span>
+                  </div>
+                  <h3>{a.title}</h3>
+                  {a.engine && <p className="engine">{a.engine}</p>}
+                  <p>{a.body}</p>
+                </div>
+                <div className="agent-mock">{a.mock}</div>
+              </Reveal>
+            ))}
           </div>
         </div>
       </section>

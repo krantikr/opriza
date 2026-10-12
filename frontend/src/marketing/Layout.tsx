@@ -13,7 +13,6 @@ const NAV = [
   { to: "/product", label: "Product" },
   { to: "/pricing", label: "Pricing" },
   { to: "/about", label: "About" },
-  { to: "/contact", label: "Contact" },
 ];
 
 function Brand({ onFoot = false }: { onFoot?: boolean }) {
@@ -39,9 +38,6 @@ export default function MarketingLayout() {
                 {n.label}
               </NavLink>
             ))}
-            <Link to="/sign-in" className="mk-link">
-              Sign in
-            </Link>
             <Link to="/contact" className="btn btn-go" style={{ marginLeft: 6 }}>
               Request access
             </Link>
@@ -64,9 +60,6 @@ export default function MarketingLayout() {
                 {n.label}
               </Link>
             ))}
-            <Link to="/sign-in" onClick={() => setOpen(false)}>
-              Sign in
-            </Link>
             <Link to="/contact" onClick={() => setOpen(false)}>
               Request access →
             </Link>
@@ -98,18 +91,18 @@ export default function MarketingLayout() {
                 <Link to="/pricing">Pricing</Link>
               </li>
               <li>
-                <Link to="/sign-in">Sign in</Link>
+                <Link to="/about">About &amp; roadmap</Link>
               </li>
             </ul>
           </div>
           <div>
-            <h4>Company</h4>
+            <h4>Get in touch</h4>
             <ul>
               <li>
-                <Link to="/about">About &amp; roadmap</Link>
+                <Link to="/contact">Request access</Link>
               </li>
               <li>
-                <Link to="/contact">Request access</Link>
+                <Link to="/contact">Contact</Link>
               </li>
               <li>
                 <a href="mailto:hello@opriza.com">hello@opriza.com</a>

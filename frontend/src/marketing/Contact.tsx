@@ -1,7 +1,7 @@
 /* ---------------------------------------------------------------------------
-   Contact — request a design-partner slot. The form opens the visitor's own
-   email client pre-filled (no backend endpoint for leads yet), so we never
-   claim a message was sent when it wasn't.
+   Contact — request a design-partner slot. Posts to the public
+   `/api/v1/leads` endpoint, which stores the request in the database. No
+   account or token needed; the endpoint is unauthenticated by design.
    --------------------------------------------------------------------------- */
 
 import { useState } from "react";
@@ -9,6 +9,8 @@ import { useState } from "react";
 import { Reveal, useSeo } from "./lib";
 
 const INBOX = "hello@opriza.com";
+
+type Status = "idle" | "sending" | "done" | "error";
 
 export default function Contact() {
   useSeo({
@@ -19,27 +21,33 @@ export default function Contact() {
   });
 
   const [form, setForm] = useState({ name: "", company: "", email: "", volume: "", note: "" });
-  const [opened, setOpened] = useState(false);
+  const [website, setWebsite] = useState(""); // honeypot
+  const [status, setStatus] = useState<Status>("idle");
 
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const subject = `Design-partner request — ${form.company || form.name || "Oprisa"}`;
-    const body = [
-      `Name: ${form.name}`,
-      `Company: ${form.company}`,
-      `Email: ${form.email}`,
-      `Monthly enquiries: ${form.volume || "—"}`,
-      "",
-      form.note,
-    ].join("\n");
-    const href = `mailto:${INBOX}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-    // Opening the mail client is best-effort; we only tell the visitor what we
-    // actually did — prepared a draft — and give them the address to copy.
-    window.location.href = href;
-    setOpened(true);
+    setStatus("sending");
+    try {
+      const res = await fetch("/api/v1/leads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: form.name,
+          company: form.company,
+          email: form.email,
+          monthly_enquiries: form.volume || null,
+          note: form.note || null,
+          website: website || null,
+        }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      setStatus("done");
+    } catch {
+      setStatus("error");
+    }
   };
 
   return (
@@ -62,24 +70,21 @@ export default function Contact() {
       <section>
         <div className="wrap contact-grid">
           <Reveal className="contact-form-wrap">
-            {opened ? (
+            {status === "done" ? (
               <div className="sent">
                 <div className="sent-mark">
                   <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6}>
                     <path d="M4 12.5l5 5 11-12" />
                   </svg>
                 </div>
-                <h3>Your email is drafted.</h3>
+                <h3>Request received.</h3>
                 <p>
-                  We opened your mail app with everything filled in — just hit send. If nothing opened, write to us
-                  directly:
+                  Thanks, {form.name.split(" ")[0] || "there"} — it's in. We'll be in touch within a day or two to set up
+                  your call. Anything urgent, write to us directly:
                 </p>
                 <a className="copy-mail" href={`mailto:${INBOX}`}>
                   {INBOX}
                 </a>
-                <button className="btn btn-ghost" type="button" onClick={() => setOpened(false)} style={{ marginTop: 18 }}>
-                  Edit the details
-                </button>
               </div>
             ) : (
               <form className="contact-form" onSubmit={submit}>
@@ -101,12 +106,29 @@ export default function Contact() {
                 </div>
                 <div className="field">
                   <label htmlFor="c-note">Anything we should know?</label>
-                  <textarea id="c-note" value={form.note} onChange={set("note")} rows={4} placeholder="What's leaking — slow quotes, late payments, dead stock?" />
+                  <textarea
+                    id="c-note"
+                    value={form.note}
+                    onChange={set("note")}
+                    rows={4}
+                    placeholder="What's leaking — slow quotes, late payments, dead stock?"
+                  />
                 </div>
-                <button className="btn btn-go" type="submit" style={{ width: "100%", justifyContent: "center" }}>
-                  Prepare my request
+                {/* Honeypot: hidden from people, tempting to bots. */}
+                <div aria-hidden="true" style={{ position: "absolute", left: "-9999px", width: 1, height: 1, overflow: "hidden" }}>
+                  <label htmlFor="c-website">Website</label>
+                  <input id="c-website" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
+                </div>
+                {status === "error" && (
+                  <p className="form-err" role="alert">
+                    Something went wrong sending that. Try again, or email us at{" "}
+                    <a href={`mailto:${INBOX}`}>{INBOX}</a>.
+                  </p>
+                )}
+                <button className="btn btn-go" type="submit" disabled={status === "sending"} style={{ width: "100%", justifyContent: "center" }}>
+                  {status === "sending" ? "Sending…" : "Request access"}
                 </button>
-                <p className="form-fine">Opens your mail app with the details filled in. We reply within a day or two.</p>
+                <p className="form-fine">We reply within a day or two. No spam, ever.</p>
               </form>
             )}
           </Reveal>

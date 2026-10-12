@@ -14,6 +14,7 @@ from app.api.v1 import (
     catalog,
     dashboard,
     emails,
+    leads,
     ops,
     pipeline,
     pricing,
@@ -24,6 +25,8 @@ api_router = APIRouter(prefix="/api/v1")
 # Auth first: it is the only router with unauthenticated routes, and the only
 # one that must work before a tenant is known.
 api_router.include_router(auth.router)
+# Public lead capture: unauthenticated, like the sign-in routes.
+api_router.include_router(leads.router)
 api_router.include_router(admin.router)
 api_router.include_router(emails.router)
 api_router.include_router(quotations.router)

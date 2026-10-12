@@ -24,7 +24,12 @@ from app.models import *  # noqa: F401,F403 - registers every table
 
 #: The tenant itself. Scoped by id at the application layer; the super admin
 #: is the only caller who ever lists more than one.
-UNSCOPED = {"organisations", "alembic_version"}
+#:
+#: `leads` is platform-level on purpose: a design-partner request from the
+#: marketing site arrives before any tenant exists, so the table carries no
+#: organisation_id and takes no RLS policy. The public `/api/v1/leads` route
+#: relies on exactly that to insert on an unbound session.
+UNSCOPED = {"organisations", "alembic_version", "leads"}
 
 #: Tables that must be readable *before* a tenant is known, because reading
 #: them is how the tenant gets determined. Sign-in has to find a user by email
