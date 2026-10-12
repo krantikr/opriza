@@ -49,3 +49,6 @@ firebase-adminsdk-*.json
 
 # Logs
 *.log
+
+# Deploy script secrets (local only)
+deploy.env
