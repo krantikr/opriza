@@ -6,7 +6,6 @@
 import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 
-import { ThemeToggle } from "./lib";
 import "./marketing.css";
 
 const NAV = [
@@ -111,11 +110,7 @@ export default function MarketingLayout() {
           </div>
         </div>
         <div className="wrap mk-foot-bar">
-          <span>© {new Date().getFullYear()} Oprisa · Built for ₹100–500 Cr distributors</span>
-          <span style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            Quotation Copilot is live today
-            <ThemeToggle />
-          </span>
+          <span>© {new Date().getFullYear()} Oprisa</span>
         </div>
       </footer>
     </div>
