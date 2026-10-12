@@ -46,3 +46,6 @@ firebase-adminsdk-*.json
 
 # Playwright MCP cache
 .playwright-mcp/
+
+# Logs
+*.log

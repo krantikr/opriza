@@ -13,7 +13,12 @@ import Customers from "./pages/Customers";
 import Dashboard from "./pages/Dashboard";
 import Inbox from "./pages/Inbox";
 import FollowUps from "./pages/FollowUps";
-import Marketing from "./pages/Marketing";
+import MarketingLayout from "./marketing/Layout";
+import MarketingHome from "./marketing/Home";
+import MarketingProduct from "./marketing/Product";
+import MarketingPricing from "./marketing/Pricing";
+import MarketingAbout from "./marketing/About";
+import MarketingContact from "./marketing/Contact";
 import MailSchedule from "./pages/MailSchedule";
 import Pricing from "./pages/Pricing";
 import Quotations from "./pages/Quotations";
@@ -123,12 +128,13 @@ function Desk() {
   );
 }
 
-/** The root URL: the public page to a visitor, the desk to a trader.
+/** The public marketing site, reachable without a session.
  *
- *  A signed-in trader opens "/" every morning out of habit, so they are sent
- *  straight through to their dashboard rather than being made to click past
- *  a page selling them what they already bought. */
-function Root() {
+ *  A signed-in trader who lands on a marketing URL is sent straight to the
+ *  desk — they already bought what the page is selling. `/` is special: it is
+ *  the trader's daily habit, so a signed-in visitor there goes to the desk and
+ *  a visitor without a session gets the marketing home. */
+function PublicSite() {
   const { user, loading } = useAuth();
 
   // Same hold as `Desk`: without it somebody with a valid session sees the
@@ -141,18 +147,32 @@ function Root() {
     );
   }
 
-  return user ? <Desk /> : <Marketing />;
+  if (user) return <Desk />;
+
+  return (
+    <Routes>
+      <Route element={<MarketingLayout />}>
+        <Route path="/" element={<MarketingHome />} />
+        <Route path="/product" element={<MarketingProduct />} />
+        <Route path="/pricing" element={<MarketingPricing />} />
+        <Route path="/about" element={<MarketingAbout />} />
+        <Route path="/contact" element={<MarketingContact />} />
+      </Route>
+      {/* Anything else public falls through to the sign-in-gated desk. */}
+      <Route path="*" element={<Desk />} />
+    </Routes>
+  );
 }
 
 export default function App() {
   return (
     <AuthProvider>
       <Routes>
-        {/* The routes reachable without a session. */}
-        <Route path="/" element={<Root />} />
+        {/* Auth screens stand alone, outside the marketing frame. */}
         <Route path="/sign-in" element={<SignIn />} />
         <Route path="/accept-invite" element={<AcceptInvite />} />
-        <Route path="*" element={<Desk />} />
+        {/* Everything else: public marketing when logged out, the desk when in. */}
+        <Route path="/*" element={<PublicSite />} />
       </Routes>
     </AuthProvider>
   );
