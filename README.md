@@ -1,10 +1,15 @@
-# Steel Desk — trader sales management
+# Oprisa — the business brain for B2B distributors
 
-A sales desk for a steel trading business. It reads inbound enquiry email, works
-out what the customer is asking for, checks it against physical stock, prices it
-through a **cost build-up the trader configures**, drafts a reply, and puts the
-whole thing in front of a human who decides whether it goes out. It then chases
-what went quiet, tells the team what needs attention, and reports on the result.
+Oprisa runs the back office of an asset-heavy B2B distributor — starting with
+steel stockists — and reports it every morning. The first agent, the **Quotation
+Copilot**, is live: it reads inbound enquiry email, works out what the customer
+is asking for, checks it against physical stock, prices it through a **cost
+build-up the trader configures**, drafts a reply, and puts the whole thing in
+front of a human who decides whether it goes out. It then chases what went
+quiet, tells the team what needs attention, and reports on the result.
+
+Collections, procurement and credit agents follow on the roadmap; see the
+marketing site's About page or [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md).
 
 The organising principle, and the reason the code is shaped the way it is:
 
@@ -14,12 +19,16 @@ Margins in steel trading are thin — the default rules here floor at 2% — and
 prices move daily. A hallucinated rate is not a bad user experience, it is a
 loss-making order. So no model is ever asked for a number that matters.
 
+This repository is deployed free-tier as **opriza.vercel.app** (marketing site
++ dashboard) on Vercel, with a FastAPI backend on Render and PostgreSQL on Neon.
+Jump to [Deployment](#deployment).
+
 ---
 
-## Running it
+## Running it locally
 
-Steel Desk is multi-tenant: one deployment serves many trading desks, each
-seeing only its own data.
+Oprisa is multi-tenant: one deployment serves many trading desks, each seeing
+only its own data.
 
 ```bash
 # 1. PostgreSQL. Required, not preferred - tenant isolation is enforced by
@@ -50,7 +59,7 @@ detects this.
 ### Connecting Gmail accounts
 
 Each desk connects its own enquiry mailbox from **Mail checking → Connect your
-Google account**. Steel Desk requests only `gmail.readonly` and `gmail.send` —
+Google account**. Oprisa requests only `gmail.readonly` and `gmail.send` —
 never permission to modify or delete a customer's mail.
 
 This needs a one-time setup in Google Cloud Console, done once for the whole
@@ -86,6 +95,92 @@ cannot sign in as one.
 Each desk sets its own mail-checking window in its own timezone - by default
 every 10 minutes between 08:00 and 22:00, and hourly overnight.
 
+---
+
+## Deployment
+
+The whole thing runs on free tiers:
+
+```
+ Vercel (frontend, static)          GitHub Actions (cron, every ~5 min)
+        │  /api/* rewrite                     │  POST /api/v1/pipeline/cron
+        ▼                                     ▼
+ Render (FastAPI backend, Docker) ◄───────────┘   (also wakes the sleeping host)
+        │
+        ▼
+ Neon (PostgreSQL)   ← the app connects as a NOSUPERUSER NOBYPASSRLS role
+```
+
+**Why the cron is external.** A free host spins down when idle, so an in-process
+scheduler can't be trusted. GitHub Actions calls `POST /api/v1/pipeline/cron`
+(guarded by `CRON_SECRET`), which runs one poll across every desk and wakes the
+host. Keep `POLLING_ENABLED=false` in production.
+
+### One-command deploy
+
+[`scripts/deploy.sh`](scripts/deploy.sh) takes a clean checkout to a verified
+live site: it runs the test suites, typecheck and build; migrates the production
+database and re-checks row-level security; pushes `main` (which triggers Render
+and Vercel to redeploy from GitHub); then polls `/health` and the live site.
+
+```bash
+# Put the production DB URL in a git-ignored file (keeps it out of history):
+echo "DATABASE_URL='postgresql+psycopg://steeldesk_app:…@…neon.tech/neondb?sslmode=require'" > deploy.env
+
+scripts/deploy.sh            # full deploy, prompts before the push
+scripts/deploy.sh --no-push  # run every check, stop before pushing
+scripts/deploy.sh --yes      # skip the confirmation prompt
+```
+
+It never prints a secret (DB host only) and refuses to run against a `localhost`
+database or from a dirty / diverged working tree.
+
+### First-time setup (once per environment)
+
+These are manual because they involve account sign-ins and dashboard clicks:
+
+1. **Neon** — create a project, then in the SQL Editor create the restricted app
+   role. The app refuses to boot on a superuser / BYPASSRLS role, because that
+   silently disables tenant isolation:
+
+   ```sql
+   CREATE ROLE steeldesk_app LOGIN PASSWORD '<strong-password>'
+     NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+   GRANT CONNECT ON DATABASE neondb TO steeldesk_app;
+   GRANT USAGE, CREATE ON SCHEMA public TO steeldesk_app;
+   GRANT ALL ON ALL TABLES    IN SCHEMA public TO steeldesk_app;
+   GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO steeldesk_app;
+   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES    TO steeldesk_app;
+   ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO steeldesk_app;
+   ```
+
+   The `DATABASE_URL` is then
+   `postgresql+psycopg://steeldesk_app:<password>@<neon-host>/neondb?sslmode=require`.
+
+2. **Render** — New → Blueprint → pick this repo. It reads `render.yaml`. Set the
+   dashboard env vars marked `sync: false`: `DATABASE_URL`, `OPENROUTER_API_KEY`,
+   `CREDENTIAL_KEY` (a Fernet key — keep a copy), and `CORS_ORIGINS` (the Vercel
+   URL). `JWT_SECRET` and `CRON_SECRET` can auto-generate. The container runs
+   `alembic upgrade head` then uvicorn.
+
+3. **Vercel** — import the repo with **root directory `frontend`**. `vercel.json`
+   rewrites `/api/*` to the Render host (set it before importing). Put the Vercel
+   URL into Render's `CORS_ORIGINS`.
+
+4. **GitHub Actions** — add repo secrets `API_BASE_URL` (the Render URL) and
+   `CRON_SECRET` (**the same value** as Render's). Trigger the *Email sync cron*
+   workflow once from the Actions tab and confirm it returns `202`.
+
+Generate a Fernet `CREDENTIAL_KEY` with:
+
+```bash
+uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+See [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) for the long-form version and the
+gotchas learned the hard way.
+
+---
 
 ## What it does
 
@@ -139,6 +234,12 @@ Dashboard: <http://localhost:5173> · API docs: <http://localhost:8000/docs>
 
 Everything above works **without any credentials**. The AI stages need an
 OpenRouter key; see below.
+
+**Two faces, one app.** Visiting <http://localhost:5173> while signed out shows
+the public **marketing site** (`frontend/src/marketing/` — Home, Product,
+Pricing, About, Contact); signing in replaces it with the trader's dashboard.
+The Request-access form posts to the public `POST /api/v1/leads` endpoint, which
+stores design-partner requests in a platform-level table (no tenant, no RLS).
 
 ---
 
@@ -240,7 +341,7 @@ real customer.
 ├── backend/app/
 │   ├── config/            business_rules.yaml — every commercial number lives here
 │   ├── core/              settings, database, rules loader, logging
-│   ├── models/            SQLAlchemy ORM (14 tables)
+│   ├── models/            SQLAlchemy ORM (tenant + platform tables)
 │   ├── services/
 │   │   ├── email/         source port · Gmail · local files · attachments · sending
 │   │   ├── products/      weight & unit conversion · normaliser · matcher
@@ -250,9 +351,16 @@ real customer.
 │   ├── workflows/         The LangGraph quotation graph
 │   └── api/v1/            REST endpoints
 │
-├── frontend/src/          Vite + React + TypeScript dashboard
-├── scripts/               generate_sample_data · init_db · gmail_auth · poll_once
-└── data/                  sample files, SQLite database, secrets (gitignored)
+├── frontend/src/
+│   ├── pages/             The signed-in dashboard (Inbox, Quotations, …)
+│   ├── marketing/         The public site: Layout, Home, Product, Pricing,
+│   │                      About, Contact, plus in-brand mock screens
+│   └── api/, lib/, …      Client, auth, shared UI
+├── scripts/               generate_sample_data · init_db · gmail_auth ·
+│                          poll_once · rls.py · seed_platform · deploy.sh
+├── Dockerfile, render.yaml, frontend/vercel.json   Deploy config
+├── .github/workflows/     Email-sync cron (calls /api/v1/pipeline/cron)
+└── data/                  sample files, local database, secrets (gitignored)
 ```
 
 Two structural decisions worth knowing:
@@ -490,6 +598,8 @@ Stated plainly, because they matter for planning:
 | `uv run python scripts/poll_once.py` | Ingest new mail |
 | `uv run python scripts/poll_once.py --process` | Ingest, then run the quotation workflow |
 | `uv run uvicorn app.main:app --reload` | Run the API |
+| `uv run python scripts/rls.py apply` · `… check` | Apply / verify row-level-security policies |
+| `scripts/deploy.sh` | Test, migrate, push, and verify a production deploy |
 | `uv export --no-hashes --no-emit-project --no-dev -o requirements.txt` | Refresh `requirements.txt` from `uv.lock` |
 
 Set `POLLING_ENABLED=true` to run the ingest-and-process cycle on a timer
