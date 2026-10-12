@@ -184,7 +184,6 @@ export default function About() {
               <Reveal key={s.name} delay={i * 50} className={`sector-card${s.now ? " on" : ""}`}>
                 <div className="sector-top">
                   <span className="sector-name">{s.name}</span>
-                  {s.now && <span className="sector-tag">Starting here</span>}
                 </div>
                 <p className="sector-note">{s.note}</p>
                 <span className="sector-stat">{s.stat}</span>
