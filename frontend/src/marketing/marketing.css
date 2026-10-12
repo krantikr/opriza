@@ -456,22 +456,8 @@
 /* ===========================================================================
    About — brain diagram, roadmap, sectors
    =========================================================================== */
-.mk .brain { display: flex; align-items: center; justify-content: center; gap: 18px; flex-wrap: wrap; text-align: center; }
-.mk .brain-in, .mk .brain-out { display: flex; flex-direction: column; gap: 8px; }
-.mk .brain-in span, .mk .brain-out span {
-  font-family: var(--mk-head); font-weight: 600; font-size: 13px; background: var(--surface); border: 1px solid var(--line);
-  border-radius: 9px; padding: 9px 14px; color: var(--ink);
-}
-.mk .brain-core {
-  font-family: var(--mk-display); font-weight: 800; font-size: 16px; color: #fff; background: var(--maroon);
-  border-radius: 14px; padding: 20px 22px; max-width: 180px; line-height: 1.15;
-}
-.mk .brain-arrow { color: var(--saffron-ink); }
 @media (max-width: 640px) {
-  .mk .brain { flex-direction: column; }
-  .mk .brain-in, .mk .brain-out { flex-direction: row; flex-wrap: wrap; justify-content: center; }
-  .mk .brain-arrow { transform: rotate(90deg); }
-}
+      }
 .mk .road { background: var(--maroon); color: #fff; position: relative; overflow: hidden; }
 .mk .road::after { content: ""; position: absolute; inset: 0; background: radial-gradient(90% 80% at 10% 110%, rgba(232,163,61,.18), transparent 55%); pointer-events: none; }
 .mk .road-inner { position: relative; z-index: 2; }
@@ -488,16 +474,6 @@
   border-radius: 6px; padding: 2px 8px;
 }
 @media (max-width: 760px) { .mk .stop.now::before { top: 12px; left: auto; right: 0; } }
-.mk .who-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: start; }
-@media (max-width: 760px) { .mk .who-grid { grid-template-columns: 1fr; gap: 30px; } }
-.mk .sect-h { font-family: var(--mk-head); font-weight: 700; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 6px 0 16px; }
-.mk .sectors { display: flex; flex-wrap: wrap; gap: 10px; }
-.mk .sect {
-  font-family: var(--mk-head); font-weight: 600; font-size: 14px; background: var(--surface); border: 1px solid var(--line);
-  border-radius: 10px; padding: 9px 14px; color: var(--ink); display: inline-flex; align-items: center; gap: 8px;
-}
-.mk .sect-now { border-color: var(--saffron); }
-.mk .sect em { font-style: normal; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--saffron-ink); background: rgba(232,163,61,.16); border-radius: 5px; padding: 2px 6px; }
 
 /* ===========================================================================
    Contact
@@ -645,3 +621,71 @@
 .mk .form-err { font-size: 13px; color: var(--danger, #c0392b); line-height: 1.4; margin: 2px 0 0; }
 .mk .form-err a { color: var(--saffron-ink); font-weight: 600; }
 .mk .btn:disabled { opacity: .6; cursor: default; }
+
+.mk .out-trend { color: var(--green); margin-right: 2px; transform: translateY(2px); }
+
+/* ===========================================================================
+   About — business-brain diagram (refined)
+   =========================================================================== */
+.mk .brain {
+  display: flex; align-items: stretch; justify-content: center; gap: 20px; flex-wrap: nowrap;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 20px;
+  padding: 36px 32px; box-shadow: 0 16px 44px -26px rgba(45,8,6,.3);
+}
+.mk .brain-col { display: flex; flex-direction: column; gap: 10px; min-width: 140px; }
+.mk .brain-head {
+  font-family: var(--mk-head); font-weight: 700; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 4px; text-align: center;
+}
+.mk .brain-node {
+  font-family: var(--mk-head); font-weight: 600; font-size: 14px; color: var(--ink);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 11px; padding: 12px 14px; text-align: center;
+  transition: transform .2s ease, border-color .2s ease;
+}
+.mk .brain-node:hover { transform: translateY(-2px); border-color: var(--rule-firm, var(--muted)); }
+.mk .brain-node-out { border-color: rgba(232,163,61,.5); background: rgba(232,163,61,.06); }
+.mk .brain-arrow { color: var(--saffron-ink); display: flex; align-items: center; }
+.mk .brain-core {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center;
+  background: var(--maroon); color: #fff; border-radius: 18px; padding: 26px 28px; min-width: 170px;
+  box-shadow: 0 14px 34px -16px rgba(109,26,23,.7); position: relative; overflow: hidden;
+}
+.mk .brain-core::after {
+  content: ""; position: absolute; inset: 0;
+  background: radial-gradient(80% 80% at 50% 0%, rgba(232,163,61,.28), transparent 60%); pointer-events: none;
+}
+.mk .brain-core-mark { color: var(--saffron); position: relative; z-index: 1; }
+.mk .brain-core-name { font-family: var(--mk-display); font-weight: 900; font-size: 22px; letter-spacing: -.01em; position: relative; z-index: 1; }
+.mk .brain-core-sub { font-family: var(--mk-head); font-weight: 600; font-size: 11.5px; color: #eacfc3; position: relative; z-index: 1; }
+@media (max-width: 720px) {
+  .mk .brain { flex-direction: column; align-items: stretch; gap: 14px; padding: 24px 18px; }
+  .mk .brain-col { min-width: 0; }
+  .mk .brain-col { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .mk .brain-head { grid-column: 1 / -1; }
+  .mk .brain-arrow { justify-content: center; transform: rotate(90deg); }
+  .mk .brain-core { min-width: 0; }
+}
+
+/* ===========================================================================
+   About — sector case-study cards (replaces chips; no "first" tag)
+   =========================================================================== */
+.mk .sector-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 40px; }
+@media (max-width: 860px) { .mk .sector-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 540px) { .mk .sector-grid { grid-template-columns: 1fr; } }
+.mk .sector-card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 15px; padding: 22px 22px 20px;
+  display: flex; flex-direction: column; gap: 10px; transition: transform .2s ease, box-shadow .2s ease;
+}
+.mk .sector-card:hover { transform: translateY(-3px); box-shadow: 0 16px 36px -22px rgba(45,8,6,.3); }
+.mk .sector-card.on { border-color: var(--saffron); }
+.mk .sector-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.mk .sector-name { font-family: var(--mk-display); font-weight: 800; font-size: 17px; letter-spacing: -.01em; color: var(--ink); }
+.mk .sector-tag {
+  font-family: var(--mk-head); font-weight: 700; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: #3a1a05; background: var(--saffron); border-radius: 6px; padding: 3px 8px; white-space: nowrap;
+}
+.mk .sector-note { font-size: 13px; color: var(--muted); line-height: 1.5; margin: 0; flex: 1; }
+.mk .sector-stat {
+  font-family: var(--mk-head); font-weight: 700; font-size: 12px; color: var(--saffron-ink);
+  border-top: 1px solid var(--line); padding-top: 12px; margin-top: 2px;
+}

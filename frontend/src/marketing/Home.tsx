@@ -283,11 +283,14 @@ export default function Home() {
             </Reveal>
             <Reveal delay={140} className="out">
               <div className="out-big">
-                <CountUp to={5} prefix="−" />
-                <span className="u">days DSO</span>
+                <svg className="out-trend" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.6} aria-hidden="true">
+                  <path d="M5 8l7 8 7-8" />
+                </svg>
+                <CountUp to={5} />
+                <span className="u">days faster</span>
               </div>
               <h3>Cash in sooner</h3>
-              <p>Chasing the right customer at the right time pulls your receivables days down, week on week.</p>
+              <p>Collecting on time pulls your receivables days (DSO) down — chasing the right customer at the right moment, week on week.</p>
             </Reveal>
             <Reveal delay={220} className="out">
               <div className="out-big">
