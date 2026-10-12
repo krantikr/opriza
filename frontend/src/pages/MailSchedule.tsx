@@ -1,5 +1,5 @@
 /* ---------------------------------------------------------------------------
-   When Steel Desk checks the mailbox.
+   When Oprisa checks the mailbox.
 
    The one number that matters to a trader is "when will the next check
    happen", so the current state is stated in a sentence at the top rather
@@ -198,7 +198,7 @@ export default function MailSchedule() {
   return (
     <div className="mx-auto max-w-3xl space-y-5 p-5">
       <p className="text-sm text-ink-soft">
-        How often Steel Desk looks for new enquiries.
+        How often Oprisa looks for new enquiries.
       </p>
 
       {status &&
@@ -357,7 +357,7 @@ export default function MailSchedule() {
               Nothing is connected yet, so no enquiries are arriving.
             </p>
             <p className="mb-4 text-sm text-ink-soft">
-              Connect the mailbox your customers write to. Steel Desk asks
+              Connect the mailbox your customers write to. Oprisa asks
               Google for permission to <span className="font-medium">read</span>{" "}
               mail and <span className="font-medium">send</span> replies — never
               to change or delete anything.

@@ -171,7 +171,7 @@ export default function Admin() {
     <div className="mx-auto max-w-5xl space-y-5 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold text-ink">Steel Desk platform</h1>
+          <h1 className="text-xl font-semibold text-ink">Oprisa platform</h1>
           <p className="mt-0.5 text-sm text-ink-soft">
             {desks.length} desks onboarded. Each sees only its own data.
           </p>

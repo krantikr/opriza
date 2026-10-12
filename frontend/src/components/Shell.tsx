@@ -614,11 +614,11 @@ export default function Shell({ children }: { children: React.ReactNode }) {
               confirm - especially for anyone who works across more than one
               desk - is whose books they are looking at. */}
           <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-brand text-sm font-bold text-white">
-            {(organisation?.name ?? "Steel Desk").trim().charAt(0).toUpperCase()}
+            {(organisation?.name ?? "Oprisa").trim().charAt(0).toUpperCase()}
           </span>
           {!collapsed && (
             <span className="truncate text-sm font-semibold text-rail-ink-strong">
-              {organisation?.name ?? "Steel Desk"}
+              {organisation?.name ?? "Oprisa"}
             </span>
           )}
         </div>

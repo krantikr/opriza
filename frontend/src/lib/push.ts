@@ -185,7 +185,7 @@ export async function enablePush(): Promise<PushOutcome> {
     return {
       ok: false,
       reason: ios
-        ? "On iPhone, add Steel Desk to your home screen first, then turn this on."
+        ? "On iPhone, add Oprisa to your home screen first, then turn this on."
         : "This browser cannot receive push notifications.",
     };
   }
@@ -252,7 +252,7 @@ export async function listenInForeground(
     const app = getApps().length ? getApps()[0] : initializeApp(CONFIG);
     return messagingModule.onMessage(messagingModule.getMessaging(app), (payload) => {
       const note = payload.notification ?? {};
-      onMessage(note.title ?? "Steel Desk", note.body ?? "", payload.fcmOptions?.link);
+      onMessage(note.title ?? "Oprisa", note.body ?? "", payload.fcmOptions?.link);
     });
   } catch {
     return () => {};

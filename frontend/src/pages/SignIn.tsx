@@ -27,15 +27,14 @@ function AuthFrame({
     <div className="flex min-h-screen items-center justify-center bg-ground px-4 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-7 flex flex-col items-center gap-3 text-center">
-          {/* The logo carries its own colour, so it sits on the page rather
-              than in a tinted tile - a coloured mark inside a coloured chip
-              reads as two logos fighting for the same corner. */}
+          {/* The Oprisa mark, same icon the browser tab carries, so the tab and
+              the page agree. Alt text names the product for screen readers. */}
           <img
-            src="/logo.png"
-            alt="tDesk"
+            src="/favicon-192.png"
+            alt="Oprisa"
             width={44}
             height={44}
-            className="size-11 object-contain"
+            className="size-11 rounded-xl object-contain"
           />
           <div>
             <h1 className="text-lg font-semibold text-ink">{title}</h1>
@@ -48,7 +47,7 @@ function AuthFrame({
         </div>
 
         <p className="mt-6 text-center text-xs text-ink-faint">
-          Steel Desk — quotations, stock and follow-ups in one place.
+          Oprisa — quotations, stock and follow-ups in one place.
         </p>
       </div>
     </div>
@@ -101,7 +100,7 @@ export function SignIn() {
   }
 
   return (
-    <AuthFrame title="Sign in to Steel Desk" subtitle="Use the account your team set up.">
+    <AuthFrame title="Sign in to Oprisa" subtitle="Use the account your team set up.">
       <form onSubmit={submit}>
         {error && <Problem message={error} />}
 
