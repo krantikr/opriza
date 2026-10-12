@@ -108,7 +108,7 @@ if [[ "$SKIP_TESTS" -eq 0 ]]; then
   step "Frontend typecheck, tests, build"
   ( cd frontend && npx tsc --noEmit ) && ok "Typecheck clean"
   ( cd frontend && npx vitest run >/tmp/oprisa-vitest.log 2>&1 ) \
-    && ok "$(grep -oE 'PASS \([0-9]+\)' /tmp/oprisa-vitest.log | tail -1) frontend tests" \
+    && ok "Frontend tests: $(grep -oE 'PASS \([0-9]+\)' /tmp/oprisa-vitest.log | tail -1)" \
     || { tail -25 /tmp/oprisa-vitest.log; die "Frontend tests failed."; }
   ( cd frontend && npm run build >/tmp/oprisa-build.log 2>&1 ) \
     && ok "Frontend build succeeds" \
