@@ -14,7 +14,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -22,6 +25,7 @@ from app.api.deps import SuperAdmin, get_db
 from app.core.config import settings
 from app.core.tenancy import bind_session
 from app.models import (
+    Lead,
     Mailbox,
     Organisation,
     OrgStatus,
@@ -327,3 +331,30 @@ def organisation_users(organisation_id: int, admin: SuperAdmin, db: Db) -> list[
 
 
 __all__ = ["router"]
+
+
+class LeadOut(BaseModel):
+    """A design-partner request from the marketing site, for the admin list."""
+
+    id: int
+    created_at: datetime
+    name: str
+    company: str
+    email: str
+    monthly_enquiries: str | None
+    note: str | None
+    source: str
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/leads", response_model=list[LeadOut])
+def list_leads(admin: SuperAdmin, db: Db) -> list[LeadOut]:
+    """Every incoming design-partner request, newest first.
+
+    `leads` is a platform-level table (no organisation_id, no RLS), so this
+    reads it directly on the super-admin session.
+    """
+    _super_admin_db(db)
+    rows = db.scalars(select(Lead).order_by(Lead.created_at.desc())).all()
+    return [LeadOut.model_validate(r) for r in rows]
