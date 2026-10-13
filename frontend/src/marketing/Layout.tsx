@@ -37,6 +37,9 @@ export default function MarketingLayout() {
                 {n.label}
               </NavLink>
             ))}
+            <Link to="/sign-in" className="mk-link">
+              Sign in
+            </Link>
             <Link to="/contact" className="btn btn-go" style={{ marginLeft: 6 }}>
               Request access
             </Link>
@@ -59,6 +62,9 @@ export default function MarketingLayout() {
                 {n.label}
               </Link>
             ))}
+            <Link to="/sign-in" onClick={() => setOpen(false)}>
+              Sign in
+            </Link>
             <Link to="/contact" onClick={() => setOpen(false)}>
               Request access →
             </Link>
@@ -109,7 +115,7 @@ export default function MarketingLayout() {
             </ul>
           </div>
         </div>
-        <div className="wrap mk-foot-bar">
+        <div className="wrap mk-foot-bar mk-foot-bar-center">
           <span>© {new Date().getFullYear()} Oprisa</span>
         </div>
       </footer>

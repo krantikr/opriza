@@ -689,3 +689,5 @@
   font-family: var(--mk-head); font-weight: 700; font-size: 12px; color: var(--saffron-ink);
   border-top: 1px solid var(--line); padding-top: 12px; margin-top: 2px;
 }
+
+.mk .mk-foot-bar-center { justify-content: center; text-align: center; }
