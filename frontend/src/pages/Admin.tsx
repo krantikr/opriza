@@ -348,7 +348,6 @@ export default function Admin() {
               setOwnerEmail={setOwnerEmail}
               onboard={onboard}
               inspect={inspect}
-              toggle={toggle}
             />
           ) : (
             <RequestsView leads={leads} onStatus={setLeadStatus} />
@@ -445,7 +444,6 @@ function DesksView({
   setOwnerEmail,
   onboard,
   inspect,
-  toggle,
 }: {
   desks: Desk[];
   overview: Overview | null;
@@ -456,7 +454,6 @@ function DesksView({
   setOwnerEmail: (v: string) => void;
   onboard: () => void;
   inspect: (d: Desk) => void;
-  toggle: (d: Desk) => void;
 }) {
   return (
     <>
@@ -504,6 +501,7 @@ function DesksView({
             <thead>
               <tr className="border-b border-rule text-left text-xs text-ink-faint">
                 <th className="px-4 py-2 font-medium">Desk</th>
+                <th className="px-4 py-2 font-medium">Status</th>
                 <th className="px-4 py-2 font-medium">Timezone</th>
                 <th className="px-4 py-2 text-right font-medium">People</th>
                 <th className="px-4 py-2 text-right font-medium">Mailboxes</th>
@@ -514,12 +512,38 @@ function DesksView({
             </thead>
             <tbody className="divide-y divide-rule">
               {desks.map((desk) => (
-                <tr key={desk.id} className={desk.status === "SUSPENDED" ? "opacity-60" : ""}>
+                <tr
+                  key={desk.id}
+                  onClick={() => inspect(desk)}
+                  tabIndex={0}
+                  role="button"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      inspect(desk);
+                    }
+                  }}
+                  className={`cursor-pointer transition hover:bg-sunk focus:bg-sunk focus:outline-none ${
+                    desk.status === "SUSPENDED" ? "opacity-60" : ""
+                  }`}
+                >
                   <td className="px-4 py-2.5">
-                    <button type="button" onClick={() => inspect(desk)} className="text-left">
-                      <p className="font-medium text-brand hover:underline">{desk.name}</p>
-                      <p className="text-xs text-ink-faint">{desk.slug}</p>
-                    </button>
+                    <p className="font-medium text-ink">{desk.name}</p>
+                    <p className="text-xs text-ink-faint">{desk.slug}</p>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span
+                      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                        desk.status === "ACTIVE"
+                          ? "bg-settled-wash text-settled-ink"
+                          : "bg-sunk text-ink-faint"
+                      }`}
+                    >
+                      <span
+                        className={`size-1.5 rounded-full ${desk.status === "ACTIVE" ? "bg-settled" : "bg-ink-faint"}`}
+                      />
+                      {desk.status === "ACTIVE" ? "Active" : "Suspended"}
+                    </span>
                   </td>
                   <td className="px-4 py-2.5 text-ink-soft">{desk.timezone}</td>
                   <td className="tabular px-4 py-2.5 text-right text-ink">{desk.user_count}</td>
@@ -530,15 +554,10 @@ function DesksView({
                   </td>
                   <td className="tabular px-4 py-2.5 text-right text-ink">{desk.quotation_count}</td>
                   <td className="px-4 py-2.5 text-xs text-ink-faint">{when(desk.created_at)}</td>
-                  <td className="px-4 py-2.5 text-right">
-                    <div className="flex justify-end gap-1.5">
-                      <Button compact onClick={() => inspect(desk)}>
-                        Open
-                      </Button>
-                      <Button compact onClick={() => toggle(desk)}>
-                        {desk.status === "ACTIVE" ? "Suspend" : "Reactivate"}
-                      </Button>
-                    </div>
+                  <td className="px-4 py-2.5 text-right text-ink-faint">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="ml-auto size-4">
+                      <path d="M9 6l6 6-6 6" />
+                    </svg>
                   </td>
                 </tr>
               ))}
