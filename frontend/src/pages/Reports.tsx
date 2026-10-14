@@ -861,8 +861,8 @@ export default function Reports() {
                     </tr>
                   </thead>
                   <tbody>
-                    {stock.oldest.slice(0, 8).map((lot) => (
-                      <tr key={`${lot.spec}-${lot.ageing_days}`} className="border-b border-rule">
+                    {stock.oldest.slice(0, 8).map((lot, i) => (
+                      <tr key={`${lot.spec}-${lot.location}-${i}`} className="border-b border-rule">
                         <td className="max-w-56 truncate px-2 py-1.5 text-[12px] text-ink">
                           {lot.spec}
                         </td>
