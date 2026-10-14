@@ -56,10 +56,24 @@ interface Lead {
   name: string;
   company: string;
   email: string;
+  phone: string;
   monthly_enquiries: string | null;
   note: string | null;
   source: string;
+  status: LeadStatus;
 }
+
+type LeadStatus = "new" | "contacted" | "qualified" | "won" | "lost";
+
+const LEAD_STATUSES: LeadStatus[] = ["new", "contacted", "qualified", "won", "lost"];
+
+const STATUS_STYLE: Record<LeadStatus, string> = {
+  new: "bg-brand-wash text-brand-ink",
+  contacted: "bg-attention-wash text-attention-ink",
+  qualified: "bg-info-wash text-info-ink",
+  won: "bg-settled-wash text-settled-ink",
+  lost: "bg-sunk text-ink-faint",
+};
 
 type View = "desks" | "requests";
 
@@ -216,6 +230,17 @@ export default function Admin() {
     await load();
   }
 
+  async function setLeadStatus(lead: Lead, status: LeadStatus) {
+    // Optimistic: reflect the change immediately, roll back on failure.
+    setLeads((cur) => (cur ? cur.map((l) => (l.id === lead.id ? { ...l, status } : l)) : cur));
+    try {
+      await api.patch<Lead>(`/admin/leads/${lead.id}`, { status });
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Could not update that request.");
+      setLeads((cur) => (cur ? cur.map((l) => (l.id === lead.id ? { ...l, status: lead.status } : l)) : cur));
+    }
+  }
+
   if (desks === null) {
     return (
       <div className="grid min-h-screen place-items-center bg-ground">
@@ -326,7 +351,7 @@ export default function Admin() {
               toggle={toggle}
             />
           ) : (
-            <RequestsView leads={leads} />
+            <RequestsView leads={leads} onStatus={setLeadStatus} />
           )}
         </main>
       </div>
@@ -525,7 +550,15 @@ function DesksView({
   );
 }
 
-function RequestsView({ leads }: { leads: Lead[] | null }) {
+function RequestsView({
+  leads,
+  onStatus,
+}: {
+  leads: Lead[] | null;
+  onStatus: (lead: Lead, status: LeadStatus) => void;
+}) {
+  const [filter, setFilter] = useState<LeadStatus | "all">("all");
+
   if (leads === null) return <Loading />;
 
   if (leads.length === 0) {
@@ -548,42 +581,112 @@ function RequestsView({ leads }: { leads: Lead[] | null }) {
     );
   }
 
+  const counts = leads.reduce<Record<string, number>>((acc, l) => {
+    acc[l.status] = (acc[l.status] ?? 0) + 1;
+    return acc;
+  }, {});
+  const shown = filter === "all" ? leads : leads.filter((l) => l.status === filter);
+
   return (
-    <div className="space-y-3">
-      {leads.map((lead) => (
-        <Card key={lead.id} padded>
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="font-semibold text-ink">{lead.company}</p>
-                {lead.monthly_enquiries && (
-                  <span className="rounded-full bg-brand-wash px-2 py-0.5 text-[11px] font-medium text-brand-ink">
-                    ~{lead.monthly_enquiries} enquiries/mo
+    <div className="space-y-4">
+      {/* Status filter chips */}
+      <div className="flex flex-wrap gap-1.5">
+        <FilterChip label="All" count={leads.length} active={filter === "all"} onClick={() => setFilter("all")} />
+        {LEAD_STATUSES.map((s) => (
+          <FilterChip
+            key={s}
+            label={s}
+            count={counts[s] ?? 0}
+            active={filter === s}
+            onClick={() => setFilter(s)}
+          />
+        ))}
+      </div>
+
+      <div className="space-y-3">
+        {shown.map((lead) => (
+          <Card key={lead.id} padded>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-semibold text-ink">{lead.company}</p>
+                  <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${STATUS_STYLE[lead.status]}`}>
+                    {lead.status}
                   </span>
-                )}
+                  {lead.monthly_enquiries && (
+                    <span className="rounded-full bg-sunk px-2 py-0.5 text-[11px] font-medium text-ink-soft">
+                      ~{lead.monthly_enquiries} enquiries/mo
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-sm text-ink-soft">
+                  {lead.name} ·{" "}
+                  <a href={`mailto:${lead.email}`} className="text-brand hover:underline">
+                    {lead.email}
+                  </a>
+                  {lead.phone && (
+                    <>
+                      {" · "}
+                      <a href={`tel:${lead.phone}`} className="text-brand hover:underline">
+                        {lead.phone}
+                      </a>
+                    </>
+                  )}
+                </p>
+                {lead.note && <p className="mt-2 max-w-prose text-sm text-ink">{lead.note}</p>}
               </div>
-              <p className="mt-0.5 text-sm text-ink-soft">
-                {lead.name} ·{" "}
-                <a href={`mailto:${lead.email}`} className="text-brand hover:underline">
-                  {lead.email}
-                </a>
-              </p>
-              {lead.note && <p className="mt-2 max-w-prose text-sm text-ink">{lead.note}</p>}
+              <div className="flex flex-col items-end gap-2">
+                <p className="text-xs text-ink-faint" title={when(lead.created_at)}>
+                  {ago(lead.created_at)}
+                </p>
+                <label className="sr-only" htmlFor={`status-${lead.id}`}>
+                  Status for {lead.company}
+                </label>
+                <select
+                  id={`status-${lead.id}`}
+                  value={lead.status}
+                  onChange={(e) => onStatus(lead, e.target.value as LeadStatus)}
+                  className="rounded-lg border border-rule bg-surface px-2.5 py-1.5 text-sm capitalize text-ink outline-none focus:border-brand"
+                >
+                  {LEAD_STATUSES.map((s) => (
+                    <option key={s} value={s} className="capitalize">
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-            <div className="text-right">
-              <p className="text-xs text-ink-faint" title={when(lead.created_at)}>
-                {ago(lead.created_at)}
-              </p>
-              <a
-                href={`mailto:${lead.email}?subject=${encodeURIComponent(`Oprisa — ${lead.company}`)}`}
-                className="mt-2 inline-block rounded-lg border border-rule px-3 py-1.5 text-sm font-medium text-ink hover:border-rule-firm"
-              >
-                Reply
-              </a>
-            </div>
-          </div>
-        </Card>
-      ))}
+          </Card>
+        ))}
+        {shown.length === 0 && (
+          <p className="py-6 text-center text-sm text-ink-soft">No requests in “{filter}”.</p>
+        )}
+      </div>
     </div>
+  );
+}
+
+function FilterChip({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-full px-3 py-1 text-xs font-medium capitalize transition ${
+        active ? "bg-ink text-surface" : "border border-rule text-ink-soft hover:border-rule-firm hover:text-ink"
+      }`}
+    >
+      {label}
+      <span className="tabular ml-1.5 opacity-70">{count}</span>
+    </button>
   );
 }

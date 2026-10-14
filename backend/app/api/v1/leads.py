@@ -35,12 +35,13 @@ class LeadIn(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     company: str = Field(min_length=1, max_length=200)
     email: EmailStr
+    phone: str = Field(min_length=4, max_length=40)
     monthly_enquiries: str | None = Field(default=None, max_length=60)
     note: str | None = Field(default=None, max_length=4000)
     #: Honeypot. Named to tempt bots that autofill every field.
     website: str | None = Field(default=None, max_length=400)
 
-    @field_validator("name", "company")
+    @field_validator("name", "company", "phone")
     @classmethod
     def _trim(cls, v: str) -> str:
         return v.strip()
@@ -66,6 +67,7 @@ def create_lead(payload: LeadIn, request: Request, db: Db) -> LeadAck:
         name=payload.name,
         company=payload.company,
         email=str(payload.email),
+        phone=payload.phone,
         monthly_enquiries=payload.monthly_enquiries,
         note=payload.note,
         source="marketing_site",

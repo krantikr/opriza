@@ -114,11 +114,16 @@ class Lead(Base, CreatedAtMixin):
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     company: Mapped[str] = mapped_column(String(200), nullable=False)
     email: Mapped[str] = mapped_column(String(254), nullable=False, index=True)
+    phone: Mapped[str] = mapped_column(String(40), nullable=False, default="")
     monthly_enquiries: Mapped[str | None] = mapped_column(String(60))
     note: Mapped[str | None] = mapped_column(Text)
     #: Where the request came from, so we can tell the contact form from any
     #: later channel without guessing.
     source: Mapped[str] = mapped_column(String(60), default="marketing_site", nullable=False)
+    #: Pipeline status the operator moves it through in the admin console. Kept
+    #: a plain string rather than an enum so new stages can be added without a
+    #: migration; the API validates the allowed set.
+    status: Mapped[str] = mapped_column(String(20), default="new", nullable=False, index=True)
     #: Light abuse signal, never shown to the prospect.
     user_agent: Mapped[str | None] = mapped_column(String(400))
 

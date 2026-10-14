@@ -341,11 +341,22 @@ class LeadOut(BaseModel):
     name: str
     company: str
     email: str
+    phone: str
     monthly_enquiries: str | None
     note: str | None
     source: str
+    status: str
 
     model_config = {"from_attributes": True}
+
+
+#: The pipeline the operator moves a request through. Kept here (not an ORM
+#: enum) so stages can change without a migration.
+LEAD_STATUSES = ("new", "contacted", "qualified", "won", "lost")
+
+
+class LeadStatusIn(BaseModel):
+    status: str
 
 
 @router.get("/leads", response_model=list[LeadOut])
@@ -358,3 +369,21 @@ def list_leads(admin: SuperAdmin, db: Db) -> list[LeadOut]:
     _super_admin_db(db)
     rows = db.scalars(select(Lead).order_by(Lead.created_at.desc())).all()
     return [LeadOut.model_validate(r) for r in rows]
+
+
+@router.patch("/leads/{lead_id}", response_model=LeadOut)
+def update_lead_status(lead_id: int, payload: LeadStatusIn, admin: SuperAdmin, db: Db) -> LeadOut:
+    """Move a request to another pipeline stage."""
+    if payload.status not in LEAD_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown status. Use one of: {', '.join(LEAD_STATUSES)}.",
+        )
+    _super_admin_db(db)
+    lead = db.get(Lead, lead_id)
+    if lead is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such request.")
+    lead.status = payload.status
+    db.commit()
+    db.refresh(lead)
+    return LeadOut.model_validate(lead)

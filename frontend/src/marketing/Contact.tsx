@@ -20,7 +20,7 @@ export default function Contact() {
     path: "/contact",
   });
 
-  const [form, setForm] = useState({ name: "", company: "", email: "", volume: "", note: "" });
+  const [form, setForm] = useState({ name: "", company: "", email: "", phone: "", volume: "", note: "" });
   const [website, setWebsite] = useState(""); // honeypot
   const [status, setStatus] = useState<Status>("idle");
 
@@ -38,6 +38,7 @@ export default function Contact() {
           name: form.name,
           company: form.company,
           email: form.email,
+          phone: form.phone,
           monthly_enquiries: form.volume || null,
           note: form.note || null,
           website: website || null,
@@ -99,6 +100,19 @@ export default function Contact() {
                 <div className="field">
                   <label htmlFor="c-email">Email</label>
                   <input id="c-email" type="email" value={form.email} onChange={set("email")} required autoComplete="email" />
+                </div>
+                <div className="field">
+                  <label htmlFor="c-phone">Phone / WhatsApp</label>
+                  <input
+                    id="c-phone"
+                    type="tel"
+                    value={form.phone}
+                    onChange={set("phone")}
+                    required
+                    autoComplete="tel"
+                    inputMode="tel"
+                    placeholder="+91 98765 43210"
+                  />
                 </div>
                 <div className="field">
                   <label htmlFor="c-vol">Enquiries a month (roughly)</label>
