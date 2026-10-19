@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { buildWorld } from "../demo/data/generate";
 import { INDUSTRIES } from "../demo/data/industries";
 import { answer, detectIntent, findAmount, findProduct, findQty } from "../demo/engine/ask";
-import { quoteTotals } from "../demo/engine/core";
+import { chaseOrder, quoteTotals } from "../demo/engine/core";
+import { approveMany, cashAskEarly, cashDelay, makePo, moveQuote, remindMany } from "../demo/engine/desk";
 import { approve, tap } from "../demo/engine/respond";
 import { createDemo } from "../demo/engine/seed";
+import { saveDemoLead } from "../demo/lib/lead";
 import type { Business, DemoState, ThreadId } from "../demo/engine/types";
 
 const BIZ: Business = {
@@ -175,5 +177,119 @@ describe("tapping buttons", () => {
     s = play(s, approve(s, pos[0]!.id));
     const poCard = s.threads.stock.messages.map((m) => m.card).find((c) => c?.kind === "po");
     expect(poCard?.kind === "po" && poCard.status).toBe("posted");
+  });
+});
+
+describe("desktop actions", () => {
+  const w = buildWorld({ ...BIZ, industry: "building" }, TODAY);
+
+  it("headline overdue figures match the bills", () => {
+    const late = w.customers.filter((c) => c.bills.some((b) => b.daysLate > 0));
+    const sum = late.reduce((a, c) => a + c.bills.filter((b) => b.daysLate > 0).reduce((x, b) => x + b.amount, 0), 0);
+    expect(w.kpi.overdueCount).toBe(late.length);
+    expect(Math.abs(w.kpi.overdue - sum)).toBeLessThan(1e5);
+  });
+
+  it("a customer's yearly sales cover what they owe", () => {
+    for (const c of w.customers) expect(c.sales12m, c.name).toBeGreaterThan(c.outstanding * 0.9);
+  });
+
+  it("reminding several customers logs the work, ticks the tour and brings a promise", () => {
+    const s = createDemo(w);
+    const ids = chaseOrder(w).slice(0, 3).map((c) => c.id);
+    const after = play(s, remindMany(s, ids));
+    expect(after.desk.tour.remind).toBe(true);
+    expect(Object.keys(after.desk.reminded)).toEqual(expect.arrayContaining(ids));
+    expect(after.collectedToday).toBeGreaterThan(0);
+    expect(after.threads.collect.messages.length).toBeGreaterThan(s.threads.collect.messages.length);
+  });
+
+  it("moving a quote to Won counts it and tells the Sales chat", () => {
+    const s = createDemo(w);
+    const q = s.desk.pipeline.find((x) => x.stage === "sent")!;
+    const after = play(s, moveQuote(s, q.no, "won"));
+    expect(after.desk.pipeline.find((x) => x.no === q.no)!.stage).toBe("won");
+    expect(after.wonToday).toBe(q.value);
+    expect(after.threads.sales.messages.at(-1)!.card?.kind).toBe("won");
+  });
+
+  it("a PO above the buyer's limit waits for approval", () => {
+    const s = createDemo(w);
+    const tight = { ...s, world: { ...s.world, limits: { ...s.world.limits, poLimit: 1e5 } } };
+    const after = play(tight, makePo(tight, 0, 0));
+    expect(after.approvals.filter((a) => a.type === "Purchase order" && a.status === "waiting").length).toBeGreaterThan(tight.approvals.filter((a) => a.type === "Purchase order" && a.status === "waiting").length);
+  });
+
+  it("cash fixes close the short week", () => {
+    const s = createDemo(w);
+    const after = play(s, cashDelay(s));
+    const done = play(after, cashAskEarly(after));
+    expect(done.desk.cashFix.delayed).toBe(true);
+    expect(done.desk.cashFix.early).toBeGreaterThan(0);
+  });
+
+  it("approving many at once clears them and ticks the tour", () => {
+    const s = createDemo(w);
+    const ids = s.approvals.filter((a) => a.status === "waiting").map((a) => a.id);
+    const after = play(s, approveMany(s, ids));
+    expect(after.approvals.filter((a) => a.status === "waiting")).toHaveLength(0);
+    expect(after.desk.tour.inbox).toBe(true);
+  });
+});
+
+describe("saving a demo sign-up", () => {
+  const biz: Business = { ...BIZ, email: " karan@kktraders.in ", phone: "98765 43210", problems: ["quotes", "collections"] };
+
+  function fakeFetch(ok = true) {
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    const f = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, body: JSON.parse(String(init?.body)) });
+      return { ok } as Response;
+    }) as unknown as typeof fetch;
+    return { f, calls };
+  }
+
+  beforeEach(() => localStorage.clear());
+
+  it("sends the contact and business details once", async () => {
+    const { f, calls } = fakeFetch();
+    expect(await saveDemoLead(biz, f)).toBe("sent");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("/api/v1/leads/demo");
+    expect(calls[0]!.body).toMatchObject({
+      name: "Kranti Karan",
+      company: "Shree Balaji Steels",
+      email: "karan@kktraders.in",
+      phone: "98765 43210",
+      city: "Pune",
+      industry: "steel",
+      revenue: "100-250",
+      tally: "TallyPrime",
+      problems: ["Slow quotes", "Late payments"],
+    });
+    expect(String(calls[0]!.body.industry_label)).toMatch(/Steel/);
+    expect(calls[0]!.body).not.toHaveProperty("language");
+  });
+
+  it("skips the same answers, but sends again when they change", async () => {
+    const { f, calls } = fakeFetch();
+    await saveDemoLead(biz, f);
+    expect(await saveDemoLead(biz, f)).toBe("skipped");
+    expect(await saveDemoLead({ ...biz, industry: "pharma" }, f)).toBe("sent");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("tries again next time when saving failed", async () => {
+    const bad = fakeFetch(false);
+    expect(await saveDemoLead(biz, bad.f)).toBe("failed");
+    const good = fakeFetch();
+    expect(await saveDemoLead(biz, good.f)).toBe("sent");
+  });
+
+  it("never throws when the network is down", async () => {
+    const down = (async () => {
+      throw new Error("offline");
+    }) as unknown as typeof fetch;
+    expect(await saveDemoLead(biz, down)).toBe("failed");
   });
 });

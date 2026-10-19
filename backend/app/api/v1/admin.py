@@ -334,7 +334,7 @@ __all__ = ["router"]
 
 
 class LeadOut(BaseModel):
-    """A design-partner request from the marketing site, for the admin list."""
+    """A prospect from the public site (contact form or demo), for the admin list."""
 
     id: int
     created_at: datetime
@@ -346,6 +346,8 @@ class LeadOut(BaseModel):
     note: str | None
     source: str
     status: str
+    #: Business details from a demo sign-up; empty for the contact form.
+    details: dict | None = None
 
     model_config = {"from_attributes": True}
 

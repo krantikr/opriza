@@ -99,7 +99,7 @@ class ImportBatch(Base, CreatedAtMixin, TenantMixin):
 
 
 class Lead(Base, CreatedAtMixin):
-    """A design-partner request from the public marketing site.
+    """A prospect from the public site: a Request-access form or a demo sign-up.
 
     Platform-level on purpose: a prospect is not a tenant yet, so this table
     carries no `organisation_id` and therefore no row-level-security policy -
@@ -117,9 +117,14 @@ class Lead(Base, CreatedAtMixin):
     phone: Mapped[str] = mapped_column(String(40), nullable=False, default="")
     monthly_enquiries: Mapped[str | None] = mapped_column(String(60))
     note: Mapped[str | None] = mapped_column(Text)
-    #: Where the request came from, so we can tell the contact form from any
-    #: later channel without guessing.
-    source: Mapped[str] = mapped_column(String(60), default="marketing_site", nullable=False)
+    #: Where the request came from - 'marketing_site' for the Request-access
+    #: form, 'demo' for a sign-up from the live demo - so we can tell them apart
+    #: without guessing.
+    source: Mapped[str] = mapped_column(String(60), default="marketing_site", nullable=False, index=True)
+    #: What the prospect told us about their business, when the channel asks.
+    #: The demo stores trade, city, yearly sales, team size, Tally version and
+    #: the problems they picked; the contact form leaves it empty.
+    details: Mapped[dict | None] = mapped_column(JSON)
     #: Pipeline status the operator moves it through in the admin console. Kept
     #: a plain string rather than an enum so new stages can be added without a
     #: migration; the API validates the allowed set.

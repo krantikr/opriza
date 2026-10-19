@@ -526,10 +526,24 @@ function ratesMsg(s: DemoState): Msg {
   });
 }
 
-function promiseLogged(s: DemoState, customerId: string, amount: number, date: string, by: "you" | "customer"): [DemoState, Msg[]] {
+/** Days from today for a "Thu 22 Oct" label the agents wrote. */
+function daysFromLabel(s: DemoState, label: string): number {
+  for (let n = -7; n <= 60; n++) if (dayDate(addDays(s.world.today, n)) === label) return n;
+  return 3;
+}
+
+/** Adds a line to the agents' work log the desk shows. */
+export function logWork(s: DemoState, agent: ThreadId, text: string, count = 1, customerId?: string): DemoState {
+  const entry = { id: `l${Date.now().toString(36)}${s.desk.log.length}`, at: s.clock, agent, text, count, customerId };
+  return { ...s, desk: { ...s.desk, log: [entry, ...s.desk.log] } };
+}
+
+export function promiseLogged(s: DemoState, customerId: string, amount: number, date: string, by: "you" | "customer"): [DemoState, Msg[]] {
   const w = s.world;
   const c = customerById(w, customerId);
-  const st = { ...s, collectedToday: s.collectedToday + amount };
+  const rec = { id: `pr-${customerId}-${s.clock}`, customerId, amount, date, inDays: daysFromLabel(s, date), by, status: "due" as const };
+  let st: DemoState = { ...s, collectedToday: s.collectedToday + amount, desk: { ...s.desk, promises: [rec, ...s.desk.promises.filter((p) => !(p.customerId === customerId && p.status === "due"))] } };
+  st = logWork(st, "collect", `${by === "customer" ? `${c.name} picked a payment date` : `Logged a promise from ${c.name}`}: ${money(amount)} on ${date}`, 1, customerId);
   return [
     st,
     [
@@ -555,7 +569,7 @@ export function approve(s0: DemoState, id: string): Outcome {
   if (!a) return {};
   return {
     now: (s) => {
-      const st: DemoState = { ...s, approvals: s.approvals.map((x) => (x.id === id ? { ...x, status: "approved" } : x)) };
+      const st: DemoState = logWork({ ...s, approvals: s.approvals.map((x) => (x.id === id ? { ...x, status: "approved" } : x)) }, a.thread, `Approved by ${s.world.firstName}: ${a.type.toLowerCase()} · ${a.title}`);
       if (!a.ref) return st;
       const t = st.threads[a.thread];
       const messages = t.messages.map((m) => {
@@ -574,7 +588,7 @@ export function changeApproval(s0: DemoState, id: string): Outcome {
   const a = s0.approvals.find((x) => x.id === id);
   if (!a) return {};
   return {
-    now: (s) => ({ ...s, approvals: s.approvals.map((x) => (x.id === id ? { ...x, status: "changed" } : x)) }),
+    now: (s) => logWork({ ...s, approvals: s.approvals.map((x) => (x.id === id ? { ...x, status: "changed" } : x)) }, a.thread, `Sent back to ${a.who.split(" · ")[0]}: ${a.title}`),
     later: [say(a.thread, 600, (s) => [text(s, `Sent back to ${a.who.split(" · ")[0]} with your note: "${a.why}. Please revise."`)])],
   };
 }

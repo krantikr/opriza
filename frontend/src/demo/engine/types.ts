@@ -10,6 +10,10 @@ export type Language = "English" | "Hinglish";
 export type Business = {
   company: string;
   owner: string;
+  /** Contact details for the follow-up; stored as a lead, never used in the
+   *  mock data. Optional so older saved setups still load. */
+  email?: string;
+  phone?: string;
   city: string;
   industry: string;
   revenue: RevenueBand;
@@ -55,6 +59,9 @@ export type Customer = {
   promisesKept: number;
   promisesMade: number;
   since: number;
+  /** Where they are, and which salesperson looks after them. */
+  area: string;
+  rep: string;
 };
 
 export type Supplier = { name: string; brand: string; onTime: number; delta: number; days: number };
@@ -207,8 +214,82 @@ export type Approval = {
   ref?: string;
 };
 
+/* ---------------------------------------------------------------------------
+   What the desktop screens keep track of. The phone shows the same facts as
+   chat messages; the desk shows them as lists. Both read one DemoState.
+   --------------------------------------------------------------------------- */
+
+/** Where a quote stands, left to right on the Sales board. */
+export type Stage = "draft" | "sent" | "opened" | "talks" | "won" | "lost";
+
+export type PipeQuote = {
+  no: string;
+  customerId: string;
+  product: string;
+  qty: number;
+  unit: string;
+  value: number;
+  margin: number;
+  stage: Stage;
+  /** Hours since it was last touched. */
+  ageH: number;
+  rep: string;
+  /** The chat message holding this quote, when it came from a chat. */
+  msgId?: string;
+};
+
+export type PromiseRec = {
+  id: string;
+  customerId: string;
+  amount: number;
+  date: string;
+  /** Days from today; negative is in the past. */
+  inDays: number;
+  by: "you" | "customer";
+  status: "due" | "kept" | "missed";
+};
+
+export type LogEntry = {
+  id: string;
+  /** Minutes since midnight; `yday` marks last night's work. */
+  at: number;
+  yday?: boolean;
+  agent: ThreadId;
+  text: string;
+  /** How many tasks this line stands for, for the "handled" count. */
+  count: number;
+  customerId?: string;
+};
+
+export type Enquiry = { id: string; customerId: string; channel: string; text: string; ageMin: number; quoted: boolean };
+
+export type Rules = {
+  remindDays: number;
+  autoSendInBand: boolean;
+  nudgeHours: number;
+  reorderDays: number;
+  weeklyReport: boolean;
+  agents: Record<ThreadId, boolean>;
+};
+
+export type DeskState = {
+  pipeline: PipeQuote[];
+  promises: PromiseRec[];
+  log: LogEntry[];
+  enquiries: Enquiry[];
+  /** Customer id → demo clock of the last reminder sent. */
+  reminded: Record<string, number>;
+  rules: Rules;
+  /** The three guided tasks on the desktop demo. */
+  tour: { inbox: boolean; remind: boolean; ask: boolean };
+  /** Fixes applied from the Cash screen: money pulled into week 3, and
+   *  whether the big supplier payment moved to week 4. */
+  cashFix: { early: number; delayed: boolean };
+};
+
 export type DemoState = {
   world: World;
+  desk: DeskState;
   threads: Record<ThreadId, Thread>;
   order: ThreadId[];
   approvals: Approval[];

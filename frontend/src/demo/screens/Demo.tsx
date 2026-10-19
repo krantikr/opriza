@@ -9,19 +9,22 @@ import { ask } from "../engine/ask";
 import { setTyping } from "../engine/core";
 import { approve, changeApproval, customerAccepted, customerPromised, supplierQuoted, tap } from "../engine/respond";
 import { createDemo } from "../engine/seed";
+import Desk from "../desk/Desk";
 import type { Action, Business, DemoState, Go, Msg, Outcome, Tab, ThreadId, UiEffect } from "../engine/types";
 
-function useWide() {
-  const q = "(min-width: 900px)";
-  const [wide, setWide] = useState(() => typeof window !== "undefined" && window.matchMedia(q).matches);
+function useMedia(q: string) {
+  const [hit, setHit] = useState(() => typeof window !== "undefined" && window.matchMedia(q).matches);
   useEffect(() => {
     const m = window.matchMedia(q);
-    const on = () => setWide(m.matches);
+    const on = () => setHit(m.matches);
     m.addEventListener("change", on);
     return () => m.removeEventListener("change", on);
-  }, []);
-  return wide;
+  }, [q]);
+  return hit;
 }
+
+/** Phone and tablet keep the chat app; 1100 px and wider gets the desk. */
+const DESK_MEDIA = "(min-width: 1100px)";
 
 type Props = { biz: Business; onEdit: () => void };
 
@@ -29,7 +32,13 @@ export default function Demo({ biz, onEdit }: Props) {
   const world = useMemo(() => buildWorld(biz), [biz]);
   const [state, setState] = useState<DemoState>(() => createDemo(world));
   const [tab, setTab] = useState<Tab>("chats");
-  const wide = useWide();
+  const wide = useMedia("(min-width: 900px)");
+  const desk = useMedia(DESK_MEDIA);
+  // The desk handles "open this chat" and "go to approvals" its own way.
+  const deskUi = useRef<((ui: UiEffect) => boolean) | null>(null);
+  const bindUi = useCallback((fn: ((ui: UiEffect) => boolean) | null) => {
+    deskUi.current = fn;
+  }, []);
   const [open, setOpen] = useState<ThreadId | null>(() => (window.matchMedia("(min-width: 900px)").matches ? "brief" : null));
   const [link, setLink] = useState<LinkView | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -52,7 +61,7 @@ export default function Demo({ biz, onEdit }: Props) {
     if (wide && !open) setOpen("brief");
   }, [wide, open]);
 
-  const visibleThread = tab === "chats" ? open : null;
+  const visibleThread = !desk && tab === "chats" ? open : null;
 
   // Reading a chat clears its unread count, as it does in any chat app.
   const visibleUnread = visibleThread ? state.threads[visibleThread].unread : 0;
@@ -62,7 +71,13 @@ export default function Demo({ biz, onEdit }: Props) {
     }
   }, [visibleThread, visibleUnread]);
 
+  const showToast = useCallback((text: string) => {
+    setToast(text);
+    window.setTimeout(() => setToast((t) => (t === text ? null : t)), 2600);
+  }, []);
+
   const handleUi = useCallback((ui: UiEffect) => {
+    if (deskUi.current?.(ui)) return;
     switch (ui.type) {
       case "openThread":
         setTab("chats");
@@ -72,13 +87,12 @@ export default function Demo({ biz, onEdit }: Props) {
         setTab(ui.tab);
         break;
       case "toast":
-        setToast(ui.text);
-        window.setTimeout(() => setToast(null), 2600);
+        showToast(ui.text);
         break;
       default:
         setLink(ui);
     }
-  }, []);
+  }, [showToast]);
 
   /** Plays an agent outcome: immediate changes now, then each reply after
    *  its "typing…" delay. */
@@ -132,7 +146,7 @@ export default function Demo({ biz, onEdit }: Props) {
   ];
 
   return (
-    <div className="app">
+    <div className={`app ${desk ? "app-desk" : ""}`}>
       <div className="demobar" role="note">
         <span className="dot" aria-hidden="true" />
         <span className="what">
@@ -142,6 +156,10 @@ export default function Demo({ biz, onEdit }: Props) {
         <button type="button" onClick={restart}>Start over</button>
       </div>
 
+      {desk ? (
+        <Desk biz={biz} state={state} run={run} set={setState} link={setLink} toast={showToast} bindUi={bindUi} />
+      ) : (
+      <>
       <div className={`shell ${!wide && open && tab === "chats" ? "has-thread" : ""} ${screenMode ? "screen-mode" : ""}`}>
         <nav className="rail" aria-label="Main">
           <div className="logo mark" aria-hidden="true">O<i>.</i></div>
@@ -186,6 +204,8 @@ export default function Demo({ biz, onEdit }: Props) {
           </button>
         ))}
       </nav>
+      </>
+      )}
 
       {link && (
         <LinkOverlay

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactElement } from "react";
 import "./demo.css";
 import type { Business } from "./engine/types";
+import { saveDemoLead } from "./lib/lead";
 import Demo from "./screens/Demo";
 import Details from "./screens/Details";
 import Problems from "./screens/Problems";
@@ -21,6 +22,8 @@ const KEY = "oprisa-demo-setup-v1";
 const EMPTY: Business = {
   company: "",
   owner: "",
+  email: "",
+  phone: "",
   city: "",
   industry: "steel",
   revenue: "100-250",
@@ -75,7 +78,10 @@ export default function DemoApp() {
         onChange={setBiz}
         onBack={() => go("problems")}
         onStart={() => {
-          setLive({ ...biz, company: biz.company.trim(), owner: biz.owner.trim(), city: biz.city.trim() });
+          const clean = { ...biz, company: biz.company.trim(), owner: biz.owner.trim(), city: biz.city.trim(), email: (biz.email ?? "").trim(), phone: (biz.phone ?? "").trim() };
+          // Saved in the background; the demo opens at once either way.
+          void saveDemoLead(clean);
+          setLive(clean);
           go("demo");
         }}
       />

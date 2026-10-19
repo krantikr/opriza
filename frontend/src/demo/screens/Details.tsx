@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { INDUSTRIES, industryById } from "../data/industries";
 import { PROBLEMS } from "../data/problems";
-import type { Business, Language, RevenueBand } from "../engine/types";
+import type { Business, RevenueBand } from "../engine/types";
 
 const BANDS: { id: RevenueBand; label: string }[] = [
   { id: "50-100", label: "₹50–100 Cr" },
@@ -10,6 +10,14 @@ const BANDS: { id: RevenueBand; label: string }[] = [
   { id: "500+", label: "₹500 Cr+" },
 ];
 const TEAMS = ["Under 10", "10–25", "25–50", "50+"];
+
+/** A work email, loosely: something@something.tld. */
+export const emailOk = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim());
+/** A phone number with 10 to 13 digits, so +91 and spaces are fine. */
+export const phoneOk = (v: string) => {
+  const d = v.replace(/\D/g, "").length;
+  return d >= 10 && d <= 13;
+};
 
 type Props = {
   biz: Business;
@@ -31,12 +39,16 @@ const CHAT_OF: Record<string, { name: string; letter: string; bg: string; fg: st
 export default function Details({ biz, onChange, onBack, onStart }: Props) {
   const [tried, setTried] = useState(false);
   const set = <K extends keyof Business>(k: K, v: Business[K]) => onChange({ ...biz, [k]: v });
+  const email = biz.email ?? "";
+  const phone = biz.phone ?? "";
   const missing = {
     company: !biz.company.trim(),
     owner: !biz.owner.trim(),
+    email: !emailOk(email),
+    phone: !phoneOk(phone),
     city: !biz.city.trim(),
   };
-  const ok = !missing.company && !missing.owner && !missing.city;
+  const ok = !Object.values(missing).some(Boolean);
   const pack = industryById(biz.industry);
 
   const chats = Array.from(new Set(["brief", ...biz.problems.map((id) => PROBLEMS.find((p) => p.id === id)?.thread ?? "ask")]));
@@ -44,6 +56,11 @@ export default function Details({ biz, onChange, onBack, onStart }: Props) {
   const start = () => {
     setTried(true);
     if (ok) onStart();
+    else {
+      // Take the visitor to the first field that needs fixing.
+      const first = (["company", "owner", "city", "email", "phone"] as const).find((k) => missing[k]);
+      if (first) document.getElementById(first)?.focus();
+    }
   };
 
   return (
@@ -59,7 +76,7 @@ export default function Details({ biz, onChange, onBack, onStart }: Props) {
           <h1>
             Tell us about your business. <span>We'll fill the demo with it.</span>
           </h1>
-          <p>Customers, items, rates and dues will be sample data shaped like your trade. Nothing is saved or sent.</p>
+          <p>Customers, items, rates and dues will be sample data shaped like your trade. We save your answers so our team can follow up on your demo.</p>
         </div>
       </header>
 
@@ -89,6 +106,16 @@ export default function Details({ biz, onChange, onBack, onStart }: Props) {
               <input id="city" className="input" value={biz.city} onChange={(e) => set("city", e.target.value)} placeholder="e.g. Pune" autoComplete="address-level2" aria-invalid={tried && missing.city} />
               {tried && missing.city && <span className="err">Enter your city.</span>}
             </div>
+            <div className="field">
+              <label htmlFor="email">Work email</label>
+              <input id="email" className="input" type="email" inputMode="email" value={email} onChange={(e) => set("email", e.target.value)} placeholder="e.g. karan@balajisteels.in" autoComplete="email" aria-invalid={tried && missing.email} />
+              {tried && missing.email && <span className="err">{email.trim() ? "Check the email address." : "Enter your email."}</span>}
+            </div>
+            <div className="field">
+              <label htmlFor="phone">Mobile number</label>
+              <input id="phone" className="input" type="tel" inputMode="tel" value={phone} onChange={(e) => set("phone", e.target.value)} placeholder="e.g. 98765 43210" autoComplete="tel" aria-invalid={tried && missing.phone} />
+              {tried && missing.phone && <span className="err">{phone.trim() ? "Enter a 10-digit mobile number." : "Enter your mobile number."}</span>}
+            </div>
             <div className="field wide">
               <label htmlFor="industry">What you sell</label>
               <select id="industry" className="select" value={biz.industry} onChange={(e) => set("industry", e.target.value)}>
@@ -114,19 +141,11 @@ export default function Details({ biz, onChange, onBack, onStart }: Props) {
                 ))}
               </div>
             </div>
-            <div className="field">
+            <div className="field wide">
               <span id="tally-l" style={{ fontWeight: 700, fontSize: 14 }}>Tally version</span>
               <div className="seg" role="group" aria-labelledby="tally-l">
                 {(["TallyPrime", "Tally.ERP 9"] as const).map((t) => (
                   <button key={t} type="button" aria-pressed={biz.tally === t} onClick={() => set("tally", t)}>{t}</button>
-                ))}
-              </div>
-            </div>
-            <div className="field">
-              <span id="lang-l" style={{ fontWeight: 700, fontSize: 14 }}>Reminder language</span>
-              <div className="seg" role="group" aria-labelledby="lang-l">
-                {(["English", "Hinglish"] as Language[]).map((l) => (
-                  <button key={l} type="button" aria-pressed={biz.language === l} onClick={() => set("language", l)}>{l}</button>
                 ))}
               </div>
             </div>
@@ -158,6 +177,7 @@ export default function Details({ biz, onChange, onBack, onStart }: Props) {
               </div>
             </div>
             <div className="csub">Every other chat is there too. Tap buttons, or type questions like "who owes me the most?".</div>
+            <div className="csub pv-privacy">Your email and number are only for our team to follow up. The demo sends nothing to your customers or suppliers.</div>
           </aside>
         </div>
       </main>

@@ -14,6 +14,11 @@ const ANNUAL: Record<RevenueBand, number> = {
 const STEMS = ["Shree", "Om Sai", "Mehta", "Kalyan", "Patel", "Deccan", "Balaji", "Ganesh", "Vardhman", "Laxmi", "Siddhi", "Raj", "Krishna", "Jai Hind", "Bharat", "Sunrise"];
 const CONTACTS = ["Rajesh", "Suresh", "Amit", "Vikram", "Pradeep", "Manoj", "Anil", "Nitin", "Sanjay", "Rakesh", "Deepak", "Mahesh", "Prakash", "Ashok"];
 const TEAM = ["Amit", "Priya", "Rohan", "Neha", "Sunil", "Kavita", "Imran", "Pooja"];
+/** More name stems for the long tail of smaller customers a desk table shows. */
+const MORE_STEMS = ["Annapurna", "Shiv Shakti", "Navkar", "Samarth", "Mahalaxmi", "Tirupati", "Sai Kripa", "Gurukrupa", "Ambika", "Jay Ambe", "Shubham", "Swastik", "Vinayak", "Hari Om", "Sri Ram", "Neelkanth", "Prime", "Unity", "Royal", "Surya", "Venkatesh", "Matoshree", "Kaveri", "Narmada", "Galaxy", "Pioneer", "Trimurti", "Omkar", "Akshar", "Yash"];
+const AREAS = ["MIDC", "Ring Road", "Station Road", "Old City", "Industrial Estate", "Highway", "New Town", "Market Yard"];
+/** How many customers the mock business has in total. */
+const CUSTOMER_COUNT = 40;
 
 /** Rounds a quantity to something a trader would actually order. */
 export function roundQty(n: number, unit: string): number {
@@ -102,6 +107,8 @@ export function buildWorld(biz: Business, today = new Date()): World {
       promisesKept: grade === "A" ? 5 : grade === "B" ? 4 : grade === "C" ? 3 : 1,
       promisesMade: grade === "A" ? 5 : grade === "B" ? 5 : 5,
       since: today.getFullYear() - intBetween(r, 2, 9),
+      area: "",
+      rep: "",
     };
   });
 
@@ -147,6 +154,73 @@ export function buildWorld(biz: Business, today = new Date()): World {
 
   const team = shuffle(r, TEAM);
 
+  /* --- the long tail of customers --------------------------------------
+     A second generator, so adding these leaves every number above exactly
+     as it was. The rest of the overdue total is spread over the remaining
+     late payers; everyone else has bills that are not yet due. */
+  const r2 = makeRng(seedFrom(`${biz.company}|${biz.industry}|${biz.city}|tail`));
+  const reps = [team[0] as string, team[1] as string];
+  const used = new Set(customers.map((c) => c.name));
+  const moreStems = shuffle(r2, MORE_STEMS);
+  const extra = CUSTOMER_COUNT - customers.length;
+  const lateLeft = Math.max(0, overdueCount - customers.length);
+  const overdueSoFar = customers.reduce((a, c) => a + c.bills.filter((b) => b.daysLate > 0).reduce((x, b) => x + b.amount, 0), 0);
+  const overdueRest = Math.max(base * lateLeft * 0.6, overdue - overdueSoFar);
+  const lateWeights = Array.from({ length: lateLeft }, () => between(r2, 0.6, 1.4));
+  const lateSum = lateWeights.reduce((a, b) => a + b, 0) || 1;
+  const currentRest = (receivable - overdue) * 0.55;
+  const currentEach = currentRest / Math.max(1, extra - lateLeft);
+  for (let i = 0; i < extra; i++) {
+    let name = "";
+    for (let k = 0; k < 6 && (!name || used.has(name)); k++) name = `${moreStems[(i + k * 7) % moreStems.length]} ${pick(r2, pack.customerKinds)}`;
+    if (used.has(name)) name = `${name} ${i + 2}`;
+    used.add(name);
+    const late = i < lateLeft;
+    const grade: Grade = late ? (pick(r2, ["B", "C", "B", "C", "D"]) as Grade) : (pick(r2, ["A", "A", "B", "A", "B"]) as Grade);
+    const amount = roundMoney(late ? (overdueRest * (lateWeights[i] as number)) / lateSum : currentEach * between(r2, 0.4, 1.6));
+    const nBills = amount > base * 0.8 ? 2 : 1;
+    const bills: Bill[] = [];
+    let left = amount;
+    const firstLate = late ? (grade === "D" ? intBetween(r2, 25, 50) : grade === "C" ? intBetween(r2, 10, 24) : intBetween(r2, 1, 9)) : -intBetween(r2, 2, 25);
+    for (let b = 0; b < nBills; b++) {
+      const part = b === nBills - 1 ? left : roundMoney(left * between(r2, 0.45, 0.6));
+      left -= part;
+      const daysLate = firstLate - b * intBetween(r2, 6, 12);
+      bills.push({ no: `INV-${2460 + i * 13 + b * 4}`, date: addDays(today, -(30 + daysLate)), amount: part, daysLate });
+    }
+    const avgDelay = grade === "A" ? intBetween(r2, 1, 5) : grade === "B" ? intBetween(r2, 6, 12) : grade === "C" ? intBetween(r2, 18, 26) : intBetween(r2, 30, 45);
+    customers.push({
+      id: `c${customers.length}`,
+      name,
+      contact: pick(r2, CONTACTS),
+      phone: `9${intBetween(r2, 7000, 9999)} ${intBetween(r2, 10000, 99999)}`,
+      grade,
+      outstanding: amount,
+      bills,
+      avgDelay,
+      payDay: 30 + (grade === "A" ? 2 : grade === "B" ? 9 : grade === "C" ? 25 : 40),
+      // What they owe is roughly what they buy in the days they take to pay,
+      // so a year's sales follow from it.
+      sales12m: roundMoney(Math.max(annual * 0.004, (amount * 365) / (30 + avgDelay)) * between(r2, 0.85, 1.2)),
+      lastBuyDays: i % 11 === 4 ? intBetween(r2, 32, 70) : intBetween(r2, 1, 26),
+      promisesKept: grade === "A" ? 4 : grade === "B" ? 3 : grade === "C" ? 2 : 1,
+      promisesMade: grade === "A" ? 4 : 4,
+      since: today.getFullYear() - intBetween(r2, 1, 12),
+      area: "",
+      rep: "",
+    });
+  }
+  for (const c of customers) {
+    c.area = pick(r2, AREAS);
+    c.rep = pick(r2, reps);
+  }
+
+  // The headline overdue figures are what the bills actually add up to, so
+  // the brief, the desk and every list agree.
+  const lateBills = customers.flatMap((c) => c.bills.filter((x) => x.daysLate > 0));
+  const overdueReal = roundMoney(lateBills.reduce((a, x) => a + x.amount, 0));
+  const overdueCountReal = customers.filter((c) => c.bills.some((x) => x.daysLate > 0)).length;
+
   return {
     biz,
     pack,
@@ -162,8 +236,8 @@ export function buildWorld(biz: Business, today = new Date()): World {
       salesMtd,
       mtdChange: Math.round(between(r, 3, 9)),
       receivable,
-      overdue,
-      overdueCount,
+      overdue: overdueReal,
+      overdueCount: overdueCountReal,
       dso,
       stockValue,
       idleValue,

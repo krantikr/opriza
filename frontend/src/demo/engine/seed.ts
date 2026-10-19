@@ -2,7 +2,7 @@ import { PROBLEMS } from "../data/problems";
 import { addDays, dayDate, money, qty, rate } from "../lib/format";
 import { roundQty } from "../data/generate";
 import { act, agent, buildQuote, chaseOrder, oldestLate, quoteActions, shortName } from "./core";
-import type { Approval, Card, Customer, DemoState, Go, Msg, Thread, ThreadId, World } from "./types";
+import type { Approval, Card, Customer, DeskState, DemoState, Go, LogEntry, Msg, PipeQuote, Stage, Thread, ThreadId, World } from "./types";
 
 const META: Record<ThreadId, Pick<Thread, "name" | "sub" | "letter" | "bg" | "fg">> = {
   brief: { name: "Today's brief", sub: "Business manager", letter: "B", bg: "#8a2420", fg: "#ffffff" },
@@ -143,6 +143,113 @@ function makeApprovals(w: World): Approval[] {
   ];
 }
 
+/* ---------------------------------------------------------------------------
+   The desk's starting state: quotes already in play, enquiries waiting,
+   promises on the calendar, and what the agents did overnight.
+   --------------------------------------------------------------------------- */
+
+const quoteValue = (w: World, pi: number, f = 1) => {
+  const p = w.products[pi % w.products.length]!;
+  const q = roundQty(((p.qty[0] + p.qty[1]) / 2) * f, p.unit);
+  return { p, q, value: Math.round(q * p.rate * 1.18) };
+};
+
+export function seedDesk(w: World): DeskState {
+  const cs = w.customers;
+  const plan: [number, number, Stage, number, number][] = [
+    // customer, product, stage, hours since touched, size factor
+    [3, 1, "sent", 50, 1],
+    [11, 0, "sent", 5, 0.8],
+    [14, 2, "sent", 20, 1.2],
+    [5, 3, "opened", 3, 1],
+    [17, 0, "opened", 26, 0.6],
+    [8, 4, "opened", 8, 1.4],
+    [0, 1, "talks", 30, 1.6],
+    [20, 2, "talks", 52, 0.9],
+    [6, 0, "won", 22, 1],
+    [12, 5, "won", 40, 0.7],
+    [9, 3, "won", 70, 1.1],
+    [16, 1, "lost", 60, 1],
+    [22, 4, "lost", 96, 0.8],
+  ];
+  const pipeline: PipeQuote[] = plan.map(([ci, pi, stage, ageH, f], i) => {
+    const c = cs[ci % cs.length]!;
+    const { p, q, value } = quoteValue(w, pi, f);
+    return {
+      no: ci === 3 ? "Q-1179" : `Q-${1166 + i}`,
+      customerId: c.id,
+      product: p.name,
+      qty: q,
+      unit: p.unit,
+      value,
+      margin: Math.round((4.9 - (i % 4) * 0.45) * 10) / 10,
+      stage,
+      ageH,
+      rep: c.rep,
+    };
+  });
+
+  const enq = (ci: number, pi: number, channel: string, ageMin: number, f: number, k: number) => {
+    const c = cs[ci % cs.length]!;
+    const p = w.products[pi]!;
+    const q = roundQty(((p.qty[0] + p.qty[1]) / 2) * f, p.unit);
+    const hi = w.biz.language === "Hinglish";
+    const texts = hi
+      ? [`${q} ${p.unit} ${shortName(p)} chahiye, kal tak site pe. Best rate bhejo.`, `Rate for ${q} ${p.unit} ${shortName(p)}? Delivery ${w.biz.city}, 30 din credit.`, `${shortName(p)} ${q} ${p.unit} ka bhav batao, urgent hai.`]
+      : [`Need ${q} ${p.unit} ${shortName(p)} at site by tomorrow. Send best rate.`, `Please quote ${q} ${p.unit} ${shortName(p)}, delivery ${w.biz.city}, 30 days credit.`, `What's your rate for ${q} ${p.unit} ${shortName(p)}? Urgent.`];
+    return { id: `e${ci}`, customerId: c.id, channel, text: texts[k % texts.length]!, ageMin, quoted: false };
+  };
+  const enquiries = [enq(6, 1, "WhatsApp", 12, 1, 0), enq(15, 0, "Email", 38, 0.7, 1), enq(9, 2, "WhatsApp", 75, 1.2, 2), enq(18, 3, "Phone · logged by " + w.team.sales[1], 140, 0.9, 1)];
+
+  const chase = chaseOrder(w);
+  const today = (n: number) => dayDate(addDays(w.today, n));
+  const pr = (c: Customer, inDays: number, f: number, status: "due" | "kept" | "missed", by: "you" | "customer") => ({
+    id: `pr-${c.id}`,
+    customerId: c.id,
+    amount: Math.round((c.outstanding * f) / 1e4) * 1e4,
+    date: today(inDays),
+    inDays,
+    by,
+    status,
+  });
+  const promises = [
+    pr(chase[2] ?? cs[1]!, 0, 1, "due", "customer"),
+    pr(chase[5] ?? cs[5]!, 2, 0.5, "due", "you"),
+    pr(chase[7] ?? cs[7]!, 4, 1, "due", "customer"),
+    pr(cs[6]!, -1, 1, "kept", "customer"),
+    pr(chase[9] ?? cs[9]!, -2, 0.6, "missed", "you"),
+  ];
+
+  const p0 = w.products[0]!;
+  const c3 = cs[3]!;
+  const c4 = cs[4]!;
+  const s0 = w.suppliers[0]!;
+  const reminders = Math.max(6, Math.round(w.kpi.overdueCount * 0.6));
+  const lg = (id: string, at: number, agent: ThreadId, text: string, count: number, yday = false, customerId?: string): LogEntry => ({ id, at, agent, text, count, yday, customerId });
+  const log: LogEntry[] = [
+    lg("l1", 568, "sales", `Nudged ${c3.name} on Q-1179 — no reply in 2 days`, 1, false, c3.id),
+    lg("l2", 480, "brief", "Prepared today's brief from Tally (synced 7:55)", 1),
+    lg("l3", 475, "cash", `Updated the 4-week cash view: week 3 is ${money(w.cash[2]!.outflow - w.cash[2]!.inflow)} short`, 1),
+    lg("l4", 470, "score", `Moved ${c4.name} from grade B to C after 3 late payments`, 1, false, c4.id),
+    lg("l5", 465, "stock", `Matched ${s0.name}'s delivery to PO-0871 — quantity and rate OK`, 1),
+    lg("l6", 430, "collect", `Matched 2 payments received overnight to their bills · ${money(w.kpi.inThisWeek * 0.18)}`, 2),
+    lg("l7", 1325, "sales", `Read 6 enquiries from email and WhatsApp; priced 4 inside your price band`, 10, true),
+    lg("l8", 1290, "collect", `Sent ${reminders} reminders 3 days before the due date, in ${w.biz.language}`, reminders, true),
+    lg("l9", 1260, "stock", `Flagged ${shortName(p0)}: ${Math.round(p0.stock / p0.perDay)} days of stock left`, 1, true),
+  ];
+
+  return {
+    pipeline,
+    promises,
+    log,
+    enquiries,
+    reminded: {},
+    rules: { remindDays: 3, autoSendInBand: true, nudgeHours: 24, reorderDays: 10, weeklyReport: false, agents: { brief: true, sales: true, collect: true, stock: true, cash: true, ask: true, score: true } },
+    tour: { inbox: false, remind: false, ask: false },
+    cashFix: { early: 0, delayed: false },
+  };
+}
+
 /** The demo as it looks when the visitor first lands in it: a normal working
  *  morning, with the chats for their problems on top and already busy. */
 export function createDemo(w: World): DemoState {
@@ -199,7 +306,7 @@ export function createDemo(w: World): DemoState {
     }),
     agent(600, { card: q, actions: quoteActions(q), text: "Priced from the last rate, today's cost and how this customer pays." }),
     agent(605, {
-      card: { kind: "alert", tone: "warn", title: `No reply · 2 days`, body: `${c3.name} hasn't opened quote Q-1179 (${money(roundQty((p1.qty[0] + p1.qty[1]) / 2, p1.unit) * p1.rate)}). They usually decide within a day.` },
+      card: { kind: "alert", tone: "warn", title: `No reply · 2 days`, body: `${c3.name} hasn't opened quote Q-1179 (${money(Math.round(roundQty((p1.qty[0] + p1.qty[1]) / 2, p1.unit) * p1.rate * 1.18))} with GST). They usually decide within a day.` },
       actions: [act("nudge", "Send a gentle nudge", { customerId: c3.id }, true), act("mark-lost", "Mark as lost")],
     }),
   ];
@@ -316,6 +423,7 @@ export function createDemo(w: World): DemoState {
   const big = money(Math.round(w.kpi.overdue / w.kpi.overdueCount / 1e5) * 1e5 * 1.5);
   return {
     world: w,
+    desk: seedDesk(w),
     order,
     approvals,
     clock: START_CLOCK,

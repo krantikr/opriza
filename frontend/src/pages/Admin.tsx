@@ -3,7 +3,8 @@
 
    A small two-pane app in the desk's own theme: a left rail to move between
    views and a working area. "Desks" is the onboarding + support view; "Requests"
-   lists design-partner requests captured by the public marketing form.
+   lists prospects from the public site: Request-access forms and live-demo
+   sign-ups (with the business details they entered).
 
    It renders without the trader Shell (the operator belongs to no desk), so it
    carries its own chrome.
@@ -61,6 +62,27 @@ interface Lead {
   note: string | null;
   source: string;
   status: LeadStatus;
+  /** Business details from a demo sign-up; null for the contact form. */
+  details?: LeadDetails | null;
+}
+
+interface LeadDetails {
+  city?: string;
+  industry?: string;
+  industry_label?: string;
+  revenue?: string;
+  team?: string;
+  tally?: string;
+  problems?: string[];
+}
+
+type LeadSource = "demo" | "marketing_site";
+
+const SOURCE_LABEL: Record<string, string> = { demo: "Live demo", marketing_site: "Request access" };
+
+/** "250-500" → "₹250–500 Cr", "500+" → "₹500 Cr+". */
+function revenueLabel(r: string): string {
+  return r.endsWith("+") ? `₹${r.slice(0, -1)} Cr+` : `₹${r.replace("-", "–")} Cr`;
 }
 
 type LeadStatus = "new" | "contacted" | "qualified" | "won" | "lost";
@@ -577,12 +599,13 @@ function RequestsView({
   onStatus: (lead: Lead, status: LeadStatus) => void;
 }) {
   const [filter, setFilter] = useState<LeadStatus | "all">("all");
+  const [source, setSource] = useState<LeadSource | "all">("all");
 
   if (leads === null) return <Loading />;
 
   if (leads.length === 0) {
     return (
-      <Card title="Incoming requests" subtitle="Design-partner requests from the marketing site land here.">
+      <Card title="Incoming requests" subtitle="Request-access forms and live-demo sign-ups land here.">
         <div className="py-10 text-center">
           <div className="mx-auto mb-3 grid size-11 place-items-center rounded-full bg-sunk text-ink-faint">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="size-5">
@@ -592,25 +615,39 @@ function RequestsView({
           </div>
           <p className="text-sm font-medium text-ink">No requests yet</p>
           <p className="mt-1 text-sm text-ink-soft">
-            When someone submits the Request-access form at <span className="text-ink">opriza.vercel.app</span>, it
-            shows here.
+            When someone submits the Request-access form or starts the live demo at{" "}
+            <span className="text-ink">opriza.vercel.app</span>, it shows here.
           </p>
         </div>
       </Card>
     );
   }
 
-  const counts = leads.reduce<Record<string, number>>((acc, l) => {
+  const bySource = source === "all" ? leads : leads.filter((l) => l.source === source);
+  const counts = bySource.reduce<Record<string, number>>((acc, l) => {
     acc[l.status] = (acc[l.status] ?? 0) + 1;
     return acc;
   }, {});
-  const shown = filter === "all" ? leads : leads.filter((l) => l.status === filter);
+  const shown = filter === "all" ? bySource : bySource.filter((l) => l.status === filter);
+  const fromDemo = leads.filter((l) => l.source === "demo").length;
 
   return (
     <div className="space-y-4">
+      {/* Where they came from */}
+      <div className="flex flex-wrap gap-1.5" role="group" aria-label="Source">
+        <FilterChip label="All sources" count={leads.length} active={source === "all"} onClick={() => setSource("all")} />
+        <FilterChip label="Live demo" count={fromDemo} active={source === "demo"} onClick={() => setSource("demo")} />
+        <FilterChip
+          label="Request access"
+          count={leads.length - fromDemo}
+          active={source === "marketing_site"}
+          onClick={() => setSource("marketing_site")}
+        />
+      </div>
+
       {/* Status filter chips */}
-      <div className="flex flex-wrap gap-1.5">
-        <FilterChip label="All" count={leads.length} active={filter === "all"} onClick={() => setFilter("all")} />
+      <div className="flex flex-wrap gap-1.5" role="group" aria-label="Status">
+        <FilterChip label="All" count={bySource.length} active={filter === "all"} onClick={() => setFilter("all")} />
         {LEAD_STATUSES.map((s) => (
           <FilterChip
             key={s}
@@ -631,6 +668,13 @@ function RequestsView({
                   <p className="font-semibold text-ink">{lead.company}</p>
                   <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium capitalize ${STATUS_STYLE[lead.status]}`}>
                     {lead.status}
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                      lead.source === "demo" ? "bg-info-wash text-info-ink" : "bg-sunk text-ink-soft"
+                    }`}
+                  >
+                    {SOURCE_LABEL[lead.source] ?? lead.source}
                   </span>
                   {lead.monthly_enquiries && (
                     <span className="rounded-full bg-sunk px-2 py-0.5 text-[11px] font-medium text-ink-soft">
@@ -653,6 +697,7 @@ function RequestsView({
                   )}
                 </p>
                 {lead.note && <p className="mt-2 max-w-prose text-sm text-ink">{lead.note}</p>}
+                {lead.details && <LeadDetailsView d={lead.details} />}
               </div>
               <div className="flex flex-col items-end gap-2">
                 <p className="text-xs text-ink-faint" title={when(lead.created_at)}>
@@ -678,9 +723,45 @@ function RequestsView({
           </Card>
         ))}
         {shown.length === 0 && (
-          <p className="py-6 text-center text-sm text-ink-soft">No requests in “{filter}”.</p>
+          <p className="py-6 text-center text-sm text-ink-soft">No requests match these filters.</p>
         )}
       </div>
+    </div>
+  );
+}
+
+/** What a demo visitor told us about their business. */
+function LeadDetailsView({ d }: { d: LeadDetails }) {
+  const facts: [string, string | undefined][] = [
+    ["Trade", d.industry_label ?? d.industry],
+    ["City", d.city],
+    ["Yearly sales", d.revenue ? revenueLabel(d.revenue) : undefined],
+    ["Team", d.team],
+    ["Tally", d.tally],
+  ];
+  const shown = facts.filter((f): f is [string, string] => !!f[1]);
+  return (
+    <div className="mt-3 space-y-2">
+      {shown.length > 0 && (
+        <dl className="flex flex-wrap gap-x-5 gap-y-1 text-sm">
+          {shown.map(([k, v]) => (
+            <div key={k} className="flex gap-1.5">
+              <dt className="text-ink-faint">{k}</dt>
+              <dd className="font-medium text-ink">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {d.problems && d.problems.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-ink-faint">Wants help with</span>
+          {d.problems.map((p) => (
+            <span key={p} className="rounded-full bg-attention-wash px-2 py-0.5 text-[11px] font-medium text-attention-ink">
+              {p}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
