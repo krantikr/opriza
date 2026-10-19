@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 
 import Shell from "./components/Shell";
@@ -27,6 +27,10 @@ import Settings from "./pages/Settings";
 import { AcceptInvite, SignIn } from "./pages/SignIn";
 import Stock from "./pages/Stock";
 import Team from "./pages/Team";
+
+/* The public demo is its own small app with its own styles, so it loads only
+   when somebody opens /demo and adds nothing to the desk or marketing bundle. */
+const DemoApp = lazy(() => import("./demo/DemoApp"));
 
 /** Keeps this browser registered for push, and routes foreground messages
  *  to the toast layer.
@@ -168,6 +172,15 @@ export default function App() {
   return (
     <AuthProvider>
       <Routes>
+        {/* The live demo: public, no session, mock data only. */}
+        <Route
+          path="/demo/*"
+          element={
+            <Suspense fallback={<div className="grid min-h-screen place-items-center bg-ground"><Loading /></div>}>
+              <DemoApp />
+            </Suspense>
+          }
+        />
         {/* Auth screens stand alone, outside the marketing frame. */}
         <Route path="/sign-in" element={<SignIn />} />
         <Route path="/accept-invite" element={<AcceptInvite />} />
