@@ -47,3 +47,7 @@ services:
       # frontend is deployed (e.g. https://your-app.vercel.app).
       - key: CORS_ORIGINS
         sync: false
+      # Public address of the frontend. Links in messages sent to customers
+      # (/l/<token>) are built from this, so it must not be localhost.
+      - key: APP_PUBLIC_URL
+        value: https://opriza.vercel.app
