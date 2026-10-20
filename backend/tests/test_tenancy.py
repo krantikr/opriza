@@ -214,7 +214,9 @@ def test_business_routes_take_a_bound_session():
     # `auth` and `admin` legitimately run before a tenant is known, or across
     # tenants; `leads` is the public marketing-site capture, which has no tenant
     # and whose table has no RLS. Every other router serves one desk.
-    allowed = {"auth.py", "admin.py", "leads.py", "router.py", "__init__.py"}
+    # `links` is the public customer-link surface: it binds to the link's own
+    # desk (found by token hash) before reading anything, see api/v1/links.py.
+    allowed = {"auth.py", "admin.py", "leads.py", "links.py", "router.py", "__init__.py"}
 
     offenders: list[str] = []
     for path in sorted(routes.glob("*.py")):

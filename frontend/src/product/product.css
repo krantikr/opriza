@@ -1,0 +1,129 @@
+/* ===========================================================================
+   Oprisa product (/app and /l/:token): the few things the live desk adds on
+   top of the demo's styles (demo.css + desk/desk.css). Same tokens, same
+   `.odemo` scope, so light and dark both work.
+   =========================================================================== */
+
+/* --- shell ---------------------------------------------------------------- */
+.odemo .op-org { margin-top: auto; padding: 12px 14px; border-top: 1px solid rgb(255 255 255 / 0.08); display: flex; flex-direction: column; gap: 2px; }
+.odemo .op-org b { color: #f4ece2; font: 700 13px var(--head); }
+.odemo .op-org span { color: #b3a79a; font-size: 11.5px; }
+
+.odemo .op-brain { font: 800 10.5px var(--head); letter-spacing: 0.04em; text-transform: uppercase; border-radius: 8px; padding: 3px 8px; background: var(--neutral-wash); color: var(--muted); }
+.odemo .op-brain.llm { background: var(--info-wash); color: var(--info); }
+
+.odemo .op-menu-wrap { position: relative; }
+.odemo .op-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 220px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-up); padding: 6px; display: flex; flex-direction: column; }
+.odemo .op-menu .who { padding: 8px 10px 10px; border-bottom: 1px solid var(--line-soft); margin-bottom: 4px; display: flex; flex-direction: column; }
+.odemo .op-menu .who span { color: var(--muted); font-size: 12px; }
+.odemo .op-menu button { text-align: left; border: 0; background: transparent; color: var(--ink); padding: 9px 10px; border-radius: 8px; font: 600 13.5px var(--body); }
+.odemo .op-menu button:hover { background: var(--sunk); }
+
+/* --- forms ---------------------------------------------------------------- */
+.odemo .op-form { display: flex; flex-direction: column; gap: 12px; }
+.odemo .op-field { display: flex; flex-direction: column; gap: 5px; font: 700 12.5px var(--head); color: var(--muted); }
+.odemo .op-field input, .odemo .op-field textarea, .odemo .op-field select,
+.odemo .op-sim input, .odemo .op-rule-in input, .odemo .op-inline-form input, .odemo .op-inline-form textarea {
+  border: 1px solid var(--line); border-radius: 9px; background: var(--card); color: var(--ink); padding: 8px 10px; font: 500 14px var(--body); min-height: 36px;
+}
+.odemo .op-field textarea { min-height: 96px; resize: vertical; }
+.odemo .op-field input:focus, .odemo .op-field textarea:focus, .odemo .op-sim input:focus, .odemo .op-rule-in input:focus,
+.odemo .op-inline-form input:focus, .odemo .op-inline-form textarea:focus { outline: none; border-color: var(--saffron); box-shadow: 0 0 0 3px rgb(232 163 61 / 0.18); }
+.odemo .op-suggest { list-style: none; margin: 4px 0 0; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); box-shadow: var(--shadow); }
+.odemo .op-suggest button { width: 100%; text-align: left; border: 0; background: transparent; color: var(--ink); padding: 7px 9px; border-radius: 7px; font: 600 13.5px var(--body); display: flex; justify-content: space-between; gap: 8px; }
+.odemo .op-suggest button:hover { background: var(--sunk); }
+.odemo .op-suggest small { color: var(--muted); font-weight: 500; }
+.odemo .op-picked { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px; background: var(--sunk); color: var(--ink); font-size: 14px; }
+.odemo .op-picked small { color: var(--muted); }
+.odemo .op-picked .dk-link { margin-left: auto; }
+.odemo .op-inline-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding: 12px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--sunk); margin: 10px 0; }
+.odemo .op-inline-form label { display: flex; flex-direction: column; gap: 4px; font: 700 12px var(--head); color: var(--muted); }
+.odemo .op-rate { width: 96px; text-align: right; border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--ink); padding: 4px 7px; font: 600 13.5px var(--body); font-variant-numeric: tabular-nums; }
+.odemo .op-rate:focus { outline: none; border-color: var(--saffron); }
+.odemo .op-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.odemo .op-row > input { flex: 1; min-width: 120px; }
+.odemo .op-row-acts { display: inline-flex; gap: 6px; align-items: center; }
+.odemo .op-rule-in { display: flex; align-items: center; gap: 6px; }
+.odemo .op-rule-in input { width: 120px; text-align: right; }
+.odemo .op-pad { padding: 12px 16px; border-bottom: 1px solid var(--line-soft); }
+
+/* --- screens -------------------------------------------------------------- */
+.odemo .op-brief-text { margin: 0 0 10px; color: var(--ink); font-size: 14.5px; line-height: 1.5; }
+.odemo .op-quote-text { margin: 6px 0 12px; padding: 10px 12px; border-left: 3px solid var(--saffron); background: var(--sunk); border-radius: 0 10px 10px 0; color: var(--ink); font-size: 14px; white-space: pre-wrap; }
+.odemo .op-key-close { color: var(--muted); font-size: 12px; }
+.odemo .op-spark { width: 100%; height: 120px; display: block; }
+.odemo .op-agents-today li { align-items: center; }
+.odemo .op-grades { display: flex; flex-direction: column; gap: 10px; }
+.odemo .op-grades > div { display: grid; grid-template-columns: 32px 1fr 48px; align-items: center; gap: 10px; }
+.odemo .op-grades i { display: block; height: 12px; border-radius: 6px; background: var(--saffron); min-width: 4px; }
+.odemo .op-grades .g-A i { background: var(--good); }
+.odemo .op-grades .g-C i { background: var(--warn); }
+.odemo .op-grades .g-D i { background: var(--bad); }
+.odemo .op-grades b { text-align: right; font-variant-numeric: tabular-nums; }
+.odemo .op-agent-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.odemo .op-agent-foot .muted { margin-right: auto; font-size: 12.5px; }
+.odemo .op-msg { max-width: 420px; white-space: pre-wrap; font-size: 12.5px; color: var(--ink); }
+.odemo .op-sim { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }
+.odemo .op-sim > div { display: flex; flex-direction: column; gap: 8px; position: relative; }
+.odemo .op-sim h3 { margin: 0; font: 800 14px var(--head); color: var(--ink); }
+.odemo .op-sim input[type="search"] { width: 100%; }
+.odemo .op-center { text-align: center; }
+.odemo .dk-pill.bad { background: var(--bad-wash); color: var(--bad); }
+.odemo .dk-pill.warn { background: var(--warn-wash); color: var(--warn); }
+.odemo .dk-pill.info { background: var(--info-wash); color: var(--info); }
+.odemo .desk .btn-ghost-d, .odemo .op-phone .btn-ghost-d { background: transparent; color: var(--muted); border: 1.5px solid transparent; }
+.odemo .desk .btn-ghost-d:hover, .odemo .op-phone .btn-ghost-d:hover { color: var(--ink); background: var(--sunk); }
+.odemo .dk-ig { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+
+/* --- loading / no desk ---------------------------------------------------- */
+.odemo .op-full { min-height: 100dvh; display: grid; place-items: center; background: var(--bg); color: var(--ink); padding: 24px; text-align: center; }
+.odemo .op-full .box { max-width: 440px; display: flex; flex-direction: column; gap: 12px; align-items: center; }
+.odemo .op-full h1 { font: 800 22px var(--display); margin: 0; }
+.odemo .op-full p { color: var(--muted); margin: 0; }
+
+/* --- phone ---------------------------------------------------------------- */
+.odemo .op-phone button { font-family: inherit; cursor: pointer; }
+.odemo .op-phone .rail .me { border: 0; }
+.odemo .op-phone .btn-xs { min-height: 34px; padding: 6px 11px; font-size: 13px; border-radius: 8px; white-space: nowrap; }
+.odemo .op-phone .neg { color: var(--bad); }
+.odemo .op-phone .pos { color: var(--good); }
+.odemo .op-phone select, .odemo .op-phone input[type="search"] { height: 40px; border: 1px solid var(--line); border-radius: 9px; background: var(--card); color: var(--ink); padding: 0 10px; font: 500 14px var(--body); max-width: 100%; }
+.odemo .op-phone-page { padding: 16px 16px 90px; max-width: 900px; margin: 0 auto; }
+.odemo .op-phone-page .dk-table { display: block; overflow-x: auto; }
+.odemo .op-phone-page .dk-grid2, .odemo .op-phone-page .dk-kgrid { grid-template-columns: 1fr !important; }
+.odemo .op-phone .pane-conv .dk-chat-b { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.odemo .op-phone .dk-drawer { width: 100%; max-width: 560px; }
+.odemo .op-signout { margin-top: 16px; }
+@media (min-width: 900px) { .odemo .op-phone-page { padding-bottom: 24px; } }
+
+/* --- public link page ----------------------------------------------------- */
+.odemo .op-link { min-height: 100dvh; background: #efe7dc; display: flex; justify-content: center; }
+.odemo .op-link .phone-screen { width: 100%; max-width: 480px; border-radius: 0; max-height: none; min-height: 100dvh; }
+@media (min-width: 520px) { .odemo .op-link { padding: 24px 0; } .odemo .op-link .phone-screen { border-radius: 24px; min-height: 0; box-shadow: var(--shadow-up); } }
+.odemo .op-link .pbody { padding: 22px 18px 28px; }
+.odemo .op-link .ch { display: flex; justify-content: space-between; align-items: center; gap: 8px; font: 800 15px var(--head); margin-bottom: 6px; }
+.odemo .op-link .lines { display: flex; flex-direction: column; }
+.odemo .op-link .ln { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid #f1eae1; font-size: 14px; }
+.odemo .op-link .ln.total { border-bottom: 0; font-weight: 800; }
+.odemo .op-link .pbtn:disabled { opacity: 0.55; }
+.odemo .op-link .pbtn2 { flex: 1; }
+.odemo .op-link .field { display: flex; flex-direction: column; gap: 6px; }
+.odemo .op-link .field label { font-weight: 700; font-size: 14px; }
+.odemo .op-link-name { font: 800 20px var(--display); }
+.odemo .op-link-total { font-family: var(--display); }
+.odemo .op-link-form { display: flex; flex-direction: column; gap: 12px; }
+.odemo .op-link-err { background: #fbe7e4; color: #9b2c22; border-radius: 12px; padding: 10px 12px; font-size: 14px; }
+.odemo .op-opts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Agents page: four small numbers per agent. */
+.odemo .op-agent-m { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; align-items: start; margin-top: auto; }
+.odemo .op-agent-m > div { display: flex; flex-direction: column; gap: 1px; }
+.odemo .op-agent-m span { font-size: 11.5px; line-height: 1.25; }
+.odemo .dk-agent .op-agent-foot { width: 100%; box-sizing: border-box; margin-top: 0; }
+
+/* Phone: list-and-preview screens stack, the open item first. */
+.odemo .op-phone-page .dk-split { grid-template-columns: minmax(0, 1fr); }
+.odemo .op-phone-page .dk-split > :not(.dk-split-l) { order: -1; }
+.odemo .op-phone-page .dk-split-l { position: static; max-height: none; }
+.odemo .op-phone-page .dk-preview { padding: 16px; }
+.odemo .op-phone-page .dk-head { flex-wrap: wrap; }

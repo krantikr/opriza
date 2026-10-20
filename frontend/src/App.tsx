@@ -1,5 +1,7 @@
-import { Suspense, lazy, useEffect } from "react";
-import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { Suspense, lazy, useEffect, type ReactNode } from "react";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+
+import { api } from "./api/client";
 
 import Shell from "./components/Shell";
 import { ToastProvider, useToast } from "./components/Toasts";
@@ -31,6 +33,34 @@ import Team from "./pages/Team";
 /* The public demo is its own small app with its own styles, so it loads only
    when somebody opens /demo and adds nothing to the desk or marketing bundle. */
 const DemoApp = lazy(() => import("./demo/DemoApp"));
+/* The Oprisa product (agents desk + chat) and the public customer link page,
+   loaded the same way. */
+const ProductApp = lazy(() => import("./product/ProductApp"));
+const LinkPage = lazy(() => import("./product/LinkPage"));
+
+function Lazy({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<div className="grid min-h-screen place-items-center bg-ground"><Loading /></div>}>{children}</Suspense>;
+}
+
+/** A desk whose books are loaded into the agents' knowledge base opens on the
+ *  Oprisa product, not the older screens. Checked once per page load, on "/"
+ *  only, so the older screens stay reachable by their own addresses. */
+let oprisaChecked = false;
+function ToOprisa() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  useEffect(() => {
+    if (oprisaChecked || location.pathname !== "/") return;
+    oprisaChecked = true;
+    api
+      .get<{ business: unknown }>("/app/me")
+      .then((me) => {
+        if (me.business) navigate("/app", { replace: true });
+      })
+      .catch(() => {});
+  }, [location.pathname, navigate]);
+  return null;
+}
 
 /** Keeps this browser registered for push, and routes foreground messages
  *  to the toast layer.
@@ -110,6 +140,7 @@ function Desk() {
   return (
     <ToastProvider onOpenLink={navigate}>
       <PushBridge />
+      <ToOprisa />
       <Shell>
         <Routes>
           <Route path="/" element={<Dashboard />} />
@@ -181,6 +212,10 @@ export default function App() {
             </Suspense>
           }
         />
+        {/* The Oprisa product: signed in, agents + chat. */}
+        <Route path="/app/*" element={<Lazy><ProductApp /></Lazy>} />
+        {/* What a customer or supplier opens from a message: public, the token is the key. */}
+        <Route path="/l/:token" element={<Lazy><LinkPage /></Lazy>} />
         {/* Auth screens stand alone, outside the marketing frame. */}
         <Route path="/sign-in" element={<SignIn />} />
         <Route path="/accept-invite" element={<AcceptInvite />} />

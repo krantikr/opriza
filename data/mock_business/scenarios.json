@@ -1,0 +1,751 @@
+{
+  "today": "2026-10-19",
+  "note": "Planted situations and the result each agent should reach. check_sql runs against the loaded kb schema.",
+  "scenarios": [
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "cold_quote",
+      "agent": "sales",
+      "title": "A big quote has gone quiet",
+      "situation": "Q-1333 to Om Sai Structures (2584199 with tax) was sent three days ago and has not been opened.",
+      "expect": {
+        "quote": "Q-1333",
+        "action": "send_nudge",
+        "status": "sent",
+        "opened": false
+      },
+      "check_sql": "select number, status, opened_at is null as unopened from kb.quotes where organisation_id=1 and number='Q-1333'"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "below_margin_quote",
+      "agent": "sales",
+      "title": "A quote below the margin floor waits for the owner",
+      "situation": "Q-1334 is priced at 2.1% margin; the floor is 3.0%.",
+      "expect": {
+        "quote": "Q-1334",
+        "status": "pending_approval",
+        "approval_waiting": true
+      },
+      "check_sql": "select q.number, q.status, a.status as approval from kb.quotes q join kb.approvals a on a.payload->>'quote'=q.number where q.organisation_id=1 and q.number='Q-1334'"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "missed_promise",
+      "agent": "collect",
+      "title": "A payment promise was missed",
+      "situation": "Arihant Fabricators promised 8559911 for 2026-10-17, and nothing has come in.",
+      "expect": {
+        "party": "Arihant Fabricators",
+        "promise_status": "missed",
+        "action": "call_today",
+        "task_kind": "missed_promise"
+      },
+      "check_sql": "select p.name, pr.status, pr.due_date from kb.promises pr join kb.parties p on p.id=pr.party_id where pr.id=20"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "stock_out",
+      "agent": "stock",
+      "title": "The fastest item is about to run out",
+      "situation": "TMT 12mm Fe500D has only a few days of stock left, no purchase order is open, and four supplier rates came in this morning.",
+      "expect": {
+        "item": "TMT 12mm Fe500D",
+        "status": "reorder",
+        "days_left_below": 12,
+        "best_supplier": "Tata Tiscon distributor",
+        "best_rate": 50558.53,
+        "action": "draft_po",
+        "needs_approval_above": 4500000.0
+      },
+      "check_sql": "select i.name, m.status, m.days_left from kb.item_metrics m join kb.items i on i.id=m.item_id where m.item_id=3"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "rate_drop",
+      "agent": "stock",
+      "title": "A supplier is cheaper than our last buy",
+      "situation": "Tata Tiscon distributor quoted 50558.53 for TMT 12mm Fe500D, 3% below our last purchase at 52122.20.",
+      "expect": {
+        "supplier": "Tata Tiscon distributor",
+        "rate": 50558.53,
+        "last_purchase_rate": 52122.2,
+        "saving_pct": 3.0
+      },
+      "check_sql": "select p.name, sq.rate from kb.supplier_quotes sq join kb.parties p on p.id=sq.supplier_id where sq.rfq_id=15 order by sq.rate limit 1"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "slipping_customer",
+      "agent": "sales",
+      "title": "A regular customer has gone quiet",
+      "situation": "Jai Hind Engineering ordered every 6.4 days and has not ordered since 2026-09-08.",
+      "expect": {
+        "party": "Jai Hind Engineering",
+        "trend": "down",
+        "action": "win_back_call"
+      },
+      "check_sql": "select p.name, cp.trend, cp.last_order_on from kb.customer_profiles cp join kb.parties p on p.id=cp.party_id where cp.party_id=46"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "grade_drop",
+      "agent": "score",
+      "title": "A good customer has started paying late",
+      "situation": "Arihant Fabricators paid within about a week of the due date for months; bills from the last ~80 days are running over a month late (oldest now 33 days overdue).",
+      "expect": {
+        "party": "Arihant Fabricators",
+        "previous_grade": "B",
+        "grade": "C",
+        "action": "propose_lower_limit",
+        "approval_waiting": true
+      },
+      "check_sql": "select p.name, cp.previous_grade, cp.grade, cp.avg_days_late from kb.customer_profiles cp join kb.parties p on p.id=cp.party_id where cp.party_id=122"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "idle_stock",
+      "agent": "stock",
+      "title": "Money stuck in stock nobody buys",
+      "situation": "MS Plate 6mm (old stock): no sale for 289 days, 1431928 at cost.",
+      "expect": {
+        "item": "MS Plate 6mm (old stock)",
+        "status": "idle",
+        "past_buyers": [
+          "Dwarka Industries",
+          "Jagdamba Constructions",
+          "Madhav Fabricators",
+          "Mangalam Developers",
+          "Parshwa Engineering",
+          "Raj Developers",
+          "Shiv Shakti Infra"
+        ],
+        "action": "offer_to_past_buyers"
+      },
+      "check_sql": "select i.name, m.status, m.idle_days from kb.item_metrics m join kb.items i on i.id=m.item_id where m.item_id=18"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "cash_gap",
+      "agent": "cash",
+      "title": "Cash runs short three weeks out",
+      "situation": "A 82121071 bill to JSW Steel - Pune depot (bulk buy) falls due 2026-11-04; the bank balance of 32600000 covers weeks 1-2 but not week 3.",
+      "expect": {
+        "short_week_start": "2026-11-02",
+        "short_week_number": 3,
+        "closing_balance": -7742460.04,
+        "big_payment": "JSW Steel - Pune depot",
+        "action": "ask_early_payment_or_move_supplier_payment"
+      },
+      "check_sql": "select week_start, closing_balance from kb.cash_forecast where organisation_id=1 and closing_balance < 0 order by week_start limit 1"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "duplicate_ledger",
+      "agent": "collect",
+      "title": "One customer, two ledgers",
+      "situation": "Royal Industrie and Royal Industries share a GSTIN and phone; a bill on the second one is going unchased.",
+      "expect": {
+        "original": "Royal Industries",
+        "duplicate": "Royal Industrie",
+        "same_gstin": true,
+        "action": "flag_for_accounts"
+      },
+      "check_sql": "select count(*) from kb.parties where organisation_id=1 and gstin='27SDVHX9876E1Z7'"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "ask_top_debtor",
+      "agent": "ask",
+      "title": "Who owes me the most?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "party": "Om Sai Structures",
+        "amount": 58599909.66
+      },
+      "check_sql": "select p.name, sum(b.pending_amount) from kb.bills b join kb.parties p on p.id=b.party_id where b.organisation_id=1 and b.direction='receivable' group by p.name order by 2 desc limit 1"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "ask_total_overdue",
+      "agent": "ask",
+      "title": "How much is overdue right now?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "amount": 101217387.35
+      },
+      "check_sql": "select sum(pending_amount) from kb.overdue_bills where organisation_id=1"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "ask_last_month_sales",
+      "agent": "ask",
+      "title": "What were my sales in September?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "amount": 165311146.97,
+        "before_tax": true
+      },
+      "check_sql": "select sum(amount - tax_amount) from kb.vouchers where organisation_id=1 and voucher_type='sales' and date >= '2026-09-01' and date < '2026-10-01'"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "ask_running_out",
+      "agent": "ask",
+      "title": "Which items will run out this week?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "items": [
+          "TMT 12mm Fe500D",
+          "TMT 10mm Fe500D"
+        ]
+      },
+      "check_sql": "select i.name from kb.item_metrics m join kb.items i on i.id=m.item_id where m.organisation_id=1 and m.days_left < 7 order by m.days_left"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "ask_payables_week",
+      "agent": "ask",
+      "title": "How much do I have to pay suppliers this week?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "amount": 38816198.64
+      },
+      "check_sql": "select coalesce(sum(pending_amount), 0) from kb.bills where organisation_id=1 and direction='payable' and pending_amount > 1 and due_date < '2026-10-26'"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "ask_last_rate",
+      "agent": "ask",
+      "title": "What rate did Om Sai Structures pay for TMT 10mm Fe500D last time?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "rate": 54552.75,
+        "date": "2026-09-30"
+      },
+      "check_sql": "select rate, date from kb.last_sale_rate where party_id=70 and item_id=2"
+    },
+    {
+      "organisation_id": 1,
+      "business": "Shree Balaji Steels",
+      "id": "ask_grade_mix",
+      "agent": "ask",
+      "title": "How many of my customers are grade D?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "count": 9
+      },
+      "check_sql": "select count(*) from kb.customer_profiles where organisation_id=1 and grade='D' and sales_12m > 0"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "cold_quote",
+      "agent": "sales",
+      "title": "A big quote has gone quiet",
+      "situation": "Q-1382 to Balaji Realty (731222 with tax) was sent three days ago and has not been opened.",
+      "expect": {
+        "quote": "Q-1382",
+        "action": "send_nudge",
+        "status": "sent",
+        "opened": false
+      },
+      "check_sql": "select number, status, opened_at is null as unopened from kb.quotes where organisation_id=2 and number='Q-1382'"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "below_margin_quote",
+      "agent": "sales",
+      "title": "A quote below the margin floor waits for the owner",
+      "situation": "Q-1383 is priced at 2.1% margin; the floor is 3.0%.",
+      "expect": {
+        "quote": "Q-1383",
+        "status": "pending_approval",
+        "approval_waiting": true
+      },
+      "check_sql": "select q.number, q.status, a.status as approval from kb.quotes q join kb.approvals a on a.payload->>'quote'=q.number where q.organisation_id=2 and q.number='Q-1383'"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "missed_promise",
+      "agent": "collect",
+      "title": "A payment promise was missed",
+      "situation": "Jay Ambe Constructions promised 1156464 for 2026-10-17, and nothing has come in.",
+      "expect": {
+        "party": "Jay Ambe Constructions",
+        "promise_status": "missed",
+        "action": "call_today",
+        "task_kind": "missed_promise"
+      },
+      "check_sql": "select p.name, pr.status, pr.due_date from kb.promises pr join kb.parties p on p.id=pr.party_id where pr.id=90"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "stock_out",
+      "agent": "stock",
+      "title": "The fastest item is about to run out",
+      "situation": "OPC 53 Cement has only a few days of stock left, no purchase order is open, and four supplier rates came in this morning.",
+      "expect": {
+        "item": "OPC 53 Cement",
+        "status": "reorder",
+        "days_left_below": 12,
+        "best_supplier": "Pidilite distributor",
+        "best_rate": 355.5,
+        "action": "draft_po",
+        "needs_approval_above": 2200000.0
+      },
+      "check_sql": "select i.name, m.status, m.days_left from kb.item_metrics m join kb.items i on i.id=m.item_id where m.item_id=19"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "rate_drop",
+      "agent": "stock",
+      "title": "A supplier is cheaper than our last buy",
+      "situation": "Pidilite distributor quoted 355.50 for OPC 53 Cement, 3% below our last purchase at 366.49.",
+      "expect": {
+        "supplier": "Pidilite distributor",
+        "rate": 355.5,
+        "last_purchase_rate": 366.49,
+        "saving_pct": 3.0
+      },
+      "check_sql": "select p.name, sq.rate from kb.supplier_quotes sq join kb.parties p on p.id=sq.supplier_id where sq.rfq_id=30 order by sq.rate limit 1"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "slipping_customer",
+      "agent": "sales",
+      "title": "A regular customer has gone quiet",
+      "situation": "Shubham Builders ordered every 2.3 days and has not ordered since 2026-09-08.",
+      "expect": {
+        "party": "Shubham Builders",
+        "trend": "down",
+        "action": "win_back_call"
+      },
+      "check_sql": "select p.name, cp.trend, cp.last_order_on from kb.customer_profiles cp join kb.parties p on p.id=cp.party_id where cp.party_id=177"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "grade_drop",
+      "agent": "score",
+      "title": "A good customer has started paying late",
+      "situation": "Saraswati Infra paid within about a week of the due date for months; bills from the last ~80 days are running over a month late (oldest now 40 days overdue).",
+      "expect": {
+        "party": "Saraswati Infra",
+        "previous_grade": "B",
+        "grade": "C",
+        "action": "propose_lower_limit",
+        "approval_waiting": true
+      },
+      "check_sql": "select p.name, cp.previous_grade, cp.grade, cp.avg_days_late from kb.customer_profiles cp join kb.parties p on p.id=cp.party_id where cp.party_id=180"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "idle_stock",
+      "agent": "stock",
+      "title": "Money stuck in stock nobody buys",
+      "situation": "Epoxy Grout 1kg: no sale for 284 days, 301455 at cost.",
+      "expect": {
+        "item": "Epoxy Grout 1kg",
+        "status": "idle",
+        "past_buyers": [
+          "Kalyan Developers",
+          "Prime Infra",
+          "Siddhi Realty",
+          "Tulsi Contractors",
+          "Venkatesh Contractors"
+        ],
+        "action": "offer_to_past_buyers"
+      },
+      "check_sql": "select i.name, m.status, m.idle_days from kb.item_metrics m join kb.items i on i.id=m.item_id where m.item_id=34"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "cash_gap",
+      "agent": "cash",
+      "title": "Cash runs short three weeks out",
+      "situation": "A 44546130 bill to UltraTech depot Naroda (bulk buy) falls due 2026-11-04; the bank balance of 11000000 covers weeks 1-2 but not week 3.",
+      "expect": {
+        "short_week_start": "2026-11-02",
+        "short_week_number": 3,
+        "closing_balance": -11076270.46,
+        "big_payment": "UltraTech depot Naroda",
+        "action": "ask_early_payment_or_move_supplier_payment"
+      },
+      "check_sql": "select week_start, closing_balance from kb.cash_forecast where organisation_id=2 and closing_balance < 0 order by week_start limit 1"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "duplicate_ledger",
+      "agent": "collect",
+      "title": "One customer, two ledgers",
+      "situation": "Yash Builder and Yash Builders share a GSTIN and phone; a bill on the second one is going unchased.",
+      "expect": {
+        "original": "Yash Builders",
+        "duplicate": "Yash Builder",
+        "same_gstin": true,
+        "action": "flag_for_accounts"
+      },
+      "check_sql": "select count(*) from kb.parties where organisation_id=2 and gstin='24YMYUQ5654C1Z3'"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "ask_top_debtor",
+      "agent": "ask",
+      "title": "Who owes me the most?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "party": "Balaji Realty",
+        "amount": 21808293.54
+      },
+      "check_sql": "select p.name, sum(b.pending_amount) from kb.bills b join kb.parties p on p.id=b.party_id where b.organisation_id=2 and b.direction='receivable' group by p.name order by 2 desc limit 1"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "ask_total_overdue",
+      "agent": "ask",
+      "title": "How much is overdue right now?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "amount": 59999694.08
+      },
+      "check_sql": "select sum(pending_amount) from kb.overdue_bills where organisation_id=2"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "ask_last_month_sales",
+      "agent": "ask",
+      "title": "What were my sales in September?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "amount": 80330512.99,
+        "before_tax": true
+      },
+      "check_sql": "select sum(amount - tax_amount) from kb.vouchers where organisation_id=2 and voucher_type='sales' and date >= '2026-09-01' and date < '2026-10-01'"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "ask_running_out",
+      "agent": "ask",
+      "title": "Which items will run out this week?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "items": []
+      },
+      "check_sql": "select i.name from kb.item_metrics m join kb.items i on i.id=m.item_id where m.organisation_id=2 and m.days_left < 7 order by m.days_left"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "ask_payables_week",
+      "agent": "ask",
+      "title": "How much do I have to pay suppliers this week?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "amount": 4322070.29
+      },
+      "check_sql": "select coalesce(sum(pending_amount), 0) from kb.bills where organisation_id=2 and direction='payable' and pending_amount > 1 and due_date < '2026-10-26'"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "ask_last_rate",
+      "agent": "ask",
+      "title": "What rate did Balaji Realty pay for AAC Block 600x200x150 last time?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "rate": 62.23,
+        "date": "2026-10-17"
+      },
+      "check_sql": "select rate, date from kb.last_sale_rate where party_id=183 and item_id=21"
+    },
+    {
+      "organisation_id": 2,
+      "business": "Patel Build Mart",
+      "id": "ask_grade_mix",
+      "agent": "ask",
+      "title": "How many of my customers are grade D?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "count": 25
+      },
+      "check_sql": "select count(*) from kb.customer_profiles where organisation_id=2 and grade='D' and sales_12m > 0"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "cold_quote",
+      "agent": "sales",
+      "title": "A big quote has gone quiet",
+      "situation": "Q-1275 to Khodiyar Clinic (24934 with tax) was sent three days ago and has not been opened.",
+      "expect": {
+        "quote": "Q-1275",
+        "action": "send_nudge",
+        "status": "sent",
+        "opened": false
+      },
+      "check_sql": "select number, status, opened_at is null as unopened from kb.quotes where organisation_id=3 and number='Q-1275'"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "below_margin_quote",
+      "agent": "sales",
+      "title": "A quote below the margin floor waits for the owner",
+      "situation": "Q-1276 is priced at 2.1% margin; the floor is 3.0%.",
+      "expect": {
+        "quote": "Q-1276",
+        "status": "pending_approval",
+        "approval_waiting": true
+      },
+      "check_sql": "select q.number, q.status, a.status as approval from kb.quotes q join kb.approvals a on a.payload->>'quote'=q.number where q.organisation_id=3 and q.number='Q-1276'"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "missed_promise",
+      "agent": "collect",
+      "title": "A payment promise was missed",
+      "situation": "Jay Ambe Chemists promised 174212 for 2026-10-17, and nothing has come in.",
+      "expect": {
+        "party": "Jay Ambe Chemists",
+        "promise_status": "missed",
+        "action": "call_today",
+        "task_kind": "missed_promise"
+      },
+      "check_sql": "select p.name, pr.status, pr.due_date from kb.promises pr join kb.parties p on p.id=pr.party_id where pr.id=484"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "stock_out",
+      "agent": "stock",
+      "title": "The fastest item is about to run out",
+      "situation": "Paracetamol 650 (10x15) has only a few days of stock left, no purchase order is open, and four supplier rates came in this morning.",
+      "expect": {
+        "item": "Paracetamol 650 (10x15)",
+        "status": "reorder",
+        "days_left_below": 12,
+        "best_supplier": "Cipla C&F Indore",
+        "best_rate": 238.3,
+        "action": "draft_po",
+        "needs_approval_above": 1500000.0
+      },
+      "check_sql": "select i.name, m.status, m.days_left from kb.item_metrics m join kb.items i on i.id=m.item_id where m.item_id=35"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "rate_drop",
+      "agent": "stock",
+      "title": "A supplier is cheaper than our last buy",
+      "situation": "Cipla C&F Indore quoted 238.30 for Paracetamol 650 (10x15), 3% below our last purchase at 245.67.",
+      "expect": {
+        "supplier": "Cipla C&F Indore",
+        "rate": 238.3,
+        "last_purchase_rate": 245.67,
+        "saving_pct": 3.0
+      },
+      "check_sql": "select p.name, sq.rate from kb.supplier_quotes sq join kb.parties p on p.id=sq.supplier_id where sq.rfq_id=42 order by sq.rate limit 1"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "slipping_customer",
+      "agent": "sales",
+      "title": "A regular customer has gone quiet",
+      "situation": "Bhagwati Hospital ordered every 1.4 days and has not ordered since 2026-09-08.",
+      "expect": {
+        "party": "Bhagwati Hospital",
+        "trend": "down",
+        "action": "win_back_call"
+      },
+      "check_sql": "select p.name, cp.trend, cp.last_order_on from kb.customer_profiles cp join kb.parties p on p.id=cp.party_id where cp.party_id=448"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "grade_drop",
+      "agent": "score",
+      "title": "A good customer has started paying late",
+      "situation": "Samarth Pharmacy paid within about a week of the due date for months; bills from the last ~80 days are running over a month late (oldest now 40 days overdue).",
+      "expect": {
+        "party": "Samarth Pharmacy",
+        "previous_grade": "B",
+        "grade": "C",
+        "action": "propose_lower_limit",
+        "approval_waiting": true
+      },
+      "check_sql": "select p.name, cp.previous_grade, cp.grade, cp.avg_days_late from kb.customer_profiles cp join kb.parties p on p.id=cp.party_id where cp.party_id=476"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "idle_stock",
+      "agent": "stock",
+      "title": "Money stuck in stock nobody buys",
+      "situation": "N95 Masks (x50): no sale for 296 days, 117986 at cost.",
+      "expect": {
+        "item": "N95 Masks (x50)",
+        "status": "idle",
+        "past_buyers": [
+          "Hanuman Chemists",
+          "Krishna Chemists",
+          "Lakshya Medicos",
+          "Shiv Shakti Nursing Home",
+          "Siddhi Medicos",
+          "Vardhman Clinic",
+          "Vinayak Chemists"
+        ],
+        "action": "offer_to_past_buyers"
+      },
+      "check_sql": "select i.name, m.status, m.idle_days from kb.item_metrics m join kb.items i on i.id=m.item_id where m.item_id=52"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "cash_gap",
+      "agent": "cash",
+      "title": "Cash runs short three weeks out",
+      "situation": "A 26577327 bill to Cipla C&F Indore (bulk buy) falls due 2026-11-04; the bank balance of 7900000 covers weeks 1-2 but not week 3.",
+      "expect": {
+        "short_week_start": "2026-11-02",
+        "short_week_number": 3,
+        "closing_balance": -5582101.64,
+        "big_payment": "Cipla C&F Indore",
+        "action": "ask_early_payment_or_move_supplier_payment"
+      },
+      "check_sql": "select week_start, closing_balance from kb.cash_forecast where organisation_id=3 and closing_balance < 0 order by week_start limit 1"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "duplicate_ledger",
+      "agent": "collect",
+      "title": "One customer, two ledgers",
+      "situation": "Kamdhenu Clinics and Kamdhenu Clinic share a GSTIN and phone; a bill on the second one is going unchased.",
+      "expect": {
+        "original": "Kamdhenu Clinic",
+        "duplicate": "Kamdhenu Clinics",
+        "same_gstin": true,
+        "action": "flag_for_accounts"
+      },
+      "check_sql": "select count(*) from kb.parties where organisation_id=3 and gstin='23WMRGR7078D1Z9'"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "ask_top_debtor",
+      "agent": "ask",
+      "title": "Who owes me the most?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "party": "Samarth Pharmacy",
+        "amount": 1838556.97
+      },
+      "check_sql": "select p.name, sum(b.pending_amount) from kb.bills b join kb.parties p on p.id=b.party_id where b.organisation_id=3 and b.direction='receivable' group by p.name order by 2 desc limit 1"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "ask_total_overdue",
+      "agent": "ask",
+      "title": "How much is overdue right now?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "amount": 29193987.5
+      },
+      "check_sql": "select sum(pending_amount) from kb.overdue_bills where organisation_id=3"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "ask_last_month_sales",
+      "agent": "ask",
+      "title": "What were my sales in September?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "amount": 45757510.64,
+        "before_tax": true
+      },
+      "check_sql": "select sum(amount - tax_amount) from kb.vouchers where organisation_id=3 and voucher_type='sales' and date >= '2026-09-01' and date < '2026-10-01'"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "ask_running_out",
+      "agent": "ask",
+      "title": "Which items will run out this week?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "items": []
+      },
+      "check_sql": "select i.name from kb.item_metrics m join kb.items i on i.id=m.item_id where m.organisation_id=3 and m.days_left < 7 order by m.days_left"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "ask_payables_week",
+      "agent": "ask",
+      "title": "How much do I have to pay suppliers this week?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "amount": 11332914.59
+      },
+      "check_sql": "select coalesce(sum(pending_amount), 0) from kb.bills where organisation_id=3 and direction='payable' and pending_amount > 1 and due_date < '2026-10-26'"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "ask_last_rate",
+      "agent": "ask",
+      "title": "What rate did Laxmi Nursing Home pay for Amoxicillin 500 (10x10) last time?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "rate": 698.86,
+        "date": "2026-10-17"
+      },
+      "check_sql": "select rate, date from kb.last_sale_rate where party_id=600 and item_id=36"
+    },
+    {
+      "organisation_id": 3,
+      "business": "Sai Pharma Distributors",
+      "id": "ask_grade_mix",
+      "agent": "ask",
+      "title": "How many of my customers are grade D?",
+      "situation": "Owner asks in chat.",
+      "expect": {
+        "count": 54
+      },
+      "check_sql": "select count(*) from kb.customer_profiles where organisation_id=3 and grade='D' and sales_12m > 0"
+    }
+  ]
+}

@@ -141,3 +141,7 @@ __all__ = [
     "StockMovementKind",
     "UserRole",
 ]
+
+# The shared knowledge base for the agents (kb_* tables). Imported last so its
+# models see the base tables they reference.
+import app.kb.models  # noqa: E402,F401

@@ -41,6 +41,16 @@ def poll_cycle() -> None:
         logger.exception("Scheduled poll failed")
 
 
+def agents_cycle() -> None:
+    """Run due agent jobs and pending events for every Oprisa desk."""
+    try:
+        from app.kb.jobs import tick_all
+
+        tick_all()
+    except Exception:  # noqa: BLE001 - a failed tick must not kill the scheduler
+        logger.exception("Scheduled agent tick failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _scheduler
@@ -85,6 +95,21 @@ async def lifespan(app: FastAPI):
         )
     else:
         logger.info("Poller disabled. Use POST /api/v1/pipeline/run to trigger a cycle.")
+
+    from app.kb.brain import brain_mode
+    from app.kb.jobs import scheduler_enabled
+
+    logger.info("Agent brain     : %s", brain_mode())
+    if scheduler_enabled():
+        if _scheduler is None:
+            _scheduler = BackgroundScheduler(timezone="UTC")
+            _scheduler.start()
+        _scheduler.add_job(
+            agents_cycle, "interval", minutes=5, id="agents_tick", max_instances=1, coalesce=True
+        )
+        logger.info("Agent scheduler on: due jobs and events every 5 minutes.")
+    else:
+        logger.info("Agent scheduler off (AGENTS_SCHEDULER=on to enable; or run scripts/agents_tick.py).")
 
     yield
 

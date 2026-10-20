@@ -1,0 +1,224 @@
+[
+  {
+    "organisation_id": 1,
+    "business": "Shree Balaji Steels",
+    "trade": "steel",
+    "city": "Pune",
+    "sales_12m_before_tax": 1910198447.1,
+    "receivable": 356161352.24,
+    "overdue": 101217387.35,
+    "dso_days": 57.7,
+    "customers_buying": 119,
+    "grades": {
+      "A": 54,
+      "B": 28,
+      "C": 28,
+      "D": 9
+    },
+    "items_reorder": 3,
+    "bank_balance": 32600000.0,
+    "cash_weeks": [
+      {
+        "week_start": "2026-10-19",
+        "closing": 7790512.55
+      },
+      {
+        "week_start": "2026-10-26",
+        "closing": 38452371.13
+      },
+      {
+        "week_start": "2026-11-02",
+        "closing": -7742460.04
+      },
+      {
+        "week_start": "2026-11-09",
+        "closing": 12388173.13
+      }
+    ],
+    "rows": {
+      "agent_rules": 18,
+      "agent_runs": 38,
+      "approvals": 9,
+      "bill_allocations": 1362,
+      "bills": 1497,
+      "cash_forecast": 4,
+      "chat_threads": 3,
+      "customer_profiles": 121,
+      "document_chunks": 42,
+      "documents": 42,
+      "enquiries": 157,
+      "events": 1316,
+      "godowns": 2,
+      "item_aliases": 38,
+      "item_metrics": 18,
+      "items": 18,
+      "kpi_snapshots": 910,
+      "memories": 14,
+      "messages": 246,
+      "parties": 127,
+      "po_lines": 24,
+      "price_points": 2241,
+      "promises": 28,
+      "purchase_orders": 24,
+      "quote_lines": 184,
+      "quotes": 155,
+      "rfqs": 15,
+      "share_links": 160,
+      "stock_balances": 468,
+      "supplier_quotes": 46,
+      "tally_sync_runs": 90,
+      "tasks": 28,
+      "users": 5,
+      "voucher_lines": 2011,
+      "vouchers": 2765
+    }
+  },
+  {
+    "organisation_id": 2,
+    "business": "Patel Build Mart",
+    "trade": "building",
+    "city": "Ahmedabad",
+    "sales_12m_before_tax": 934708228.3,
+    "receivable": 126731671.14,
+    "overdue": 59999694.08,
+    "dso_days": 41.9,
+    "customers_buying": 180,
+    "grades": {
+      "A": 66,
+      "B": 58,
+      "C": 31,
+      "D": 25
+    },
+    "items_reorder": 1,
+    "bank_balance": 11000000.0,
+    "cash_weeks": [
+      {
+        "week_start": "2026-10-19",
+        "closing": 24992021.91
+      },
+      {
+        "week_start": "2026-10-26",
+        "closing": 37333872.04
+      },
+      {
+        "week_start": "2026-11-02",
+        "closing": -11076270.46
+      },
+      {
+        "week_start": "2026-11-09",
+        "closing": -13953127.91
+      }
+    ],
+    "rows": {
+      "agent_rules": 18,
+      "agent_runs": 38,
+      "approvals": 9,
+      "bill_allocations": 4387,
+      "bills": 4573,
+      "cash_forecast": 4,
+      "chat_threads": 3,
+      "customer_profiles": 181,
+      "document_chunks": 51,
+      "documents": 51,
+      "enquiries": 207,
+      "events": 2391,
+      "godowns": 2,
+      "item_aliases": 29,
+      "item_metrics": 16,
+      "items": 16,
+      "kpi_snapshots": 910,
+      "memories": 14,
+      "messages": 571,
+      "parties": 189,
+      "po_lines": 26,
+      "price_points": 6506,
+      "promises": 70,
+      "purchase_orders": 26,
+      "quote_lines": 247,
+      "quotes": 204,
+      "rfqs": 15,
+      "share_links": 224,
+      "stock_balances": 416,
+      "supplier_quotes": 46,
+      "tally_sync_runs": 90,
+      "tasks": 26,
+      "users": 5,
+      "voucher_lines": 6213,
+      "vouchers": 8505
+    }
+  },
+  {
+    "organisation_id": 3,
+    "business": "Sai Pharma Distributors",
+    "trade": "pharma",
+    "city": "Indore",
+    "sales_12m_before_tax": 528860163.9,
+    "receivable": 68669504.33,
+    "overdue": 29193987.5,
+    "dso_days": 40.2,
+    "customers_buying": 400,
+    "grades": {
+      "A": 121,
+      "B": 142,
+      "C": 83,
+      "D": 54
+    },
+    "items_reorder": 1,
+    "bank_balance": 7900000.0,
+    "cash_weeks": [
+      {
+        "week_start": "2026-10-19",
+        "closing": 5601549.4
+      },
+      {
+        "week_start": "2026-10-26",
+        "closing": 10459422.19
+      },
+      {
+        "week_start": "2026-11-02",
+        "closing": -5582101.64
+      },
+      {
+        "week_start": "2026-11-09",
+        "closing": -10811389.83
+      }
+    ],
+    "rows": {
+      "agent_rules": 18,
+      "agent_runs": 38,
+      "approvals": 9,
+      "bill_allocations": 27455,
+      "bills": 29267,
+      "cash_forecast": 4,
+      "chat_threads": 3,
+      "customer_profiles": 401,
+      "document_chunks": 30,
+      "documents": 30,
+      "enquiries": 97,
+      "events": 8280,
+      "godowns": 2,
+      "item_aliases": 37,
+      "item_metrics": 18,
+      "items": 18,
+      "kpi_snapshots": 910,
+      "memories": 14,
+      "messages": 2615,
+      "parties": 407,
+      "po_lines": 25,
+      "price_points": 40480,
+      "promises": 394,
+      "purchase_orders": 25,
+      "quote_lines": 115,
+      "quotes": 97,
+      "rfqs": 12,
+      "share_links": 185,
+      "stock_balances": 468,
+      "supplier_quotes": 37,
+      "tally_sync_runs": 90,
+      "tasks": 26,
+      "users": 5,
+      "voucher_lines": 40328,
+      "vouchers": 51390
+    }
+  }
+]

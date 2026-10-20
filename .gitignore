@@ -52,3 +52,6 @@ firebase-adminsdk-*.json
 
 # Deploy script secrets (local only)
 deploy.env
+
+# Mock knowledge base CSVs (regenerate with scripts/mock_business/generate.py)
+data/mock_business/csv/
