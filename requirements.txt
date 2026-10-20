@@ -133,10 +133,13 @@ langchain-protocol==0.0.18
     #   langgraph-sdk
 langgraph==1.2.11
     # via ai-sales-copilot
-langgraph-checkpoint==4.2.0
+langgraph-checkpoint==4.3.0
     # via
     #   langgraph
+    #   langgraph-checkpoint-postgres
     #   langgraph-prebuilt
+langgraph-checkpoint-postgres==3.2.0
+    # via ai-sales-copilot
 langgraph-prebuilt==1.1.0
     # via langgraph
 langgraph-sdk==0.4.2
@@ -157,6 +160,7 @@ openpyxl==3.1.5
     # via ai-sales-copilot
 orjson==3.12.0
     # via
+    #   langgraph-checkpoint-postgres
     #   langgraph-sdk
     #   langsmith
 ormsgpack==1.12.2
@@ -177,9 +181,13 @@ protobuf==7.35.1
     #   googleapis-common-protos
     #   proto-plus
 psycopg==3.3.4
-    # via ai-sales-copilot
+    # via
+    #   ai-sales-copilot
+    #   langgraph-checkpoint-postgres
 psycopg-binary==3.3.4 ; implementation_name != 'pypy'
     # via psycopg
+psycopg-pool==3.3.3
+    # via langgraph-checkpoint-postgres
 pyasn1==0.6.4
     # via pyasn1-modules
 pyasn1-modules==0.4.2
@@ -273,6 +281,7 @@ typing-extensions==4.16.0
     #   langsmith
     #   openai
     #   psycopg
+    #   psycopg-pool
     #   pydantic
     #   pydantic-core
     #   sqlalchemy
