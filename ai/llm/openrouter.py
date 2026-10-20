@@ -22,6 +22,7 @@ or guessed value reach the pricing engine.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from enum import StrEnum
 from typing import Any, TypeVar
@@ -68,6 +69,15 @@ _REPAIR_INSTRUCTION = (
 )
 
 
+#: OpenAI's reasoning families: GPT-5.x, GPT-6.x and the o-series.
+_REASONING = re.compile(r"^openai/(gpt-[5-9]|o\d)")
+
+
+def is_reasoning_model(model: str) -> bool:
+    """True for models that reason before answering (no temperature, effort applies)."""
+    return bool(_REASONING.match(model or ""))
+
+
 class OpenRouterClient(LLMClient):
     def __init__(self, config: LLMConfig | None = None) -> None:
         self.config = config or LLMConfig.from_env()
@@ -103,16 +113,21 @@ class OpenRouterClient(LLMClient):
         max_tokens: int | None,
     ) -> tuple[str, dict[str, Any]]:
         """One chat completion. Returns (text, metadata)."""
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": self.config.temperature,
-        }
+        kwargs: dict[str, Any] = {"model": model, "messages": messages}
+        reasoning = is_reasoning_model(model)
+        if not reasoning:
+            # OpenAI's reasoning models accept only their default temperature
+            # and reject anything else outright, so they get none.
+            kwargs["temperature"] = self.config.temperature
         if "openrouter.ai" in self.config.base_url:
             # Ask OpenRouter to return the actual cost of the generation.
             # Other OpenAI-compatible gateways (e.g. NVIDIA NIM) reject this
             # as an unsupported parameter.
-            kwargs["extra_body"] = {"usage": {"include": True}}
+            extra: dict[str, Any] = {"usage": {"include": True}}
+            if reasoning and self.config.reasoning_effort:
+                # Reasoning tokens are billed as output; short tasks need little.
+                extra["reasoning"] = {"effort": self.config.reasoning_effort, "exclude": True}
+            kwargs["extra_body"] = extra
         if response_format:
             kwargs["response_format"] = response_format
         if max_tokens:
@@ -266,13 +281,18 @@ class OpenRouterClient(LLMClient):
 
             logger.warning(
                 "%s: model %s is unavailable (%s); falling back to %s.",
-                task, chosen, str(exc)[:200], fallback,
+                task,
+                chosen,
+                str(exc)[:200],
+                fallback,
             )
             usage.model = fallback
             usage.fell_back_from = chosen
             try:
                 text, meta = self._call(
-                    model=fallback, messages=messages, response_format=None,
+                    model=fallback,
+                    messages=messages,
+                    response_format=None,
                     max_tokens=max_tokens,
                 )
             except Exception as second:
@@ -280,9 +300,7 @@ class OpenRouterClient(LLMClient):
                 usage.succeeded = False
                 usage.error = f"{chosen}: {exc} | fallback {fallback}: {second}"
                 if self._is_rate_limited(second):
-                    raise RateLimitedError(
-                        f"{task} rate-limited by the gateway: {second}"
-                    ) from second
+                    raise RateLimitedError(f"{task} rate-limited by the gateway: {second}") from second
                 raise LLMError(
                     f"{task} completion failed on {chosen} and fallback {fallback}: {second}"
                 ) from second
@@ -306,8 +324,13 @@ class OpenRouterClient(LLMClient):
 
         try:
             return self._structured_on(
-                model=chosen, task=task, messages=messages, schema=schema,
-                max_tokens=max_tokens, usage=usage, started=started,
+                model=chosen,
+                task=task,
+                messages=messages,
+                schema=schema,
+                max_tokens=max_tokens,
+                usage=usage,
+                started=started,
             )
         except ModelUnavailableError as exc:
             fallback = self.config.fallback_for(task) if model is None else None
@@ -321,14 +344,22 @@ class OpenRouterClient(LLMClient):
             # carries over.
             logger.warning(
                 "%s: model %s is unavailable (%s); falling back to %s.",
-                task, chosen, str(exc)[:200], fallback,
+                task,
+                chosen,
+                str(exc)[:200],
+                fallback,
             )
             usage.model = fallback
             usage.fell_back_from = chosen
             try:
                 return self._structured_on(
-                    model=fallback, task=task, messages=messages, schema=schema,
-                    max_tokens=max_tokens, usage=usage, started=started,
+                    model=fallback,
+                    task=task,
+                    messages=messages,
+                    schema=schema,
+                    max_tokens=max_tokens,
+                    usage=usage,
+                    started=started,
                 )
             except ModelUnavailableError as second:
                 # Name both. "good/model is unavailable" alone reads as a
@@ -337,8 +368,7 @@ class OpenRouterClient(LLMClient):
                 usage.succeeded = False
                 usage.error = f"{chosen}: {exc} | fallback {fallback}: {second}"
                 raise LLMError(
-                    f"{task}: neither {chosen} nor fallback {fallback} is "
-                    f"available. {second}"
+                    f"{task}: neither {chosen} nor fallback {fallback} is available. {second}"
                 ) from second
 
     def _structured_on(
@@ -418,9 +448,7 @@ class OpenRouterClient(LLMClient):
             }
         else:
             # Without API-side enforcement the schema has to be in the prompt.
-            request_messages.append(
-                user(_SCHEMA_INSTRUCTION.format(schema=describe_schema(schema)))
-            )
+            request_messages.append(user(_SCHEMA_INSTRUCTION.format(schema=describe_schema(schema))))
             if mode is OutputMode.JSON_OBJECT:
                 response_format = {"type": "json_object"}
 
@@ -446,9 +474,7 @@ class OpenRouterClient(LLMClient):
                     # reachable in a weaker output mode, and walking down to
                     # prompt_only is what turned one dead model into six failed
                     # calls and an error message about output format.
-                    raise ModelUnavailableError(
-                        f"model {model} is unavailable: {exc}"
-                    ) from exc
+                    raise ModelUnavailableError(f"model {model} is unavailable: {exc}") from exc
                 if self._is_unsupported_format(exc) and mode is not OutputMode.PROMPT_ONLY:
                     failures.append(f"{mode.value}: {exc}")
                     return None  # try a weaker mode

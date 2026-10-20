@@ -30,7 +30,7 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 #: gateway, unknown, or the account has lost access to it. Deliberately a
 #: widely-available, cheap, general model: its job is to keep the desk running
 #: through an outage, not to match the primary model's quality.
-DEFAULT_FALLBACK_MODEL = "openai/gpt-4o-mini"
+DEFAULT_FALLBACK_MODEL = "openai/gpt-5.6-luna"
 
 DEFAULT_MODELS = {
     "classify": "openai/gpt-4o-mini",
@@ -58,6 +58,10 @@ class LLMConfig:
     models: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_MODELS))
     #: One model standing behind every task. Empty disables falling back.
     fallback_model: str = DEFAULT_FALLBACK_MODEL
+    #: How hard OpenAI's reasoning models (GPT-5.x, GPT-6.x, o-series) think
+    #: before answering: none, minimal, low, medium, high. Reasoning tokens are
+    #: billed as output, and our tasks are short, so "low" keeps them cheap.
+    reasoning_effort: str = "low"
 
     @classmethod
     def from_env(cls) -> LLMConfig:
@@ -87,6 +91,7 @@ class LLMConfig:
             models=models,
             # Set LLM_MODEL_FALLBACK="" to switch falling back off entirely.
             fallback_model=os.getenv("LLM_MODEL_FALLBACK", DEFAULT_FALLBACK_MODEL).strip(),
+            reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "low").strip().lower(),
         )
 
     @property
@@ -110,6 +115,4 @@ class LLMConfig:
 
     def require(self) -> None:
         if not self.configured:
-            raise LLMNotConfigured(
-                "OPENROUTER_API_KEY is not set. Add it to .env to enable the AI steps."
-            )
+            raise LLMNotConfigured("OPENROUTER_API_KEY is not set. Add it to .env to enable the AI steps.")

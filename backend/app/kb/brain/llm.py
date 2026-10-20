@@ -1,8 +1,12 @@
 """The LLM brain: OpenRouter, structured output, rules as the safety net.
 
-Models (environment):
-    AGENT_MODEL_FAST    reading enquiries, choosing a tool   (default LLM_MODEL_CLASSIFY)
-    AGENT_MODEL_WRITE   messages to customers, answers       (default LLM_MODEL_DRAFT)
+Models (environment), both defaulting to OpenAI's GPT-6 Luna:
+    AGENT_MODEL_FAST    reading enquiries, choosing a tool
+    AGENT_MODEL_WRITE   messages to customers, answers
+GPT-6 Luna (Sep 2026, $0.10 in / $0.50 out per million tokens on OpenRouter) is
+OpenAI's fast, cheap tier and does both jobs; its reasoning effort is set by
+LLM_REASONING_EFFORT (default "low"). For more polished writing, point
+AGENT_MODEL_WRITE at openai/gpt-6-sol ($2 / $10).
 
 Every method checks the model's output against the facts it was given; a
 message that drops the link or an amount, an enquiry line pointing at an item
@@ -26,6 +30,8 @@ from app.kb.brain.rules import RulesBrain
 
 logger = get_logger(__name__)
 
+DEFAULT_AGENT_MODEL = "openai/gpt-6-luna"
+
 
 class _Text(BaseModel):
     text: str = Field(description="The message, plain text, no markdown")
@@ -40,10 +46,8 @@ class LLMBrain(Brain):
 
         self.client = client or get_client()
         self.rules = RulesBrain()
-        self.fast = os.getenv("AGENT_MODEL_FAST") or os.getenv("LLM_MODEL_CLASSIFY") or "openai/gpt-4o-mini"
-        self.write_model = (
-            os.getenv("AGENT_MODEL_WRITE") or os.getenv("LLM_MODEL_DRAFT") or "openai/gpt-4o-mini"
-        )
+        self.fast = os.getenv("AGENT_MODEL_FAST") or DEFAULT_AGENT_MODEL
+        self.write_model = os.getenv("AGENT_MODEL_WRITE") or DEFAULT_AGENT_MODEL
 
     # ---------------------------------------------------------------- calls
 
